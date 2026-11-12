@@ -940,7 +940,7 @@ impl AssetReader for MultiRootFileReader {
 
 /// Registers the meshopt-aware multi-root reader over the default file
 /// source. `asset_roots` is in precedence order (world root first, shared
-/// pool last — see [`discover_asset_pool`]).
+/// pool last; the caller builds the list).
 ///
 /// Must run **before** `AssetPlugin` is added, since the plugin snapshots the
 /// registered sources when it builds.
@@ -996,6 +996,23 @@ fn shared_asset_pool() -> Option<std::path::PathBuf> {
     let root = std::env::var_os("VAEL_ROOT").map(std::path::PathBuf::from)?;
     let candidate = root.join("assets/public");
     (candidate.join("assets/meshes").is_dir()).then_some(candidate)
+}
+
+/// Pool real quando `VAEL_ROOT` existe; caso contrário, as fixtures pequenas
+/// empacotadas no crate. Assim o CI corre o caminho real (meshopt +
+/// quantização + basisu) sem o checkout do Vael.
+#[cfg(test)]
+fn test_pool_root() -> Option<std::path::PathBuf> {
+    if let Some(pool) = shared_asset_pool() {
+        return Some(pool);
+    }
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    fixtures.join("assets/meshes").is_dir().then_some(fixtures)
+}
+
+#[cfg(test)]
+fn test_mesh_dir() -> Option<std::path::PathBuf> {
+    test_pool_root().map(|root| root.join("assets/meshes"))
 }
 
 #[cfg(test)]
@@ -1110,7 +1127,7 @@ mod tests {
     /// `Float32x4`, and the mesh panics on the missing attribute.
     #[test]
     fn test_quantized_pool_asset_comes_out_as_float() {
-        let Some(pool) = shared_asset_pool().map(|p| p.join("assets/meshes")) else {
+        let Some(pool) = test_mesh_dir() else {
             eprintln!("shared-assets pool absent — skipping");
             return;
         };
@@ -1174,7 +1191,7 @@ mod tests {
     /// before this rewrite existed.
     #[test]
     fn test_pool_asset_with_single_channel_austc_is_widened() {
-        let Some(pool) = shared_asset_pool().map(|p| p.join("assets/meshes")) else {
+        let Some(pool) = test_mesh_dir() else {
             eprintln!("pool do Vael ausente — skipping");
             return;
         };
@@ -1223,7 +1240,7 @@ mod tests {
     /// have to leave that list.
     #[test]
     fn test_decoded_pool_asset_requires_no_unsupported_extensions() {
-        let Some(pool) = shared_asset_pool().map(|p| p.join("assets/meshes")) else {
+        let Some(pool) = test_mesh_dir() else {
             eprintln!("pool do Vael ausente — skipping");
             return;
         };
@@ -1271,7 +1288,7 @@ mod tests {
     /// makes the loader panic rather than fail. The rewrite has to move it.
     #[test]
     fn test_basisu_source_is_lifted_into_the_core_field() {
-        let Some(pool) = shared_asset_pool().map(|p| p.join("assets/meshes")) else {
+        let Some(pool) = test_mesh_dir() else {
             eprintln!("shared-assets pool absent — skipping");
             return;
         };
@@ -1384,7 +1401,7 @@ mod tests {
     /// hands it different bytes.
     #[test]
     fn test_reader_decodes_a_pool_asset() {
-        let Some(pool) = shared_asset_pool() else {
+        let Some(pool) = test_pool_root() else {
             eprintln!("shared-assets pool absent — skipping");
             return;
         };

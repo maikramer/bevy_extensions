@@ -41,8 +41,8 @@ use bevy_voxel_terrain::{HeightField, VoxelField, build_voxel_mesh};
 - `VOXEL_CHUNK_CELLS` / `VoxelChunkParams` — chunk/LOD parameters.
 
 The ECS spawner, colliders, water/road authoring and the concrete `BrushGrid`
-stay in the host engine (or a future `bevy_ext_terrain`). This crate is the
-runtime-agnostic core.
+stay in the host engine or in the scene layer (`bevy_ext_terrain`). This crate
+is the runtime-agnostic core.
 
 ## Bevy version
 

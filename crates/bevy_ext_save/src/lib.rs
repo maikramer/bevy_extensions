@@ -419,4 +419,139 @@ mod tests {
         assert_eq!(loaded.scene.as_deref(), Some("main"));
         assert_eq!(loaded.level(), 7);
     }
+
+    #[test]
+    fn slot_paths_are_stable_and_keep_the_legacy_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = Some("vael");
+        let save_dir = Some(dir.path());
+        let base = save_path_for(key, save_dir);
+        assert_eq!(base, dir.path().join("vael.save.json"));
+        assert_eq!(save_path_for_slot(key, save_dir, None), base);
+        assert_eq!(
+            save_path_for_slot(key, save_dir, Some(0)),
+            dir.path().join("vael.auto.save.json")
+        );
+        assert_eq!(
+            save_path_for_slot(key, save_dir, Some(1)),
+            dir.path().join("vael.slot1.save.json")
+        );
+        assert_eq!(
+            save_path_for_slot(key, save_dir, Some(3)),
+            dir.path().join("vael.slot3.save.json")
+        );
+    }
+
+    #[test]
+    fn world_key_treats_world_static_as_the_same_world_and_keeps_siblings_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let world = game.join("world.xml");
+        let static_world = game.join("world.static.xml");
+        let qa_static = game.join("qa-static.xml");
+        for path in [&world, &static_world, &qa_static] {
+            std::fs::write(path, "<world/>").unwrap();
+        }
+        let key = "game";
+        assert_eq!(world_save_key(&world).as_deref(), Some(key));
+        assert_eq!(world_save_key(&static_world).as_deref(), Some(key));
+        assert_eq!(
+            world_save_key(&qa_static).as_deref(),
+            Some("game-qa-static")
+        );
+    }
+
+    #[test]
+    fn legacy_scalars_move_to_world_kv_and_objects_to_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.save.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "gold": 12,
+                "level": 4,
+                "items": ["potion"],
+                "quest_states": {"a": "done"}
+            }"#,
+        )
+        .unwrap();
+        let loaded = load_from_disk(&path).unwrap();
+        // Escalares antigos ficam legíveis no contrato plano do `viber.game()`.
+        assert_eq!(loaded.world_kv.get("gold"), Some(&serde_json::json!(12)));
+        assert_eq!(loaded.level(), 4);
+        assert_eq!(loaded.gold(), 12);
+        // Compostos ficam preservados na secção opaca, não se perdem.
+        let legacy = &loaded.game.as_ref().unwrap()["legacy"];
+        assert_eq!(legacy["items"], serde_json::json!(["potion"]));
+        assert_eq!(legacy["quest_states"], serde_json::json!({"a": "done"}));
+    }
+
+    #[test]
+    fn corrupt_save_is_an_error_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = save_path_for_slot(Some("broken"), Some(dir.path()), Some(0));
+        std::fs::write(&path, "{ isto não é json").unwrap();
+        assert!(load_from_disk(&path).is_err());
+        // O menu não rebenta: lista o slot como existente, sem metadados.
+        let rows = list_save_slots(Some("broken"), Some(dir.path()));
+        assert!(rows[0].exists);
+        assert_eq!(rows[0].level, 0);
+        assert_eq!(rows[0].gold, 0);
+    }
+
+    #[test]
+    fn save_is_atomic_and_leaves_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("atom.save.json");
+        let first = capture([1.0, 0.0, 0.0], (1.0, 1.0, 1.0));
+        save_to_disk(&path, &first).unwrap();
+        let tmp = path.with_extension("json.tmp");
+        assert!(path.is_file());
+        assert!(!tmp.exists(), "o .tmp não pode sobreviver ao rename");
+        // A segunda gravação substitui o envelope inteiro.
+        let mut second = capture([9.0, 8.0, 7.0], (0.5, 0.5, 0.5));
+        second.scene = Some("interior".into());
+        save_to_disk(&path, &second).unwrap();
+        let loaded = load_from_disk(&path).unwrap();
+        assert_eq!(loaded.position, Some([9.0, 8.0, 7.0]));
+        assert_eq!(loaded.scene.as_deref(), Some("interior"));
+        assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn list_slots_reads_meta_and_includes_the_legacy_save_only_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = Some("vael");
+        let save_dir = Some(dir.path());
+
+        let mut auto = capture([1.0, 2.0, 3.0], (1.0, 1.0, 1.0));
+        auto.world_kv
+            .insert("save_level".into(), serde_json::json!(3));
+        auto.world_kv
+            .insert("save_gold".into(), serde_json::json!(7));
+        save_to_disk(&save_path_for_slot(key, save_dir, Some(0)), &auto).unwrap();
+
+        let mut manual = capture([4.0, 5.0, 6.0], (1.0, 1.0, 1.0));
+        manual.scene = Some("main".into());
+        save_to_disk(&save_path_for_slot(key, save_dir, Some(1)), &manual).unwrap();
+
+        let rows = list_save_slots(key, save_dir);
+        assert_eq!(rows.len(), 4, "0..=3, legado ausente");
+        assert!(rows[0].exists);
+        assert_eq!(rows[0].level, 3);
+        assert_eq!(rows[0].gold, 7);
+        assert!(rows[1].exists);
+        assert_eq!(rows[1].scene.as_deref(), Some("main"));
+        assert!(!rows[2].exists);
+        assert!(!rows[3].exists);
+
+        // O save antigo do mundo (sem sufixo) só aparece como slot 4.
+        save_to_disk(&save_path_for(key, save_dir), &manual).unwrap();
+        let rows = list_save_slots(key, save_dir);
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[4].slot, 4);
+        assert!(rows[4].exists);
+        assert_eq!(rows[4].scene.as_deref(), Some("main"));
+    }
 }

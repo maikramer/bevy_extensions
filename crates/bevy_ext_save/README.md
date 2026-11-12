@@ -13,12 +13,17 @@ bevy_ext_save = "0.1"
 ```
 
 ```rust
+use std::path::Path;
 use bevy_ext_save::{capture, load_from_disk, save_to_disk, save_path_for_slot};
 
-let mut game = capture([12.0, 25.0, -8.0], (0.8, 0.5, 0.9));
-game.scene = Some("main".into());
-save_to_disk(&save_path_for_slot(Some("my-world"), None, Some(1)), &game)?;
-let loaded = load_from_disk(&save_path_for_slot(Some("my-world"), None, Some(1)))?;
+fn demo(save_dir: &Path) -> Result<(), String> {
+    let mut game = capture([12.0, 25.0, -8.0], (0.8, 0.5, 0.9));
+    game.scene = Some("main".into());
+    let path = save_path_for_slot(Some("my-world"), Some(save_dir), Some(1));
+    save_to_disk(&path, &game)?;
+    let _loaded = load_from_disk(&path)?;
+    Ok(())
+}
 ```
 
 ## What it contains

@@ -1,1 +1,5 @@
 /target
+# Estado/build do Jackdaw nas extensões (19 GB no checkout local; os bundles
+# .jdext vão para os assets do GitHub Release, não para o git).
+extensions/*/.jackdaw/
+extensions/**/*.jdext

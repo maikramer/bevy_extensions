@@ -39,13 +39,18 @@ game or an editor.
 ## Limits
 
 Only self-contained GLB files are decoded; `.gltf` with external buffers,
-sparse accessors, Draco and multi-buffer GLBs are out of scope. ETX1S/BasisLZ
+sparse accessors, Draco and multi-buffer GLBs are out of scope. ETC1S/BasisLZ
 is not decoded by Bevy; the audit tools warn.
+
+The tests use two small real GLBs in `tests/fixtures/` (meshopt +
+quantization + KTX2/basisu) when `VAEL_ROOT` is unset, so the decoder path runs
+in CI without the game checkout.
 
 ## Bevy version
 
-Built against Bevy 0.20.1. The crate enables only `bevy_asset`, `bevy_gltf`,
-`bevy_image` and `bevy_log`; the host app owns the renderer/window features.
+Built against Bevy 0.20.1. The crate enables `bevy_asset`, `bevy_gltf`,
+`bevy_image`, `bevy_log` and `bevy_render`; the host app owns the
+renderer/window features.
 
 ## License
 

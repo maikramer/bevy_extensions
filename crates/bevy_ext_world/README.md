@@ -13,7 +13,8 @@ bevy_ext_world = "0.1"
 ```
 
 ```rust
-use bevy_ext_world::{XmlNode, XmlDocument, parse_file};
+use bevy_ext_world::{XmlNode, XmlDocument};
+use bevy_ext_world::xml::parse_file;
 ```
 
 ## What it contains

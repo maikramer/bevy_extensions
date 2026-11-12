@@ -14,5 +14,13 @@ First release of the monorepo.
 - New `bevy_voxel_terrain`: `VoxelField`, CSG mods, caves/arches/bridges,
   column index and Transvoxel meshing over a host `HeightField`.
 - New `bevy_ext_terrain`: Bevy scene contract for the voxel terrain and the
-  `.ahgt` heightfield adapter.
+  `.ahgt` heightfield adapter. Held for 0.1.1 while the scene contract
+  stabilizes; the 0.1.0 release publishes the other five crates.
 - `bevy_ext_world` now carries the full XML/BSN/project/include/emit layer.
+- `bevy_ext_save`: tests for slot paths, legacy migration, corrupt JSON,
+  atomic write/rename and slot listing (2 → 8 tests).
+- `bevy_ext_gltf`: two small real GLBs in `tests/fixtures/` exercise meshopt,
+  quantization and KHR_texture_basisu in CI without the Vael checkout.
+- Release workflow runs fmt/clippy/test/doc as a preflight and validates the
+  tag against `[workspace.package].version`; `tools/publish.sh` is idempotent
+  and waits for the exact version in the index.
