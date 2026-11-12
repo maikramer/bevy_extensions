@@ -102,7 +102,7 @@ pub fn write(path: &Path, instances: &[PlacedInstance]) -> Result<()> {
     std::fs::write(path, encode(instances)?).with_context(|| format!("escrever {}", path.display()))
 }
 
-/// [`write`] ATÓMICO: grava num `.tmp` ao lado e faz `rename` — um scatter
+/// [`write()`] ATÓMICO: grava num `.tmp` ao lado e faz `rename` — um scatter
 /// interrompido no meio nunca deixa meio ficheiro no lugar do `.vinst`
 /// (o loader rejeitaria a magia e o mundo ficava sem folhagem).
 pub fn write_atomic(path: &Path, instances: &[PlacedInstance]) -> Result<()> {
