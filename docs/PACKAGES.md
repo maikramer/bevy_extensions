@@ -3,6 +3,22 @@
 Estado: 0.1.0 (2026-11-12). O repo é o lar durável dos pacotes; o Viber fica
 como app/fachada transitória até o Vael deixar de o usar.
 
+## Release 0.1.0
+
+- Repositório: https://github.com/maikramer/bevy_extensions (`main` `074b533`).
+- Testes: **209** — core 3, world 69+5 BSN, gltf 28, voxel 98, terrain 4,
+  save 2. `cargo fmt`/`clippy --workspace --all-targets -D warnings` verdes.
+- Dry-runs de publicação verdes: `bevy_ext_core`, `bevy_ext_world`,
+  `bevy_ext_gltf`, `bevy_voxel_terrain`. `bevy_ext_terrain`/`bevy_ext_save`
+  passam `package --list`; o publish deles só resolve depois de
+  `bevy_voxel_terrain`/`bevy_ext_world` estarem no índice.
+- **Publicação no crates.io pendente de token.** Depois de `cargo login`,
+  correr `tools/publish.sh`; ou definir o secret `CARGO_REGISTRY_TOKEN` no
+  GitHub e empurrar a tag `v0.1.0` (o workflow `release.yml` faz a ordem e o
+  GitHub Release).
+- `bevy_voxel_terrain_jackdaw` é WIP concorrente (API do Jackdaw) e fica
+  fora do workspace/release 0.1.0.
+
 ## Pacotes 0.1.0
 
 | Pacote | Conteúdo | Depende de |
