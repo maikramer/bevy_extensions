@@ -1,0 +1,21 @@
+[package]
+name = "bevy_ext_terrain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Voxel terrain scene components for Bevy: VoxelTerrain, caves, arches and bridges"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "terrain", "voxel", "sdf", "level"]
+categories = ["game-development", "rendering"]
+
+[dependencies]
+# ECS/reflect/math only: this crate is the scene contract shared by the game
+# and the editor. It must not pull a renderer or the Jackdaw editor.
+bevy = { workspace = true, features = ["std"] }
+bevy_voxel_terrain = { workspace = true }
+anyhow.workspace = true
+flate2.workspace = true
+serde_json.workspace = true

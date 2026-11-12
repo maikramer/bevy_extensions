@@ -1,0 +1,29 @@
+[package]
+name = "bevy_ext_world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative world formats for Bevy: XML, BSN and the .vinst binary"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "xml", "world", "gamedev"]
+categories = ["game-development", "parser-implementations"]
+
+[dependencies]
+# Only ECS/reflect/math: the parser and the binary format are independent of
+# the renderer and the runtime. `bevy_ecs`/`bevy_reflect` are needed by the
+# `bsn` bridge components (`WorldNode`).
+bevy = { workspace = true, features = ["std", "bevy_camera", "bevy_log"] }
+# Formato `.bsn` (Jackdaw): o jogo lê o documento e reconstrói `XmlNode`; não
+# puxa `jackdaw_runtime` nem o editor.
+jackdaw_bsn.workspace = true
+anyhow.workspace = true
+roxmltree.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "bevy_voxel_terrain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Voxel/SDF terrain for Bevy: CSG mods, caves, cliffs and Transvoxel LOD meshing"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "voxel", "terrain", "transvoxel", "sdf"]
+categories = ["game-development", "rendering"]
+
+[dependencies]
+bevy = { workspace = true, features = ["std"] }
+transvoxel.workspace = true
