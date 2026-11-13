@@ -10,6 +10,7 @@ members = [
     "crates/bevy_ext_terrain",
     "crates/bevy_ext_world",
     "crates/bevy_voxel_terrain",
+    "crates/bevy_ext_postfx",
 ]
 exclude = ["crates/bevy_voxel_terrain_jackdaw"]
 resolver = "3"
@@ -34,6 +35,7 @@ bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
 bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }
 bevy_ext_terrain = { version = "0.1.0", path = "crates/bevy_ext_terrain" }
 bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
+bevy_ext_postfx = { version = "0.1.0", path = "crates/bevy_ext_postfx" }
 
 # Jackdaw 0.20 line: the editor extension pins the same version as the Vael
 # editor so type paths and `.bsn` defaults agree.

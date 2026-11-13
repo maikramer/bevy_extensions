@@ -11,6 +11,16 @@ First release of the monorepo.
 - New `bevy_ext_gltf`: meshopt, `KHR_mesh_quantization`,
   `KHR_texture_basisu` lifting, UASTC `RRR`, GLB bounds and world-tiled
   textures.
+- New `bevy_ext_postfx`: the authored camera lens moved out of the `viber`
+  monolith — exposure/bloom/SSAO/DOF/vignette/CA/volumetrics/motion blur/
+  CAS, split-tone and aerial fullscreen passes, night bloom, `PostFxState`,
+  `ExternalExposure`, live gates (`fx_off`/`fx_runtime_toggle`), scene
+  profiles (`set_scene_profile`/`clear_scene_profile`), the
+  `<PostFxDebugToggle>` key bindings and the `<AdaptiveQuality>` scheduler
+  (61 tests). `PostFxSettings` (scene contract) is unchanged; reflected
+  types keep the frozen `viber::postfx`/`viber::worldsys` type paths, and
+  the world-state contracts the lens reads live in `env` until their owner
+  crates land.
 - New `bevy_voxel_terrain`: `VoxelField`, CSG mods, caves/arches/bridges,
   column index and Transvoxel meshing over a host `HeightField`.
 - New `bevy_ext_terrain`: Bevy scene contract for the voxel terrain and the
