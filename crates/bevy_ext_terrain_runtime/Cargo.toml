@@ -1,0 +1,50 @@
+[package]
+name = "bevy_ext_terrain_runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Runtime Bevy de terreno volumétrico: streaming de colunas voxel/transvoxel, colliders trimesh por coluna, água, splat e deltas vivos"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "terrain", "voxel", "transvoxel", "lod"]
+categories = ["game-development", "rendering"]
+
+[features]
+default = []
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_color",
+] }
+# Núcleo voxel/transvoxel (field/mods/index/caves/arches/bridges/mesher).
+bevy_voxel_terrain.workspace = true
+# Contrato de cena do voxel (`VoxelTerrain`, features, adapter `.ahgt`).
+bevy_ext_terrain.workspace = true
+# Contratos de fronteira (`Player`, rng determinístico).
+bevy_ext_core.workspace = true
+# `DeltaPatch` dos deltas vivos do terreno.
+bevy_ext_world.workspace = true
+# Loader de texturas world-tiled (`WorldTiledTextures`/`load_tiled_image`/`patch_image`).
+bevy_ext_gltf.workspace = true
+# Colliders voxel: trimesh por coluna assado no swap atómico do LOD.
+bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"] }
+anyhow.workspace = true
+# Decode `.ahgt` (half-f16) e cache de splat em disco.
+half = "2"
+dirs.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Heightmaps PNG 8/16-bit (o `.ahgt` é decode próprio; PNG passa pelo `image`).
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tempfile.workspace = true
