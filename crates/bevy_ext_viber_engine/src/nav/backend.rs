@@ -1,0 +1,378 @@
+//! Geometry backend: the world as rerecast sees it.
+//!
+//! `bevy_rerecast` does not know what a world is made of — it asks a *backend*
+//! system for one [`TriMesh`] and voxelises that. The builtin `Mesh3dBackend`
+//! is no use here for two reasons: the render meshes are LOD ladders (millions
+//! of triangles of foliage that are not obstacles), and the terrain colliders
+//! only exist within `physics::PHYSICS_CHUNK_RADIUS` of the player, so half the
+//! tile would simply have no ground.
+//!
+//! So this backend builds the input itself, from the two authorities that are
+//! always complete:
+//!
+//! * **the ground** — sampled straight from [`TerrainRuntime`] on a regular XZ
+//!   lattice over the tile. Cells over water or on a cliff face are left out
+//!   entirely: a hole in the input is a hole in the navmesh, which is exactly
+//!   what "you cannot walk here" means.
+//! * **the obstacles** — the static Rapier colliders inside the tile. A
+//!   `trimesh` collider (the city walls, the houses, the bridges — the pipeline
+//!   bakes a `*_collision.glb` for each) goes in as its own triangles, so a
+//!   gateway stays a gateway; anything else goes in as the box of its local
+//!   AABB, which is the right approximation for a barrel or a crate.
+//!
+//! Roads are NOT marked here. `generate_navmesh` calls
+//! `TriMesh::mark_walkable_triangles`, which overwrites every area type with
+//! `DEFAULT_WALKABLE` before the volumes are applied — the road areas are
+//! carried by [`NavmeshSettings::area_volumes`] instead (see
+//! [`super::tile::road_area_volumes`]).
+
+use bevy::prelude::*;
+use bevy_rapier3d::prelude::Collider;
+use bevy_rerecast::prelude::NavmeshSettings;
+use bevy_rerecast::rerecast::{AreaType, TriMesh};
+
+use crate::terrain::cliffs::CliffMask;
+use crate::terrain::runtime::TerrainRuntime;
+
+/// Static colliders only: a kinematic body is a creature, and creatures are
+/// agents that avoid each other at runtime, not holes in the navmesh.
+///
+/// Os corpos do ragdoll (`RagdollBodyOf`) são cápsulas dinâmicas que vivem
+/// 2,5 s: sem a exclusão cada morte furava a navmesh com as 7 cápsulas e
+/// mudava a contagem de obstáculos, forçando um re-bake do tile inteiro.
+pub type ObstacleFilter = (
+    Without<crate::physics::VoxelCollider>,
+    Without<crate::ai::AiLocomotion>,
+    Without<crate::player::Player>,
+    // Triggers (loja/porta/água) não são paredes: sem isto viravam
+    // obstáculos NOT_WALKABLE no navmesh.
+    Without<bevy_rapier3d::prelude::Sensor>,
+    Without<crate::ragdoll::RagdollBodyOf>,
+);
+
+/// A collider whose local AABB is taller than this is a wall, a cliff body or a
+/// building; below it, it is clutter a character steps over rather than around.
+///
+/// Rerecast would work this out on its own from `walkable_climb`, but feeding
+/// it every pebble in the valley costs voxelisation time for nothing.
+pub const MIN_OBSTACLE_HEIGHT: f32 = 0.35;
+
+/// Builds the navmesh input for the tile described by `settings.aabb`.
+pub fn nav_backend(
+    settings: In<NavmeshSettings>,
+    config: Res<super::NavConfig>,
+    terrain: Option<Res<TerrainRuntime>>,
+    cliffs: Option<Res<CliffMask>>,
+    obstacles: Query<(&GlobalTransform, &Collider), ObstacleFilter>,
+) -> TriMesh {
+    let Some(aabb) = settings.aabb else {
+        // No tile: an empty input yields an empty navmesh, and the agents fall
+        // back to the beeline. Never a panic — navigation is an upgrade over
+        // the old behaviour, not a precondition for the world to run.
+        return TriMesh::default();
+    };
+    let min = Vec3::new(aabb.min.x, aabb.min.y, aabb.min.z);
+    let max = Vec3::new(aabb.max.x, aabb.max.y, aabb.max.z);
+
+    let mut trimesh = TriMesh::default();
+    if let Some(terrain) = terrain.as_deref() {
+        trimesh.extend(ground_lattice(
+            terrain,
+            cliffs.as_deref(),
+            min.xz(),
+            max.xz(),
+            config.ground_cell,
+        ));
+    }
+    let ground_tris = trimesh.indices.len();
+    let mut taken = 0usize;
+    for (global, collider) in &obstacles {
+        if let Some(mesh) = obstacle_trimesh(global, collider, min, max) {
+            trimesh.extend(mesh);
+            taken += 1;
+        }
+    }
+    if config.debug {
+        info!(
+            "nav: backend — chão {} triângulos, obstáculos {}/{} ({} triângulos)",
+            ground_tris,
+            taken,
+            obstacles.iter().count(),
+            trimesh.indices.len() - ground_tris
+        );
+    }
+    trimesh
+}
+
+/// The walkable ground of the tile as a regular lattice of quads.
+///
+/// Holes (water, cliff faces, outside the heightfield) are simply not emitted.
+/// A quad is only emitted when all four of its corners are walkable, so the
+/// navmesh edge lands on the last fully solid cell rather than halfway into the
+/// lake.
+pub fn ground_lattice(
+    terrain: &TerrainRuntime,
+    cliffs: Option<&CliffMask>,
+    min: Vec2,
+    max: Vec2,
+    cell: f32,
+) -> TriMesh {
+    let cell = cell.max(0.1);
+    let cols = (((max.x - min.x) / cell).ceil() as usize).max(1) + 1;
+    let rows = (((max.y - min.y) / cell).ceil() as usize).max(1) + 1;
+    // A tile this big is a bug in the caller, not a request: refuse it rather
+    // than allocating gigabytes.
+    if cols.saturating_mul(rows) > 4_000_000 {
+        warn!("nav: lattice {cols}×{rows} pedida — tile grande demais, ignorada");
+        return TriMesh::default();
+    }
+
+    // Pré-filtra lagos e segmentos de rio que cruzam o tile `[min, max]`:
+    // num mundo de 4 km o `hull` de um rio cobre o mapa inteiro, e testar
+    // `terrain.in_water` por ponto varria ~1 500 estações × 183 000 nós na
+    // main thread a cada pedido de tile.
+    let tile_max = Vec2::new(
+        min.x + (cols.saturating_sub(1)) as f32 * cell,
+        min.y + (rows.saturating_sub(1)) as f32 * cell,
+    );
+    let mut lakes: Vec<(Vec2, f32)> = Vec::new();
+    let mut river_segs: Vec<(Vec2, Vec2, Vec2, Vec2, f32)> = Vec::new();
+    let mut water_min = Vec2::splat(f32::INFINITY);
+    let mut water_max = Vec2::splat(f32::NEG_INFINITY);
+    for w in &terrain.water {
+        let r = w.carve_radius;
+        match w.kind {
+            crate::terrain::water::WaterKind::Lake => {
+                if w.at.x + r >= min.x
+                    && w.at.x - r <= tile_max.x
+                    && w.at.y + r >= min.y
+                    && w.at.y - r <= tile_max.y
+                {
+                    lakes.push((w.at, r));
+                    water_min = water_min.min(w.at - Vec2::splat(r));
+                    water_max = water_max.max(w.at + Vec2::splat(r));
+                }
+            }
+            crate::terrain::water::WaterKind::River => {
+                if w.stations.len() == 1 {
+                    let s = w.stations[0];
+                    if s.x + r >= min.x
+                        && s.x - r <= tile_max.x
+                        && s.y + r >= min.y
+                        && s.y - r <= tile_max.y
+                    {
+                        lakes.push((s, r));
+                        water_min = water_min.min(s - Vec2::splat(r));
+                        water_max = water_max.max(s + Vec2::splat(r));
+                    }
+                } else {
+                    for pair in w.stations.windows(2) {
+                        let (a, b) = (pair[0], pair[1]);
+                        let smin = a.min(b) - Vec2::splat(r);
+                        let smax = a.max(b) + Vec2::splat(r);
+                        if smax.x >= min.x
+                            && smin.x <= tile_max.x
+                            && smax.y >= min.y
+                            && smin.y <= tile_max.y
+                        {
+                            river_segs.push((a, b, smin, smax, r));
+                            water_min = water_min.min(smin);
+                            water_max = water_max.max(smax);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let has_water = !lakes.is_empty() || !river_segs.is_empty();
+    let in_tile_water = |p: Vec2| -> bool {
+        if !has_water
+            || p.x < water_min.x
+            || p.x > water_max.x
+            || p.y < water_min.y
+            || p.y > water_max.y
+        {
+            return false;
+        }
+        for &(center, r) in &lakes {
+            if p.distance(center) <= r {
+                return true;
+            }
+        }
+        for &(a, b, smin, smax, r) in &river_segs {
+            if p.x < smin.x || p.x > smax.x || p.y < smin.y || p.y > smax.y {
+                continue;
+            }
+            let ab = b - a;
+            let len_sq = ab.length_squared();
+            let closest = if len_sq <= 1e-12 {
+                a
+            } else {
+                a + ab * ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+            };
+            if p.distance(closest) <= r {
+                return true;
+            }
+        }
+        false
+    };
+
+    let base = terrain.base();
+    let mut heights = vec![f32::NAN; cols * rows];
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = min.x + col as f32 * cell;
+            let z = min.y + row as f32 * cell;
+            let p = Vec2::new(x, z);
+            if !terrain.in_field(x, z) || in_tile_water(p) {
+                continue;
+            }
+            if cliffs.is_some_and(|mask| mask.is_cliff_at(p)) {
+                continue;
+            }
+            heights[row * cols + col] = terrain.voxel.surface_top(&base, x, z);
+        }
+    }
+
+    let mut mesh = TriMesh::default();
+    // One vertex per lattice node, emitted lazily so the vertex buffer only
+    // holds nodes an emitted quad actually uses.
+    let mut vertex_of = vec![u32::MAX; cols * rows];
+    let vertex = |mesh: &mut TriMesh, vertex_of: &mut Vec<u32>, index: usize| -> u32 {
+        if vertex_of[index] != u32::MAX {
+            return vertex_of[index];
+        }
+        let col = index % cols;
+        let row = index / cols;
+        let id = mesh.vertices.len() as u32;
+        mesh.vertices.push(
+            Vec3::new(
+                min.x + col as f32 * cell,
+                heights[index],
+                min.y + row as f32 * cell,
+            )
+            .into(),
+        );
+        vertex_of[index] = id;
+        id
+    };
+
+    for row in 0..rows.saturating_sub(1) {
+        for col in 0..cols.saturating_sub(1) {
+            let corners = [
+                row * cols + col,
+                row * cols + col + 1,
+                (row + 1) * cols + col + 1,
+                (row + 1) * cols + col,
+            ];
+            if corners.iter().any(|i| heights[*i].is_nan()) {
+                continue;
+            }
+            let ids = corners.map(|i| vertex(&mut mesh, &mut vertex_of, i));
+            // Counter-clockwise seen from above (+Y normal) — rerecast keeps a
+            // triangle when its normal points up.
+            mesh.indices.push(UVec3::new(ids[0], ids[3], ids[1]));
+            mesh.indices.push(UVec3::new(ids[1], ids[3], ids[2]));
+            mesh.area_types
+                .extend([AreaType::DEFAULT_WALKABLE, AreaType::DEFAULT_WALKABLE]);
+        }
+    }
+    mesh
+}
+
+/// One static collider as navmesh input, or `None` when it is outside the tile
+/// or too low to matter.
+fn obstacle_trimesh(
+    global: &GlobalTransform,
+    collider: &Collider,
+    min: Vec3,
+    max: Vec3,
+) -> Option<TriMesh> {
+    // `Collider::raw` already carries the scale (`Collider::scale` folded it
+    // in), so only translation and rotation come from the transform —
+    // `compute_transform().scale` would apply it a second time.
+    let placement = global.compute_transform();
+    let iso = Transform {
+        translation: placement.translation,
+        rotation: placement.rotation,
+        scale: Vec3::ONE,
+    };
+    let local = collider.raw.compute_local_aabb();
+    let local_min = Vec3::new(local.mins.x, local.mins.y, local.mins.z);
+    let local_max = Vec3::new(local.maxs.x, local.maxs.y, local.maxs.z);
+    if local_max.y - local_min.y < MIN_OBSTACLE_HEIGHT {
+        return None;
+    }
+    // Reject on the world AABB of the (rotated) local AABB: cheap, and the
+    // false positives it lets through are clipped by the voxelisation anyway.
+    let (world_min, world_max) = rotated_aabb(&iso, local_min, local_max);
+    if world_max.x < min.x || world_min.x > max.x || world_max.z < min.z || world_min.z > max.z {
+        return None;
+    }
+
+    let mut mesh = TriMesh::default();
+    if let Some(trimesh) = collider.as_trimesh() {
+        // The baked collision mesh: gateways, arches and bridge decks stay
+        // open because their real geometry is what gets voxelised.
+        for (a, b, c) in trimesh.triangles() {
+            let base = mesh.vertices.len() as u32;
+            for point in [a, b, c] {
+                mesh.vertices.push(iso.transform_point(point).into());
+            }
+            mesh.indices.push(UVec3::new(base, base + 1, base + 2));
+            mesh.area_types.push(AreaType::NOT_WALKABLE);
+        }
+        return Some(mesh);
+    }
+    Some(box_trimesh(&iso, local_min, local_max))
+}
+
+/// World-space AABB of a local AABB placed by `iso`.
+fn rotated_aabb(iso: &Transform, local_min: Vec3, local_max: Vec3) -> (Vec3, Vec3) {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for corner in aabb_corners(local_min, local_max) {
+        let p = iso.transform_point(corner);
+        min = min.min(p);
+        max = max.max(p);
+    }
+    (min, max)
+}
+
+fn aabb_corners(min: Vec3, max: Vec3) -> [Vec3; 8] {
+    [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ]
+}
+
+/// The 12 triangles of a box, as an obstacle.
+fn box_trimesh(iso: &Transform, local_min: Vec3, local_max: Vec3) -> TriMesh {
+    let mut mesh = TriMesh::default();
+    for corner in aabb_corners(local_min, local_max) {
+        mesh.vertices.push(iso.transform_point(corner).into());
+    }
+    // bottom, top, and the four sides — winding does not matter: every face is
+    // NOT_WALKABLE, and rerecast only needs them to voxelise as solid.
+    const FACES: [[u32; 6]; 6] = [
+        [0, 1, 2, 0, 2, 3], // -Y
+        [4, 6, 5, 4, 7, 6], // +Y
+        [0, 4, 5, 0, 5, 1], // -Z
+        [3, 2, 6, 3, 6, 7], // +Z
+        [0, 3, 7, 0, 7, 4], // -X
+        [1, 5, 6, 1, 6, 2], // +X
+    ];
+    for face in FACES {
+        mesh.indices.push(UVec3::new(face[0], face[1], face[2]));
+        mesh.indices.push(UVec3::new(face[3], face[4], face[5]));
+        mesh.area_types
+            .extend([AreaType::NOT_WALKABLE, AreaType::NOT_WALKABLE]);
+    }
+    mesh
+}

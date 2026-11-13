@@ -1,0 +1,875 @@
+//! Render LOD — distance culling and shadow budget for spawned instances.
+//!
+//! `simple-rpg` places ~9700 glTF scenes (6000 `<StaticSpawner>` props, 3200
+//! `<Vegetation>` instances, 484 authored `<GltfScene>`), and every scene
+//! expands into several entities: ~60k entities, all of them extracted,
+//! frustum-checked and rendered into four shadow cascades every frame on a
+//! 4 km map. Nothing beyond the fog is worth that.
+//!
+//! Two knobs, both mirroring what [`crate::luau::ScriptActivation`] already
+//! does for AI:
+//!
+//! * [`CullDistance`] on a **scene root** is the authored radius. Bevy's
+//!   [`VisibilityRange`] does the actual culling: a one-shot pass
+//!   ([`propagate_cull_ranges`]) copies the radius on every renderable of the
+//!   subtree once the scene has spawned. `VisibilityRange` is read on the
+//!   entity that owns the mesh, so — like the shadow marker below — it needs
+//!   a propagation pass and is re-armed after an LOD swap.
+//! * [`NoShadowSubtree`] tags a root whose meshes must not cast. Unlike
+//!   visibility, `NotShadowCaster` is read on the *mesh* entity, so this one
+//!   does need a one-shot propagation pass once the scene has spawned.
+
+use crate::profiler::{Group, timed};
+use bevy::camera::visibility::{NoCpuCulling, VisibilityRange};
+use bevy::gltf::Gltf;
+use bevy::light::NotShadowCaster;
+use bevy::mesh::skinning::SkinnedMesh;
+use bevy::prelude::*;
+
+/// Raio de corte (metros) de uma raiz de cena — a especificação autoral.
+///
+/// O culling em si é do Bevy: [`propagate_cull_ranges`] copia o raio para um
+/// [`VisibilityRange`] em cada malha/luz da subárvore e o
+/// `CheckVisibility` do Bevy esconde o que passa do limite. O componente fica
+/// na raiz porque é lá que o spawner/`AutoCull` o conhece; os filhos é que o
+/// consomem.
+#[derive(Component, Debug, Clone, Copy, Reflect)]
+#[reflect(Component)]
+pub struct CullDistance {
+    /// Distance (meters) past which the subtree stops rendering.
+    pub radius: f32,
+}
+
+impl CullDistance {
+    pub fn new(radius: f32) -> Self {
+        Self { radius }
+    }
+}
+
+/// Marca que a subárvore atual já recebeu o [`VisibilityRange`] de
+/// [`propagate_cull_ranges`]. Removida no `WorldInstanceReady` de uma troca
+/// de tier: a cena nova nasce sem ranges.
+#[derive(Component, Debug, Default, Reflect)]
+#[reflect(Component)]
+pub struct CullRangeApplied;
+
+/// Raiz de uma `<GltfScene>` estática à espera de ganhar [`CullDistance`]
+/// pelo tamanho, quando as malhas da cena tiverem `Aabb`.
+#[derive(Component, Debug, Default, Reflect)]
+#[reflect(Component)]
+pub struct AutoCull;
+
+/// Píxeis de altura (a 720p, FOV ~64°) abaixo dos quais um objeto sai de
+/// cena: a distância de corte é `raio × AUTO_CULL_PER_RADIUS`.
+///
+/// O mundo estático cozia os spawners em `<GltfScene>` soltas SEM culling:
+/// numa vista do vale desenhavam-se 600 arbustos e 200 cactos a centenas de
+/// metros (sub-píxel), e o custo variava 3× entre sítios do mapa. Com o
+/// corte pelo tamanho no ecrã um arbusto (r ≈ 0,6 m) sai aos ~85 m, um cacto
+/// aos ~200 m, e uma muralha fica até ao teto.
+pub const AUTO_CULL_PER_RADIUS: f32 = 144.0;
+/// Piso e teto do corte automático (m), antes do `cull_scale` do preset.
+pub const AUTO_CULL_MIN: f32 = 40.0;
+pub const AUTO_CULL_MAX: f32 = 800.0;
+
+/// Teto de triângulos de uma malha de tier distante (`*_lod2.glb`).
+///
+/// Vários LOD2 do pool chegavam a 8–21 k triângulos (o `moss_rock` tem os
+/// três tiers iguais, 16 k; o lobo 21 k; o pilar 8,4 k) — a geração parou no
+/// piso de costuras UV. Um LOD2 vive a ≥ 70–110 m, onde 2 500 triângulos
+/// chegam para qualquer adereço: [`simplify_far_tiers`] corta-os ao carregar.
+pub const FAR_TIER_MAX_TRIS: usize = 2500;
+
+/// Índices simplificados para ≤ `target_tris`, ou `None` se não reduzir.
+///
+/// Só a simplificação que respeita costuras (erro até 5 % da extensão).
+/// Se as costuras UV a travarem acima do alvo, fica onde parou: a `sloppy`
+/// (e o `gltfpack -sa`) solda vértices de ilhas diferentes do atlas e o
+/// triângulo passa a amostrar texturas de outra peça — a casa do pastor
+/// aparecia toda embaralhada, mesmo de perto.
+pub fn simplify_far_indices(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    target_tris: usize,
+) -> Option<Vec<u32>> {
+    let current = indices.len() / 3;
+    if current <= target_tris {
+        return None;
+    }
+    let target = target_tris * 3;
+    let out = meshopt::simplify_decoder(
+        indices,
+        positions,
+        target,
+        0.05,
+        meshopt::SimplifyOptions::None,
+        None,
+    );
+    (!out.is_empty() && out.len() < indices.len()).then_some(out)
+}
+
+/// Simplifica, ao carregar, as malhas de `*_lod2.glb` acima de
+/// [`FAR_TIER_MAX_TRIS`]. Uma vez por asset (o `Added`): sem churn de upload.
+pub fn simplify_far_tiers(
+    mut events: MessageReader<AssetEvent<Mesh>>,
+    // `Option`: apps mínimas (testes de LOD/animação) montam o plugin sem
+    // AssetPlugin; a validação rígida abortava o sistema em vez de o saltar.
+    server: Option<Res<AssetServer>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    mut total: Local<(usize, usize, usize)>,
+    // Triângulos que ESTE sistema escreveu por asset: distingue o nosso
+    // próprio `Modified` (o `get_mut` abaixo) de um asset RECARREGADO com a
+    // malha original. Sem isto, tratar `Modified` re-simplificava em cascata
+    // a cada frame (a malha simplificada ainda pode estar acima do alvo por
+    // causa das costuras UV).
+    mut written_tris: Local<std::collections::HashMap<bevy::asset::AssetId<Mesh>, usize>>,
+) {
+    let (Some(server), Some(mut meshes)) = (server, meshes) else {
+        return;
+    };
+    let mut touched = false;
+    for event in events.read() {
+        // `Modified` conta: um asset recarregado (hot-reload no editor,
+        // reimport do pack) devolve a malha ORIGINAL ao Assets e sem isto o
+        // LOD2 voltava aos 8–21 k triângulos até reiniciar o jogo.
+        let id = match event {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => *id,
+            _ => continue,
+        };
+        let is_far = server
+            .get_path(id)
+            .is_some_and(|p| p.path().to_string_lossy().ends_with("_lod2.glb"));
+        if !is_far {
+            continue;
+        }
+        let Some(mesh) = meshes.get(id) else {
+            continue;
+        };
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            continue;
+        };
+        let indices: Vec<u32> = match mesh.indices() {
+            Some(bevy::mesh::Indices::U32(v)) => v.clone(),
+            Some(bevy::mesh::Indices::U16(v)) => v.iter().map(|i| *i as u32).collect(),
+            None => continue,
+        };
+        // Evento que nós próprios causámos (mesma contagem que escrevemos):
+        // não é um reload, não há nada a fazer.
+        if written_tris.get(&id).copied() == Some(indices.len() / 3) {
+            continue;
+        }
+        let Some(simplified) = simplify_far_indices(positions, &indices, FAR_TIER_MAX_TRIS) else {
+            continue;
+        };
+        total.0 += 1;
+        total.1 += indices.len() / 3;
+        total.2 += simplified.len() / 3;
+        let tris = simplified.len() / 3;
+        if let Some(mut mesh) = meshes.get_mut(id) {
+            mesh.insert_indices(bevy::mesh::Indices::U32(simplified));
+        }
+        written_tris.insert(id, tris);
+        touched = true;
+    }
+    if touched {
+        info!(
+            "lod2: {} malhas simplificadas ({} → {} triângulos)",
+            total.0, total.1, total.2
+        );
+    }
+}
+
+/// Distância de corte para um objeto de raio `radius` (m).
+pub fn auto_cull_radius(radius: f32, scale: f32) -> f32 {
+    (radius * auto_cull_per_radius()).clamp(AUTO_CULL_MIN, AUTO_CULL_MAX) * scale
+}
+
+/// [`AUTO_CULL_PER_RADIUS`], ou o equivalente a `VIBER_AUTO_CULL_PX`
+/// píxeis de altura mínima (8 px = o default) — o knob do A/B.
+fn auto_cull_per_radius() -> f32 {
+    static FACTOR: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *FACTOR.get_or_init(|| {
+        std::env::var("VIBER_AUTO_CULL_PX")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|px| *px > 0.0)
+            .map_or(AUTO_CULL_PER_RADIUS, |px| AUTO_CULL_PER_RADIUS * 8.0 / px)
+    })
+}
+
+/// Default cull radius (meters) for `<StaticSpawner>` props — trees, rocks,
+/// crates. Far enough that a treeline still reads at the fog line.
+pub const DEFAULT_STATIC_CULL: f32 = 320.0;
+
+/// Default cull radius for `<Vegetation>` — grass and flowers, which are
+/// sub-meter and stop contributing well before the props do.
+pub const DEFAULT_VEGETATION_CULL: f32 = 80.0;
+
+/// Default cull radius for `<DynamicSpawner>` creatures. Beyond this their
+/// scripts are frozen anyway (`ScriptActivation`, 45 m by default).
+pub const DEFAULT_DYNAMIC_CULL: f32 = 160.0;
+
+/// Marks a scene root whose meshes must not cast shadows. Removed once the
+/// propagation lands (the scene spawns asynchronously, so the marker waits).
+#[derive(Component, Debug, Reflect)]
+#[reflect(Component)]
+pub struct NoShadowSubtree;
+
+/// Mesh LOD ladder for one spawned instance.
+///
+/// The `simple-rpg` worlds already author `lod1-url` / `lod2-url` and the
+/// `lod-threshold-near` / `lod-threshold-mid` cuts on every `<GLTFLoader>`
+/// template — the old engine honored them, Viber dropped them as no-ops and drew
+/// the hero mesh of every pine at 200 m. This component restores the ladder:
+/// swapping `WorldAssetRoot` despawns the old scene subtree and spawns the
+/// new one (`world_instance_spawner` reacts to `Changed<WorldAssetRoot>`),
+/// so only one tier is resident per instance at a time — triangles *and*
+/// VRAM, not just draw calls.
+#[derive(Component, Debug, Clone, Reflect)]
+#[reflect(Component)]
+pub struct MeshLod {
+    /// Scene per tier, coarsest last. Tier 0 is always present.
+    pub tiers: Vec<Handle<bevy::world_serialization::WorldAsset>>,
+    /// The glTF asset each tier's scene came from, parallel to `tiers`.
+    ///
+    /// Animation clips are per-gltf assets, so when a swap re-arms the
+    /// animation bind ([`crate::animation::rearm_after_scene_swap`]) the new
+    /// tier's own gltf has to travel with the swap.
+    pub gltf_tiers: Vec<Handle<Gltf>>,
+    /// Distance at which tier 0 gives way to tier 1.
+    pub near: f32,
+    /// Distance at which tier 1 gives way to tier 2.
+    pub mid: f32,
+    /// Tier currently attached to `WorldAssetRoot`.
+    pub current: u8,
+    /// Re-tag the fresh subtree as a non-caster after a swap.
+    pub no_shadows: bool,
+}
+
+impl MeshLod {
+    /// Tier index for `distance`, with a sticky band so an instance sitting
+    /// on a threshold does not respawn its subtree every frame.
+    fn tier_for(&self, distance: f32, current: u8) -> u8 {
+        // `already_coarse`: the instance is *on* the coarser tier, so the
+        // edge moves inward — it keeps the cheap mesh a little longer.
+        // Otherwise the edge moves outward and the detailed mesh holds.
+        let hysteresis = |edge: f32, already_coarse: bool| {
+            if already_coarse {
+                edge * (1.0 - LOD_HYSTERESIS)
+            } else {
+                edge * (1.0 + LOD_HYSTERESIS)
+            }
+        };
+        let last = (self.tiers.len() as u8).saturating_sub(1);
+        let near = hysteresis(self.near, current >= 1);
+        let mid = hysteresis(self.mid, current >= 2);
+        let wanted = if distance >= mid {
+            2
+        } else if distance >= near {
+            1
+        } else {
+            0
+        };
+        wanted.min(last)
+    }
+}
+
+/// Relative width of the sticky band around each LOD threshold.
+const LOD_HYSTERESIS: f32 = 0.08;
+
+/// Scene swaps allowed per frame. A swap despawns and respawns a subtree, so
+/// a camera teleport (fast travel) must not try to re-tier 6000 props in one
+/// frame — it drains over the next few instead.
+///
+/// Overridable with `VIBER_LOD_SWAP_BUDGET` (`0` disables the ladder without
+/// disabling the culling): the two halves of this plugin have very different
+/// costs, and telling them apart in a profile needs them to be separable.
+/// Com o cross-fade de LOD os dois tiers convivem um instante, por isso o
+/// teto desce: um teleporte não duplica a VRAM de 24 cenas ao mesmo tempo.
+pub const MAX_LOD_SWAPS_PER_FRAME: usize = 12;
+/// Quanto tempo (s) o tier antigo fica por cima, em dither temporal.
+pub const LOD_CROSSFADE_SECS: f32 = 0.12;
+
+/// Resolved swap budget: `VIBER_LOD_SWAP_BUDGET`, else the default.
+fn swap_budget() -> usize {
+    std::env::var("VIBER_LOD_SWAP_BUDGET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MAX_LOD_SWAPS_PER_FRAME)
+}
+
+/// Intervalo entre varreduras da escada (s). `VIBER_LOD_SCAN_HZ=0` desliga o
+/// throttle — o braço de controlo do A/B contra o scan por frame.
+fn lod_scan_interval() -> f32 {
+    let hz = std::env::var("VIBER_LOD_SCAN_HZ")
+        .ok()
+        .and_then(|raw| raw.parse::<f32>().ok())
+        .filter(|hz| hz.is_finite() && *hz >= 0.0)
+        .unwrap_or(10.0);
+    if hz == 0.0 { 0.0 } else { 1.0 / hz }
+}
+
+/// Scene swaps performed on the last frame, and instances still waiting.
+///
+/// A swap is the expensive half of the ladder (despawn + respawn of a glTF
+/// subtree); `pending` staying pegged means the budget is saturated and the
+/// queue never drains, which reads as a permanent stutter while walking.
+#[derive(Resource, Debug, Default, Clone, Copy, Reflect)]
+#[reflect(Resource)]
+pub struct MeshLodStats {
+    /// Swaps applied on the last frame.
+    pub swaps_last_frame: usize,
+    /// Instances that wanted a different tier but ran out of budget.
+    pub pending: usize,
+}
+
+/// Registers the render-LOD systems.
+pub struct RenderLodPlugin;
+
+impl bevy::app::Plugin for RenderLodPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        app.init_resource::<MeshLodStats>()
+            // `simplify_far_tiers` lê `AssetEvent<Mesh>`; sem o registo aqui,
+            // apps mínimas (o teste de swap de LOD) abortavam com "Message not
+            // initialized". `add_message` é idempotente.
+            .add_message::<AssetEvent<Mesh>>()
+            .add_observer(retag_no_shadow_on_ready)
+            .add_systems(bevy::app::PreUpdate, simplify_far_tiers)
+            .add_systems(
+                bevy::app::PostUpdate,
+                (
+                    timed(Group::Render, auto_cull_from_bounds),
+                    timed(Group::Render, update_mesh_lod),
+                    timed(Group::Render, propagate_cull_ranges),
+                    timed(Group::Render, propagate_no_shadow),
+                )
+                    .chain()
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            );
+    }
+}
+
+/// Re-marks a non-casting LOD instance once its NEW tier has spawned, and
+/// re-arms its cull range (the fresh subtree has neither tag).
+///
+/// A swap only requests the scene: the scene spawner despawns the old
+/// subtree and spawns the new one in the next frame's `SpawnScene`. Tagging
+/// at swap time let [`propagate_no_shadow`] find the OLD (already tagged)
+/// meshes and clear the marker, so every fresh tier cast shadows again.
+/// `WorldInstanceReady` fires right after the spawn, before `PostUpdate`, so
+/// the new meshes are tagged before they are ever extracted.
+fn retag_no_shadow_on_ready(
+    ready: On<bevy::world_serialization::WorldInstanceReady>,
+    instances: Query<(&MeshLod, Option<&CullDistance>)>,
+    mut commands: Commands,
+) {
+    let Ok((lod, cull)) = instances.get(ready.entity) else {
+        return;
+    };
+    if lod.no_shadows {
+        commands.entity(ready.entity).try_insert(NoShadowSubtree);
+    }
+    if cull.is_some() {
+        commands.entity(ready.entity).remove::<CullRangeApplied>();
+    }
+}
+
+/// Swaps each instance's scene to the tier its camera distance calls for.
+///
+/// Só instâncias com `Visibility::Hidden` (QA, script) são saltadas: a
+/// distância é agora do `VisibilityRange` do Bevy, que não escreve
+/// `Visibility` — uma instância fora de alcance continua a trocar de tier
+/// (para o mais barato) e volta pronta quando a câmara chega perto.
+fn update_mesh_lod(
+    editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    // `Option`: apps mínimas de teste não montam o TimePlugin; sem tempo,
+    // não há throttle (o comportamento antigo).
+    time: Option<Res<Time>>,
+    mut stats: ResMut<MeshLodStats>,
+    boost: Option<Res<crate::cinematic::StreamingBoost>>,
+    mut last_scan: Local<Option<(Vec3, f32)>>,
+    mut instances: Query<(
+        &GlobalTransform,
+        &mut MeshLod,
+        &mut bevy::world_serialization::WorldAssetRoot,
+        &Visibility,
+    )>,
+) {
+    // Modo editor: a distância mede-se à câmara de editor (a de jogo está
+    // inactiva mas continua na query — ver `active_camera_eye`).
+    let Some(camera) = crate::editor_camera::active_camera_eye(&editor, &cameras) else {
+        return;
+    };
+    let eye = camera.translation();
+    let boost_active = boost.as_deref().is_some_and(|b| b.0);
+    // ~10 Hz chegam para a escada: o hysteresis de 8% já evita pop. Com
+    // swaps pendentes ou cinemática, continua a drenar todos os frames.
+    if let Some(time) = time.as_deref() {
+        let now = time.elapsed_secs();
+        let scan_interval = lod_scan_interval();
+        if scan_interval > 0.0
+            && !boost_active
+            && stats.pending == 0
+            && let Some((last_eye, last_time)) = *last_scan
+            && now - last_time < scan_interval
+            && eye.distance_squared(last_eye) < 4.0
+        {
+            return;
+        }
+        *last_scan = Some((eye, now));
+    }
+    // Corte de cinemática em curso (ecrã em negro): drenar a fila depressa.
+    let mut budget = swap_budget() * if boost_active { 10 } else { 1 };
+    if budget == 0 {
+        // `VIBER_LOD_SWAP_BUDGET=0` DESLIGA a escada (braço de A/B do
+        // profiler). Reportar `pending` aqui dizia ao `tick_cinematic` que o
+        // mundo estava em streaming para sempre: cada cena esperava o teto
+        // de 7 s em negro no arranque.
+        *stats = MeshLodStats::default();
+        return;
+    }
+    let mut swaps = 0usize;
+    let mut pending = 0usize;
+    for (transform, mut lod, mut root, visibility) in &mut instances {
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+        if budget == 0 {
+            // Ainda conta o trabalho por fazer: é isto que distingue "a fila
+            // drenou" de "a fila está saturada todos os frames".
+            let distance = transform.translation().distance(eye);
+            if lod.tier_for(distance, lod.current) != lod.current {
+                pending += 1;
+            }
+            continue;
+        }
+        let distance = transform.translation().distance(eye);
+        let wanted = lod.tier_for(distance, lod.current);
+        if wanted == lod.current {
+            continue;
+        }
+        let Some(scene) = lod.tiers.get(wanted as usize).cloned() else {
+            continue;
+        };
+        // Mutating `WorldAssetRoot` is the swap: the spawner despawns the old
+        // instance and spawns the new scene as children of this same entity,
+        // so the transform, collider and script all survive untouched. The
+        // animation bind does not survive — it re-arms off this very change
+        // (see `crate::animation::rearm_after_scene_swap`).
+        // The fresh subtree earns its `NotShadowCaster` tags again in
+        // `retag_no_shadow_on_ready`, once it has actually spawned.
+        root.0 = scene;
+        lod.current = wanted;
+        budget -= 1;
+        swaps += 1;
+    }
+    stats.swaps_last_frame = swaps;
+    stats.pending = pending;
+}
+
+/// Copies the [`CullDistance`] radius onto every renderable below the root as
+/// a Bevy [`VisibilityRange`].
+///
+/// Bevy reads `VisibilityRange` on the entity that owns the mesh/light (it is
+/// not inherited), and a glTF scene spawns its meshes a few frames after the
+/// root exists — hence the one-shot marker: wait for the subtree to exist,
+/// tag it, and stop walking it every frame. The marker is cleared again on
+/// `WorldInstanceReady` (see [`retag_no_shadow_on_ready`]) because an LOD swap
+/// replaces the subtree.
+///
+/// The range is abrupt (`radius..radius`): the previous custom cull had no
+/// fade either, and a crossfade would trade the (removed) hysteresis band for
+/// per-material dithering on every prop of the map.
+fn propagate_cull_ranges(
+    mut commands: Commands,
+    roots: Query<(Entity, &CullDistance), Without<CullRangeApplied>>,
+    children: Query<&Children>,
+    renderables: Query<
+        (Has<VisibilityRange>, Has<Mesh3d>, Has<SkinnedMesh>),
+        Or<(With<Mesh3d>, With<PointLight>, With<SpotLight>)>,
+    >,
+) {
+    // Piloto Bevy 0.19: o frustum/range passa a ser culling da GPU. Só em
+    // malhas estáticas; luzes e skinned continuam no caminho CPU. Opt-in
+    // porque em backends sem GPU culling (DX12/WebGL) o `NoCpuCulling` não
+    // tem rede — aí não se liga.
+    let gpu_culling = std::env::var("VIBER_GPU_CULLING").as_deref() == Ok("1");
+    for (root, cull) in &roots {
+        let range = VisibilityRange::abrupt(0.0, cull.radius.max(1.0));
+        let mut found = 0usize;
+        for descendant in children.iter_descendants(root) {
+            let Ok((already_tagged, is_mesh, is_skinned)) = renderables.get(descendant) else {
+                continue;
+            };
+            found += 1;
+            if !already_tagged {
+                commands.entity(descendant).insert(range.clone());
+            }
+            if gpu_culling && is_mesh && !is_skinned {
+                commands.entity(descendant).insert(NoCpuCulling);
+            }
+        }
+        // Sem malhas ainda: a cena não spawnou, o marcador fica para o
+        // próximo frame (tal como o `NoShadowSubtree`).
+        if found > 0 {
+            commands.entity(root).insert(CullRangeApplied);
+        }
+    }
+}
+
+/// Dá [`CullDistance`] às raízes [`AutoCull`] assim que a cena tem malhas
+/// com `Aabb`: o raio é o da maior esfera envolvente das malhas (em espaço
+/// de mundo, com a escala da instância), medido à origem da raiz.
+pub fn auto_cull_from_bounds(
+    mut commands: Commands,
+    roots: Query<(Entity, &GlobalTransform), With<AutoCull>>,
+    children: Query<&Children>,
+    meshes: Query<(&GlobalTransform, &bevy::camera::primitives::Aabb), With<Mesh3d>>,
+    time: Res<Time<Real>>,
+    mut report: Local<(f32, usize)>,
+) {
+    // Diagnóstico barato: a cada 10 s com raízes pendentes, quantas faltam e
+    // quantas já ganharam corte (uma raiz sem malhas nunca resolve).
+    report.0 += time.delta_secs();
+    if report.0 >= 10.0 {
+        report.0 = 0.0;
+        let pending = roots.iter().count();
+        if pending > 0 {
+            info!("auto-cull: {} resolvidas, {pending} pendentes", report.1);
+        }
+    }
+    let scale = crate::graphics::cull_scale();
+    for (root, root_xf) in &roots {
+        let origin = root_xf.translation();
+        let mut radius = 0.0_f32;
+        let mut found = false;
+        for node in children.iter_descendants(root) {
+            let Ok((xf, aabb)) = meshes.get(node) else {
+                continue;
+            };
+            found = true;
+            let center = xf.transform_point(Vec3::from(aabb.center));
+            let extent = Vec3::from(aabb.half_extents) * xf.scale().abs();
+            radius = radius.max(center.distance(origin) + extent.length());
+        }
+        if found {
+            report.1 += 1;
+            commands
+                .entity(root)
+                .remove::<AutoCull>()
+                .try_insert(CullDistance::new(auto_cull_radius(radius, scale)));
+        }
+    }
+}
+
+/// Inserts [`NotShadowCaster`] on every mesh below a [`NoShadowSubtree`] root.
+///
+/// `NotShadowCaster` is queried on the entity that owns the `Mesh3d`, and
+/// glTF scenes spawn their meshes as descendants a few frames after the root
+/// exists — hence a marker that survives until the meshes show up.
+fn propagate_no_shadow(
+    mut commands: Commands,
+    roots: Query<Entity, With<NoShadowSubtree>>,
+    children: Query<&Children>,
+    meshes: Query<Has<NotShadowCaster>, With<Mesh3d>>,
+) {
+    for root in &roots {
+        let mut found = 0usize;
+        for descendant in children.iter_descendants(root) {
+            let Ok(already_tagged) = meshes.get(descendant) else {
+                continue;
+            };
+            found += 1;
+            if !already_tagged {
+                commands.entity(descendant).insert(NotShadowCaster);
+            }
+        }
+        // The marker clears as soon as the scene has *any* mesh — counting
+        // only the newly tagged ones would keep re-walking the subtree of an
+        // instance whose meshes were all tagged already (an LOD swap that
+        // reused a cached scene).
+        if found > 0 {
+            commands.entity(root).remove::<NoShadowSubtree>();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O raio autoral vira um `VisibilityRange` em cada malha da subárvore e
+    /// o passe pára depois de a marcar (`CullRangeApplied`).
+    #[test]
+    fn test_cull_range_lands_on_every_renderable_descendant() {
+        let mut app = App::new();
+        app.add_systems(Update, propagate_cull_ranges);
+        let root = app.world_mut().spawn(CullDistance::new(100.0)).id();
+        let mesh = app
+            .world_mut()
+            .spawn((Mesh3d::default(), ChildOf(root)))
+            .id();
+        let deep = app
+            .world_mut()
+            .spawn((Mesh3d::default(), ChildOf(mesh)))
+            .id();
+        app.update();
+        for entity in [mesh, deep] {
+            let range = app
+                .world()
+                .get::<VisibilityRange>(entity)
+                .expect("a malha ganha VisibilityRange");
+            assert_eq!(range.end_margin.end, 100.0);
+            assert!(range.is_abrupt(), "sem crossfade — o cull antigo não tinha");
+        }
+        assert!(
+            app.world().get::<CullRangeApplied>(root).is_some(),
+            "a subárvore já está marcada"
+        );
+        // Segundo frame: sem trabalho (o marcador tirou a raiz da query).
+        app.update();
+    }
+
+    /// Uma raiz sem malhas (a cena ainda não spawnou) espera; quando a malha
+    /// aparece, o passe aplica e limpa a espera.
+    #[test]
+    fn test_cull_range_waits_for_the_scene_to_spawn() {
+        let mut app = App::new();
+        app.add_systems(Update, propagate_cull_ranges);
+        let root = app.world_mut().spawn(CullDistance::new(80.0)).id();
+        app.update();
+        assert!(
+            app.world().get::<CullRangeApplied>(root).is_none(),
+            "sem malhas ainda não há o que marcar"
+        );
+        let mesh = app
+            .world_mut()
+            .spawn((Mesh3d::default(), ChildOf(root)))
+            .id();
+        app.update();
+        assert!(app.world().get::<VisibilityRange>(mesh).is_some());
+        assert!(app.world().get::<CullRangeApplied>(root).is_some());
+    }
+
+    /// Uma troca de tier despawna a subárvore antiga e spawna outra sem
+    /// `VisibilityRange`: o `WorldInstanceReady` re-arma o passe.
+    #[test]
+    fn test_lod_swap_rearms_the_cull_range() {
+        let mut app = App::new();
+        app.add_observer(retag_no_shadow_on_ready);
+        let root = app
+            .world_mut()
+            .spawn((ladder(2), CullDistance::new(120.0), CullRangeApplied))
+            .id();
+        let instance_id = {
+            let world = app.world_mut();
+            world.init_resource::<bevy::world_serialization::WorldInstanceSpawner>();
+            world.resource_scope(
+                |_, mut spawner: Mut<bevy::world_serialization::WorldInstanceSpawner>| {
+                    spawner.spawn_as_child(Handle::default(), root)
+                },
+            )
+        };
+        app.world_mut()
+            .trigger(bevy::world_serialization::WorldInstanceReady {
+                entity: root,
+                instance_id,
+            });
+        app.update();
+        assert!(
+            app.world().get::<CullRangeApplied>(root).is_none(),
+            "o tier novo vai ganhar ranges no próximo passe"
+        );
+    }
+
+    /// Uma grelha densa desce para o teto; uma malha já leve fica intacta.
+    #[test]
+    fn test_far_tier_simplification_hits_the_budget() {
+        let n = 80;
+        let mut positions = Vec::new();
+        for z in 0..=n {
+            for x in 0..=n {
+                let (fx, fz) = (x as f32 / n as f32, z as f32 / n as f32);
+                positions.push([fx, (fx * 6.0).sin() * 0.1 + (fz * 5.0).cos() * 0.1, fz]);
+            }
+        }
+        let mut indices = Vec::new();
+        let row = n as u32 + 1;
+        for z in 0..n as u32 {
+            for x in 0..n as u32 {
+                let i = z * row + x;
+                indices.extend_from_slice(&[i, i + row, i + 1, i + 1, i + row, i + row + 1]);
+            }
+        }
+        assert_eq!(indices.len() / 3, 12_800);
+        let out = simplify_far_indices(&positions, &indices, 2500).expect("reduz");
+        assert!(out.len() / 3 <= 5000, "{} tri", out.len() / 3);
+        assert!(simplify_far_indices(&positions, &indices[..300], 2500).is_none());
+    }
+
+    /// Duas ilhas UV que partilham uma aresta (vértices duplicados na mesma
+    /// posição): nenhum triângulo simplificado pode misturar as ilhas.
+    #[test]
+    fn test_simplify_far_never_welds_uv_islands() {
+        let n = 40usize;
+        let row = n as u32 + 1;
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for island in 0..2u32 {
+            let base = positions.len() as u32;
+            for z in 0..=n {
+                for x in 0..=n {
+                    let fx = x as f32 / n as f32 + island as f32;
+                    let fz = z as f32 / n as f32;
+                    positions.push([fx, (fx * 7.0).sin() * 0.05, fz]);
+                }
+            }
+            for z in 0..n as u32 {
+                for x in 0..n as u32 {
+                    let i = base + z * row + x;
+                    indices.extend_from_slice(&[i, i + row, i + 1, i + 1, i + row, i + row + 1]);
+                }
+            }
+        }
+        let per_island = row * row;
+        let out = simplify_far_indices(&positions, &indices, 200).expect("reduz");
+        for tri in out.chunks(3) {
+            let island = tri[0] / per_island;
+            assert!(tri.iter().all(|&v| v / per_island == island), "{tri:?}");
+        }
+    }
+
+    /// Arbusto sai cedo, muralha fica até ao teto, nada abaixo do piso.
+    #[test]
+    fn test_auto_cull_radius_follows_screen_size() {
+        assert!((auto_cull_radius(0.6, 1.0) - 86.4).abs() < 0.1);
+        assert_eq!(auto_cull_radius(0.1, 1.0), AUTO_CULL_MIN);
+        assert_eq!(auto_cull_radius(20.0, 1.0), AUTO_CULL_MAX);
+        assert!((auto_cull_radius(0.6, 0.7) - 60.48).abs() < 0.1);
+    }
+
+    /// `VIBER_LOD_SWAP_BUDGET=0` desliga a escada: as instâncias com tier
+    /// diferente NÃO estão "em espera" (o `tick_cinematic` lê `pending` como
+    /// streaming e esperava o teto de 7 s em negro em cada cena).
+    #[test]
+    fn disabled_ladder_reports_no_pending_work() {
+        // (set_var é unsafe na edition 2024; nenhum outro teste lê esta env.)
+        unsafe { std::env::set_var("VIBER_LOD_SWAP_BUDGET", "0") };
+        let mut app = App::new();
+        app.init_resource::<MeshLodStats>()
+            .add_systems(Update, update_mesh_lod);
+        app.world_mut().spawn((
+            Camera3d::default(),
+            GlobalTransform::from_translation(Vec3::ZERO),
+        ));
+        app.world_mut().spawn((
+            GlobalTransform::from_translation(Vec3::new(500.0, 0.0, 0.0)),
+            ladder(3),
+            bevy::world_serialization::WorldAssetRoot(Handle::default()),
+            Visibility::Inherited,
+        ));
+        app.update();
+        let stats = *app.world().resource::<MeshLodStats>();
+        assert_eq!(stats.pending, 0, "escada desligada não tem fila");
+        assert_eq!(stats.swaps_last_frame, 0);
+        unsafe { std::env::remove_var("VIBER_LOD_SWAP_BUDGET") };
+    }
+
+    #[test]
+    fn test_no_shadow_marker_tags_mesh_descendants_and_clears() {
+        let mut app = App::new();
+        app.add_systems(Update, propagate_no_shadow);
+        let mesh = app.world_mut().spawn(Mesh3d::default()).id();
+        let root = app.world_mut().spawn(NoShadowSubtree).add_child(mesh).id();
+        app.update();
+        assert!(app.world().get::<NotShadowCaster>(mesh).is_some());
+        assert!(
+            app.world().get::<NoShadowSubtree>(root).is_none(),
+            "the marker clears once the meshes are tagged"
+        );
+    }
+
+    fn ladder(tiers: usize) -> MeshLod {
+        MeshLod {
+            tiers: (0..tiers).map(|_| Handle::default()).collect(),
+            gltf_tiers: (0..tiers).map(|_| Handle::default()).collect(),
+            near: 40.0,
+            mid: 100.0,
+            current: 0,
+            no_shadows: false,
+        }
+    }
+
+    #[test]
+    fn test_tier_follows_the_authored_thresholds() {
+        let lod = ladder(3);
+        assert_eq!(lod.tier_for(10.0, 0), 0);
+        assert_eq!(lod.tier_for(60.0, 0), 1);
+        assert_eq!(lod.tier_for(200.0, 0), 2);
+    }
+
+    #[test]
+    fn test_tier_is_clamped_to_the_tiers_the_template_authored() {
+        // Only lod0 + lod1 exist: a far prop stops at tier 1 instead of
+        // indexing past the end of the ladder.
+        let lod = ladder(2);
+        assert_eq!(lod.tier_for(500.0, 0), 1);
+    }
+
+    #[test]
+    fn test_tier_hysteresis_holds_across_the_threshold() {
+        let lod = ladder(3);
+        // Coming from tier 0, the 40 m edge moves out to 43.2 m…
+        assert_eq!(lod.tier_for(41.0, 0), 0);
+        // …and coming back from tier 1 it moves in to 36.8 m.
+        assert_eq!(lod.tier_for(38.0, 1), 1);
+        assert_eq!(lod.tier_for(36.0, 1), 0);
+    }
+
+    /// The fresh tier of a non-casting instance is re-marked when its scene
+    /// instance becomes ready — not at swap time, when only the old (already
+    /// tagged) subtree exists.
+    #[test]
+    fn test_scene_ready_re_marks_non_casting_lod_instances() {
+        let mut app = App::new();
+        app.add_observer(retag_no_shadow_on_ready);
+        let mut quiet = ladder(2);
+        quiet.no_shadows = true;
+        let caster = app.world_mut().spawn(ladder(2)).id();
+        let non_caster = app.world_mut().spawn(quiet).id();
+        let instance_id = {
+            let world = app.world_mut();
+            world.init_resource::<bevy::world_serialization::WorldInstanceSpawner>();
+            world.resource_scope(
+                |_, mut spawner: Mut<bevy::world_serialization::WorldInstanceSpawner>| {
+                    spawner.spawn_as_child(Handle::default(), non_caster)
+                },
+            )
+        };
+        for entity in [caster, non_caster] {
+            app.world_mut()
+                .trigger(bevy::world_serialization::WorldInstanceReady {
+                    entity,
+                    instance_id,
+                });
+        }
+        app.update();
+        assert!(app.world().get::<NoShadowSubtree>(non_caster).is_some());
+        assert!(app.world().get::<NoShadowSubtree>(caster).is_none());
+    }
+
+    #[test]
+    fn test_no_shadow_marker_waits_for_the_scene_to_spawn() {
+        let mut app = App::new();
+        app.add_systems(Update, propagate_no_shadow);
+        let root = app.world_mut().spawn(NoShadowSubtree).id();
+        app.update();
+        assert!(
+            app.world().get::<NoShadowSubtree>(root).is_some(),
+            "no meshes yet — the marker survives for a later frame"
+        );
+    }
+}

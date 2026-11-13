@@ -1,0 +1,220 @@
+//! Runtime de scripting Luau: cada chunk `world_dir/scripts/<path>` define
+//! `function on_update(dt)` e conduz a sua entidade através da API `viber`.
+//!
+//! Organização por categoria:
+//! - [`host`]: a VM partilhada, registry de chunks e ciclo de vida;
+//! - [`ctx`]: o snapshot por-chamada lido pelas closures `viber.*`;
+//! - [`commands`]: a fila de comandos Lua→engine, aplicada pós-frame;
+//! - [`runtime`]: os sistemas Bevy (o único sítio onde o mundo é mutado);
+//! - [`api`]: a tabela `viber.*` de jogo, composta de grupos;
+//! - [`input`]/[`events`]/[`timers`]/[`entity`]/[`game`]: grupos da API;
+//! - [`sfx`]: registry de sons e fuzzy match de gestos.
+//!
+//! Design notes:
+//! - One shared sandboxed Luau VM ([`LuaScriptHost`]); every script chunk is
+//!   compiled with its own environment table (`__index` → real globals) so
+//!   scripts cannot clobber each other's globals.
+//! - The owning entity is *injected* into each call: before invoking
+//!   `on_update` the system stores a [`ScriptCtx`] snapshot (entity, position
+//!   snapshot, player position, clock) as Lua app data; the `viber` closures
+//!   read it back. Setters only queue commands — applied after all scripts
+//!   ran. No `unsafe`, no raw `World` pointers.
+//! - Script errors are pcall-style: reported once per script path
+//!   ([`LuaScriptHost::warn_once`]) and never abort the engine.
+//!
+//! WIRED-BY-ORCHESTRATOR: [`LuaScriptRef`] is inserted by the spawn step
+//! (recipes/spawn); the orchestrator also adds [`LuauScriptPlugin`] to the
+//! `App` with the world's `scripts/` directory.
+
+pub mod api;
+pub mod commands;
+pub mod components;
+pub mod contacts;
+pub mod ctx;
+pub mod decision;
+pub mod ecs;
+pub mod entity;
+pub mod events;
+pub mod exports;
+pub mod fx;
+pub mod game;
+pub mod host;
+pub mod input;
+pub mod nlu;
+pub mod ownership;
+pub mod props;
+pub mod runtime;
+pub mod sfx;
+pub mod signals;
+pub mod terrain;
+pub mod timers;
+
+#[cfg(test)]
+mod tests;
+
+pub use commands::ScriptCommand;
+pub use components::{
+    DEFAULT_ACTIVATION_RADIUS, Groups, LuaScriptRef, ScriptActivation, ScriptInteraction,
+    ScriptProps, ScriptSay, ScriptToast, SignalConnections, link_components,
+};
+pub use ctx::{ScriptCtx, SurfaceCache, SurfaceRegistries};
+pub use events::{EVENT_QUEUE_CAP, ScriptEventQueue, ScriptGameEvent};
+pub use host::{LoadedScript, LuaScriptHost, LuaScriptRegistry};
+pub use input::{InputCode, input_code_from_str, key_code_from_str};
+pub use ownership::ScriptSystemOwners;
+pub use runtime::{
+    LuauRuntimeLocals, aggro_alert_system, luau_on_add, luau_on_remove, luau_update,
+};
+pub use sfx::{SFX_NAME_REGISTRY, match_gesture_clip, sfx_clip_from_str};
+
+use crate::profiler::{Group, timed};
+use bevy::prelude::*;
+use std::path::PathBuf;
+
+/// Bevy plugin wiring the Luau runtime: inserts [`LuaScriptHost`], then runs
+/// `on_add` → `update` → `on_remove` hooks every frame. The orchestrator adds
+/// it with the world's scripts dir (`world_dir.join("scripts")`).
+pub struct LuauScriptPlugin {
+    /// Directory scripts load from: `<world_dir>/scripts`.
+    pub scripts_dir: PathBuf,
+    /// Reconstrói o espelho de `viber.ecs` por frame. Desligado, o sistema
+    /// exclusivo não corre; `viber.ecs` continua disponível para o bridge
+    /// através de `build_mirror_live` (custo só quando alguém o pede).
+    pub ecs_mirror: bool,
+}
+
+impl Default for LuauScriptPlugin {
+    fn default() -> Self {
+        Self {
+            scripts_dir: PathBuf::from("scripts"),
+            ecs_mirror: true,
+        }
+    }
+}
+
+impl bevy::app::Plugin for LuauScriptPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        let mut host = LuaScriptHost::new(self.scripts_dir.clone())
+            .expect("failed to initialize Luau VM (LuaScriptHost)");
+        // `viber.ecs`: o registo de tipos da app (a whitelist é validada
+        // contra ele) e o pool de entidades vazias para `viber.ecs.spawn`.
+        // O `Arc` do registo é partilhado: o `ReflectPlugin` pode registar
+        // mais tipos depois deste plugin ser construído.
+        if let Some(registry) = app
+            .world()
+            .get_resource::<bevy::ecs::reflect::AppTypeRegistry>()
+        {
+            host.set_ecs_registry(registry.0.clone());
+        }
+        let spawn_queue = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        host.set_ecs_pool(spawn_queue.clone());
+        app.insert_resource(ecs::EcsSpawnPool::new(spawn_queue));
+        app.init_resource::<ecs::EcsMirror>();
+        if self.ecs_mirror {
+            app.add_systems(
+                Update,
+                // Antes de qualquer `on_update`: o espelho é o snapshot que
+                // `viber.ecs.get/query` leem no frame. Exclusivo (precisa do
+                // `&mut World` para a travessia por arquétipo/reflexão).
+                timed(Group::Scripts, ecs::mirror_system)
+                    .before(luau_on_add)
+                    .run_if(crate::app::scripts_enabled),
+            );
+        }
+        // Garante o clock mesmo sem TimePlugin (plugin autossuficiente em apps mínimos).
+        app.init_resource::<Time>();
+        // Input para `viber.interacted` + evento de toasts de script.
+        app.init_resource::<ButtonInput<KeyCode>>();
+        // Árbitro das interações: `viber.interacted` LÊ-O, portanto vive com o
+        // plugin (uma app mínima de teste com só este plugin tem de correr).
+        app.init_resource::<crate::interact::InteractionFocus>();
+        app.add_systems(bevy::app::PreUpdate, crate::interact::focus_interactions);
+        app.add_message::<ScriptToast>();
+        // Linhas faladas (`viber.say`): a engine desenha o balão nativo ou o
+        // jogo ouve a mensagem e apresenta a fala (`ExternalSayPresenter`).
+        app.add_message::<ScriptSay>();
+        // SFX de scripts (`viber.sound`) — idempotente com o AmbientPlugin.
+        app.add_message::<crate::ambient::SfxEvent>();
+        // O dano de scripts segue o path único do feedback (i-frames etc.).
+        // .chain() obriga on_add → update → on_remove dentro do mesmo frame
+        // (um tuple simples não garante ordem no Bevy 0.19).
+        app.add_message::<crate::feedback::AttackAlert>();
+        // Números de dano (`viber.damage_number`) — idempotente com o
+        // Combat/Feedback; num preset sem eles o texto só não é desenhado.
+        app.add_message::<crate::feedback::DamageNumberEvent>();
+        app.add_message::<bevy_rapier3d::prelude::CollisionEvent>();
+        app.init_resource::<ScriptEventQueue>();
+        // Prompt de UI genérico publicado por scripts (`viber.prompt`).
+        app.init_resource::<crate::ui::UiPrompt>();
+        // Props em ossos (`viber.attach`): a app completa acrescenta o
+        // AttachmentPlugin; aqui garante-se a fila para o runtime.
+        app.init_resource::<crate::attachment::AttachmentRequests>();
+        app.init_resource::<crate::attachment::AttachmentSlots>();
+        // Posse de sistemas nativos por scripts (`viber.own_system`).
+        app.init_resource::<ScriptSystemOwners>();
+        // Nomes aceites-por-compatibilidade que já não têm handler nativo:
+        // avisa 1× em vez de aceitar em silêncio.
+        app.add_systems(Update, ownership::warn_dead_system_claims);
+        // Fila de spawns de prototypes (viber.spawn_prototype) — consumida
+        // pelo sistema exclusivo registado no `run`; sem ele os pedidos
+        // acumulam aqui (bounded pelos pedidos do jogo).
+        app.init_resource::<crate::recipes::spawn::PendingScriptSpawns>();
+        app.insert_resource(host);
+        app.init_resource::<contacts::ContactBook>();
+        // Hot-reload de scripts (VIBER_HOT_RELOAD=0 desliga): watcher sobre
+        // <world>/scripts/; a recarga corre antes do chain de scripts para o
+        // frame seguinte já usar o chunk novo. Watcher a falhar = warn e a
+        // engine segue SEM hot-reload (nunca é fatal).
+        if crate::hot_reload::enabled_from_env() {
+            match crate::hot_reload::HotReloadState::new(&self.scripts_dir) {
+                Ok(state) => {
+                    app.insert_resource(state);
+                    app.add_systems(
+                        Update,
+                        // Em Edit mode os scripts estão congelados e não há
+                        // dreno de comandos: uma gravação de `.lua` executava
+                        // o top-level e enfileirava efeitos para sempre. Na
+                        // troca de cena o mundo está a meio — também espera.
+                        crate::hot_reload::hot_reload_poll
+                            .before(luau_on_add)
+                            .run_if(crate::app::scripts_enabled)
+                            .run_if(crate::scene_loader::scene_settled),
+                    );
+                }
+                Err(e) => {
+                    warn!("hot-reload desativado (watcher falhou: {e})");
+                }
+            }
+        }
+        app.add_systems(
+            Update,
+            (
+                luau_on_add.run_if(crate::app::scripts_enabled),
+                // Troca de cena: os `on_update` param até a cena nova assentar
+                // (os spawners ainda não repovoaram — `alive_in_region` diria 0).
+                timed(Group::Scripts, luau_update)
+                    .run_if(crate::app::scripts_enabled)
+                    .run_if(crate::scene_loader::scene_settled),
+                timed(Group::Scripts, aggro_alert_system)
+                    .run_if(crate::app::scripts_enabled)
+                    .run_if(crate::scene_loader::scene_settled),
+                // As remoções correm SEMPRE — inclusive em modo Edit: o
+                // `RemovedComponents` só guarda ~2 frames, e sem este sistema
+                // `viber.state()`/timers/loops de som de uma entidade apagada
+                // no editor ficavam pendurados para sempre.
+                luau_on_remove,
+            )
+                .chain(),
+            // Modo Edit (editor externo): a cena está congelada — nenhum
+            // `on_update`/`on_add` corre enquanto se edita; só as remoções.
+        );
+        // Depois do step do Rapier (PostUpdate): os eventos deste frame e os
+        // hits do character controller chegam aos hooks no mesmo frame.
+        app.add_systems(
+            bevy::app::PostUpdate,
+            contacts::dispatch_contacts
+                .after(bevy_rapier3d::prelude::PhysicsSet::Writeback)
+                .run_if(crate::app::scripts_enabled),
+        );
+    }
+}

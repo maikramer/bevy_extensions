@@ -1,0 +1,67 @@
+[package]
+name = "bevy_ext_viber_engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Viber runtime de gameplay — transição do monólito para o Vael"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0"
+bevy_engine_core = { package = "bevy_ext_core", version = "0.1.0", path = "../bevy_ext_core" }
+bevy_world_xml = { package = "bevy_ext_world", version = "0.1.0", path = "../bevy_ext_world", features = ["terrain"] }
+bevy_save_slots = { package = "bevy_ext_save", version = "0.1.0", path = "../bevy_ext_save" }
+bevy_ext_gltf = { version = "0.1.0", path = "../bevy_ext_gltf" }
+bevy_voxel_terrain = { version = "0.1.0", path = "../bevy_voxel_terrain" }
+bevy_ext_scene = { version = "0.1.0", path = "../bevy_ext_scene" }
+base64 = "0.23"
+bevy = { version = "0.20.1", features = [
+    "bevy_remote", "wav", "jpeg", "webp", "basis-universal",
+    "dfg_lut", "bluenoise_texture", "area_light_luts",
+    "experimental_pbr_pcss", "bevy_dev_tools", "bevy_gizmos",
+] }
+clap = { version = "4.6", features = ["derive"] }
+celer-nlu = { version = "0.3.0", path = "../../../CelerAI/crates/nlu", optional = true }
+celer-decision = { version = "0.1.0", path = "../../../CelerAI/crates/decision", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+roxmltree = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+flate2 = "1"
+bevy_rapier3d = { version = "0.37", default-features = false, features = [
+    "dim3", "async-collider", "debug-render-3d",
+] }
+mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+meshopt = "0.7"
+transvoxel = "2"
+dirs = "7"
+half = "2"
+notify = "8"
+bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_mesh"] }
+bevy_landmass = "0.13"
+landmass_rerecast = "0.4"
+bevy_gradmesh = "0.3.9"
+bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+wesl = "0.6.0"
+tempfile = "3"
+
+[features]
+default = ["experimental_pbr_pcss", "luau-jit"]
+ai = ["nlu", "decision"]
+experimental_pbr_pcss = ["bevy/experimental_pbr_pcss"]
+luau-jit = ["mlua/luau-jit"]
+nlu = ["dep:celer-nlu"]
+decision = ["dep:celer-decision"]
+
+[patch.crates-io]
+rerecast = { path = "vendor/rerecast" }

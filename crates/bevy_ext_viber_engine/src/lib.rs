@@ -1,0 +1,110 @@
+//! Viber — native Bevy engine for AiGameKit declarative world XML.
+//!
+//! Library crate exposing the XML loader (`xml`), the recipe IR (`recipes`)
+//! and gameplay modules (`terrain`); the `viber` binary is a thin CLI on top.
+
+// Os sistemas Bevy exprimem queries grandes e os testes das VMs constroem o
+// estado campo a campo; estes lints são ruído de estilo neste código.
+#![allow(
+    clippy::assertions_on_constants,
+    clippy::field_reassign_with_default,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
+pub mod a11y;
+pub mod adaptive_quality;
+pub mod ai;
+pub mod ambient;
+pub mod animation;
+pub mod app;
+pub mod attachment;
+pub mod audio_space;
+pub mod audit;
+pub mod bake;
+pub mod bridge;
+pub mod camera;
+pub mod cinematic;
+pub mod cinematic_cli;
+pub mod config;
+pub mod corpse;
+pub mod decal_fx;
+pub mod dialogue;
+pub mod dlss;
+pub mod draw_diag;
+pub mod editor_camera;
+pub mod feedback;
+pub mod foliage;
+pub mod frame_pacing;
+pub mod fx_specs;
+pub mod glb_bounds;
+pub mod graphics;
+pub mod grass;
+pub mod hot_reload;
+pub mod hud;
+pub mod ibl;
+pub mod ik;
+pub mod impact;
+pub mod input_map;
+pub mod interact;
+pub mod lint;
+pub mod locale;
+pub mod luau;
+pub mod menus;
+pub mod meshopt;
+pub mod music;
+pub mod nav;
+pub mod netplay;
+pub mod particles;
+pub mod physics;
+pub mod physics_fx;
+pub mod placement;
+pub mod player;
+pub mod postfx;
+pub mod postfx_toggle;
+pub mod probes;
+pub mod profiler;
+pub mod project;
+pub mod projectile;
+pub mod prop_tint;
+pub mod prune;
+pub mod ragdoll;
+pub mod recipes;
+pub mod reflect;
+pub mod render_lod;
+pub mod rng;
+pub mod save;
+pub mod scaffold;
+pub mod scene;
+pub mod scene_loader;
+pub mod script_kind;
+pub mod senses;
+pub mod session;
+pub mod sky;
+pub mod sky_nishita;
+pub mod spawn_gate;
+pub mod spawner;
+pub mod streaming;
+pub mod terrain;
+pub mod textures;
+pub mod time_fx;
+pub mod ui;
+pub mod vinst;
+pub mod vitals;
+pub mod water_ssr;
+pub mod worldsys;
+pub mod xml;
+
+/// Checkout do jogo Vael, irmão deste repo.
+///
+/// `VAEL_ROOT` ganha. Sem a variável, procura `../Vael` a partir da raiz do
+/// crate. Testes que leem o mundo do jogo saltam quando isto é `None`
+/// (CI da engine sozinha).
+pub fn vael_root() -> Option<std::path::PathBuf> {
+    let candidate = match std::env::var_os("VAEL_ROOT") {
+        Some(value) => std::path::PathBuf::from(value),
+        None => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Vael"),
+    };
+    let candidate = candidate.canonicalize().unwrap_or(candidate);
+    candidate.is_dir().then_some(candidate)
+}
