@@ -8,6 +8,7 @@ members = [
     "crates/bevy_ext_gltf",
     "crates/bevy_ext_save",
     "crates/bevy_ext_terrain",
+    "crates/bevy_ext_ui",
     "crates/bevy_ext_world",
     "crates/bevy_voxel_terrain",
 ]
@@ -33,6 +34,7 @@ bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
 bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
 bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }
 bevy_ext_terrain = { version = "0.1.0", path = "crates/bevy_ext_terrain" }
+bevy_ext_ui = { version = "0.1.0", path = "crates/bevy_ext_ui" }
 bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
 
 # Jackdaw 0.20 line: the editor extension pins the same version as the Vael
