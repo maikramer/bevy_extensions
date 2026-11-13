@@ -61,6 +61,14 @@ pub enum ScriptCommand {
         key: String,
         range: f32,
     },
+    /// Troca de cena (`viber.change_scene`): fade, descarrega a atual,
+    /// carrega a outra; `entry` = `<SceneEntry name>` ou `"@back"`. A
+    /// validação de ids conhecidos fica na integração (sem registry de
+    /// cenas no host).
+    ChangeScene {
+        scene: String,
+        entry: Option<String>,
+    },
 }
 
 /// Alcance BASE autorado de interação (o default do `set_interaction`),

@@ -8,9 +8,17 @@
 //! A API é migrada por slices a partir do `viber::luau` do Viber (referência
 //! em `viber_ref/src/luau/`): estado de frame (`time`, `player_position`,
 //! `scene_name`), estado de jogo partilhado (`game.rs`), input, comandos
-//! enfileirados e loader de módulos. As funções com consumidor final na
-//! engine (movimento, IA, vitais, `viber.vael.*`, NLU/decisão) ficam para a
-//! integração do adaptador do Vael.
+//! enfileirados e loader de módulos.
+//!
+//! PENDENTES desta fase (documentados no relatório da migração): as funções
+//! com consumidor final na engine — movimento/pose
+//! (`move_*`/`set_position`/`teleport_player`), IA (`sense`/`wander_target`/
+//! `next_state`), vitais e combate (`entity_*`/`radial_damage`), áudio de
+//! mundo (`sound`/`sound_loop`/`music`/`audio`), câmara (`camera_*`),
+//! `viber.vael.*` (a bridge Rust do jogo regista-se à parte),
+//! `viber.nlu`/`viber.decision` (runtimes do CelerAI), save
+//! (`save*`/`load_save`/`quit`), eventos/timers/signals (`viber.events`/
+//! `viber.after`/`viber.signals`) e o módulo `viber.ecs`.
 
 pub mod commands;
 pub mod game;
@@ -52,6 +60,9 @@ pub struct ScriptHostState {
     pub biome: Option<String>,
     /// Entidades nomeadas deste frame para `viber.nearby`/`player_nearby`.
     pub nearby: Vec<NearbyEnt>,
+    /// Pasta `scripts/` do projeto para `viber.load` (o loader de módulos
+    /// lê ficheiros .lua daqui).
+    pub scripts_dir: Option<std::path::PathBuf>,
 }
 
 /// Uma entidade NOMEADA do snapshot de percepção (`viber.nearby` /
@@ -87,6 +98,7 @@ struct ScriptGlobals {
     biome: Option<String>,
     menu_open: bool,
     nearby: Vec<NearbyEnt>,
+    scripts_dir: Option<std::path::PathBuf>,
     toasts: VecDeque<String>,
     input: InputSnapshot,
     /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
@@ -159,6 +171,7 @@ fn publish_globals(
         globals.biome.clone_from(&state.biome);
         globals.menu_open = menus.as_ref().is_some_and(|menus| menus.any());
         globals.nearby.clone_from(&state.nearby);
+        globals.scripts_dir.clone_from(&state.scripts_dir);
     }
 }
 
@@ -508,6 +521,110 @@ fn install_viber_api_with(
         )?,
     )?;
 
+    // ── Módulos e cenas ─────────────────────────────────────────────────
+
+    // viber.load(path) — corre um chunk de `scripts/` num env próprio UMA
+    // vez por VM e devolve o `return` (cache em `viber_modules`). A chave
+    // do cache é o caminho RESOLVIDO (sem o prefixo histórico `scripts/`,
+    // `.`/`//` normalizados) — a mesma grafia em todas as chamadas.
+    // PENDENTE na integração: evict no hot-reload dos módulos.
+    let load_globals = globals.clone();
+    viber.set(
+        "load",
+        lua.create_function(move |lua, path: String| {
+            // Só caminhos RELATIVOS dentro de `scripts/` — `..` ou raiz
+            // absoluta liam (e executavam) qualquer ficheiro do disco.
+            let inside = std::path::Path::new(&path)
+                .components()
+                .all(|c| {
+                    matches!(
+                        c,
+                        std::path::Component::Normal(_) | std::path::Component::CurDir
+                    )
+                });
+            if path.is_empty() || !inside {
+                return Err(mlua::Error::runtime(format!(
+                    "viber.load('{path}'): só caminhos relativos a scripts/ (sem '..')"
+                )));
+            }
+            let key: String = std::path::Path::new(path.strip_prefix("scripts/").unwrap_or(&path))
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(part) => {
+                        Some(part.to_string_lossy().into_owned())
+                    }
+                    // `..`/raiz já foram rejeitados acima; `.` cai.
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            if key.is_empty() {
+                return Err(mlua::Error::runtime(format!(
+                    "viber.load('{path}'): caminho sem ficheiro"
+                )));
+            }
+            let modules: mlua::Table = lua.named_registry_value("viber_modules")?;
+            if let Ok(cached) = modules.raw_get::<mlua::Value>(key.clone())
+                && !cached.is_nil()
+            {
+                return Ok(cached);
+            }
+            let dir = load_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.scripts_dir.clone())
+                .ok_or_else(|| {
+                    mlua::Error::runtime("viber.load sem scripts_dir publicado no ScriptHostState")
+                })?;
+            let full = dir.join(&key);
+            let code = std::fs::read_to_string(&full).map_err(|error| {
+                mlua::Error::runtime(format!("viber.load('{path}'): {error}"))
+            })?;
+            // Env sandbox próprio (mesma forma do chunk de entidade) — o
+            // módulo não pode clobber globals de quem o carrega.
+            let env = lua.create_table()?;
+            let mt = lua.create_table()?;
+            mt.set("__index", lua.globals())?;
+            env.set_metatable(Some(mt))?;
+            let chunk = lua
+                .load(&code)
+                .set_name(format!("={path}"))
+                .set_environment(env)
+                .into_function()?;
+            let value: mlua::Value = chunk.call(())?;
+            // Módulo sem `return` (só mexe em `viber.game()`) cacheia `true`,
+            // como o `require` — com `nil` o cache falhava e o módulo
+            // re-corria a CADA chamada.
+            let value = match value {
+                mlua::Value::Nil => mlua::Value::Boolean(true),
+                other => other,
+            };
+            modules.raw_set(key, value.clone())?;
+            Ok(value)
+        })?,
+    )?;
+
+    // viber.change_scene(id [, entrada]) -> true | false, erro — troca de
+    // cena (fade, descarrega a atual, carrega a outra; `entrada` =
+    // `<SceneEntry name>`, "@back" = o portal por onde se entrou). Sem
+    // registry de cenas no host, a validação de ids conhecidos é do
+    // consumidor do comando (a integração responde com o 2.º valor).
+    let scene_globals = globals.clone();
+    viber.set(
+        "change_scene",
+        lua.create_function(move |_, (scene, entry): (String, Option<String>)| {
+            let id = scene.trim().to_string();
+            if id.is_empty() {
+                return Ok((false, Some("id de cena vazio".to_string())));
+            }
+            push_command(
+                &scene_globals,
+                commands::ScriptCommand::ChangeScene { scene: id, entry },
+            );
+            Ok((true, None))
+        })?,
+    )?;
+
     // viber.interacted(key) -> bool — a tecla foi pressionada NESTE frame.
     // PENDENTE na integração: o teste de foco (`InteractionFocus`, a
     // entidade alvo mais próxima vence) e o gate de `ui_typing` do Viber.
@@ -579,6 +696,10 @@ fn install_viber_api_with(
             )?,
         )?;
     }
+
+    // Cache dos módulos do `viber.load` (por VM, sobrevive a hot-reload do
+    // script como o `viber_modules` do Viber).
+    lua.set_named_registry_value("viber_modules", lua.create_table()?)?;
 
     keys::install(lua, &viber, globals.clone())?;
 
@@ -1184,7 +1305,7 @@ mod tests {
         let g2 = Arc::new(RwLock::new(ScriptGlobals::default()));
         let s2 = Arc::new(RwLock::new(game::GameStore::default()));
         {
-            let mut shared = globals.read().expect("globals");
+            let shared = globals.read().expect("globals");
             let mut g = g2.write().expect("globals");
             g.player = shared.player;
             g.nearby.clone_from(&shared.nearby);
@@ -1239,6 +1360,139 @@ mod tests {
             .eval()
             .expect("sem herói");
         assert!(empty);
+    }
+
+    #[test]
+    fn load_cacheia_modulos_num_env_proprio() {
+        let (lua, globals, _store) = vm();
+        let dir = std::env::temp_dir().join(format!(
+            "vael-luau-load-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("relógio")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("lib")).expect("mkdir");
+        std::fs::write(
+            dir.join("lib/fsm.lua"),
+            "local M = {}\nfunction M.estado() return 'wander' end\nreturn M\n",
+        )
+        .expect("modulo com return");
+        std::fs::write(
+            dir.join("efeitos.lua"),
+            "viber.game().efeitos = true\n",
+        )
+        .expect("modulo sem return");
+        globals.write().expect("globals").scripts_dir = Some(dir.clone());
+
+        let nome: String = lua
+            .load("return viber.load('lib/fsm.lua').estado()")
+            .eval()
+            .expect("módulo");
+        assert_eq!(nome, "wander");
+
+        // Cache: a MESMA tabela em chamadas seguintes (identidade Lua).
+        let same: bool = lua
+            .load("return viber.load('lib/fsm.lua') == viber.load('scripts/lib/fsm.lua')")
+            .eval()
+            .expect("cache com e sem prefixo");
+        assert!(same, "prefixo scripts/ resolve para o mesmo módulo");
+
+        // Sem `return`: cacheia `true` e não re-corre (o flag de game()
+        // ficou true — ter corrido de novo não mudaria nada, mas o cache
+        // devolve bool, não nil).
+        let flag: bool = lua
+            .load("viber.load('efeitos.lua') return viber.game().efeitos == true")
+            .eval()
+            .expect("sem return");
+        assert!(flag);
+        let cached: bool = lua
+            .load("return viber.load('efeitos.lua') == true")
+            .eval()
+            .expect("cacheia true");
+        assert!(cached);
+
+        // Fuga de caminho rejeitada; ficheiro inexistente é erro claro.
+        let erro: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.load('../segredo.lua') end),
+                not pcall(function() viber.load('/etc/passwd') end),
+                not pcall(function() viber.load('lib/nada.lua') end),
+                not pcall(function() viber.load('') end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erro.iter().all(|e| *e));
+
+        // Sem scripts_dir publicado: erro (a integração publica o caminho).
+        globals.write().expect("globals").scripts_dir = None;
+        let (lua2, _g2, _s2) = vm();
+        let erro: bool = lua2
+            .load("return not pcall(function() viber.load('lib/fsm.lua') end)")
+            .eval()
+            .expect("sem dir");
+        assert!(erro);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_modulo_nao_clobbera_globals_do_carregador() {
+        let (lua, globals, _store) = vm();
+        let dir = std::env::temp_dir().join(format!(
+            "vael-luau-load-sandbox-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("relógio")
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("grosso.lua"), "achei = 'do modulo'\n").expect("módulo");
+        globals.write().expect("globals").scripts_dir = Some(dir);
+
+        let isolado: bool = lua
+            .load(
+                "viber.load('grosso.lua') return achei == nil and viber.game().achei == nil",
+            )
+            .eval()
+            .expect("sandbox");
+        assert!(isolado, "o módulo escreveu no env do chamador");
+    }
+
+    #[test]
+    fn change_scene_enfila_o_pedido() {
+        let (lua, globals, _store) = vm();
+        let (ok, erro): (bool, bool) = lua
+            .load("local ok, err = viber.change_scene('  interiors/taverna ', '@back') return ok, err == nil")
+            .eval()
+            .expect("troca");
+        assert!(ok && erro);
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::ChangeScene { scene, entry } => {
+                assert_eq!(scene, "interiors/taverna", "id vem sem espaços");
+                assert_eq!(entry.as_deref(), Some("@back"));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+
+        // Sem entrada e id vazio.
+        lua.load("viber.change_scene('main')").exec().expect("sem entrada");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::ChangeScene { scene, entry } => {
+                assert_eq!(scene, "main");
+                assert_eq!(entry, None);
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        let (ok, msg): (bool, String) = lua
+            .load("local ok, err = viber.change_scene('   ') return ok, err")
+            .eval()
+            .expect("vazio");
+        assert!(!ok);
+        assert!(!msg.is_empty());
     }
 
 }
