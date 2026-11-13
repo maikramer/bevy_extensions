@@ -123,3 +123,72 @@ pub trait NavQuery: Send + Sync + 'static {
     /// navmesh / no path.
     fn path(&self, from: Vec3, to: Vec3) -> Option<Vec<Vec3>>;
 }
+
+/// Speed base do herói (`BASE_SPEED` do controller original).
+pub const BASE_SPEED: f32 = 4.0;
+
+/// Estado do herói controlado por código (subconjunto do `PlayerController`).
+///
+/// Vive no core para os serviços da engine (terreno, navegação, UI, áudio)
+/// dependerem do contrato e não do monólito. O `TypePath` histórico é
+/// preservado para o BRP, o `.bsn` e os saves.
+#[derive(Debug, Component, Reflect)]
+#[reflect(Component, Default)]
+#[type_path = "viber::player"]
+pub struct Player {
+    pub speed: f32,
+    pub sprint_multiplier: f32,
+    pub jump_height: f32,
+    pub rotation_speed: f32,
+    pub vel_y: f32,
+    pub vel_x: f32,
+    pub vel_z: f32,
+    pub grounded: bool,
+    pub can_jump: bool,
+    pub is_jumping: bool,
+    pub jump_cooldown: f32,
+    pub last_grounded_time: f32,
+    pub jump_buffer_time: f32,
+    pub last_steer_time: f32,
+    pub last_moving_time: f32,
+    pub step_timer: f32,
+}
+
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            speed: BASE_SPEED,
+            sprint_multiplier: 1.5,
+            jump_height: 2.3,
+            rotation_speed: 10.0,
+            vel_y: 0.0,
+            vel_x: 0.0,
+            vel_z: 0.0,
+            grounded: true,
+            can_jump: true,
+            is_jumping: false,
+            jump_cooldown: 0.0,
+            last_grounded_time: f32::NEG_INFINITY,
+            jump_buffer_time: f32::NEG_INFINITY,
+            last_steer_time: f32::NEG_INFINITY,
+            last_moving_time: f32::INFINITY,
+            step_timer: 0.0,
+        }
+    }
+}
+
+/// Marca um herói acabado de teleportar; o controller segura-o na superfície
+/// analítica enquanto o collider da coluna de destino assa.
+#[derive(Debug, Component, Reflect)]
+#[reflect(Component, Default)]
+#[type_path = "viber::player"]
+pub struct TeleportSettle {
+    /// Frames restantes de tutela.
+    pub frames: u8,
+}
+
+impl Default for TeleportSettle {
+    fn default() -> Self {
+        Self { frames: 30 }
+    }
+}
