@@ -119,7 +119,39 @@ pub fn dispatch_contacts(
     }
 
     let mut seen: HashSet<(Entity, Entity)> = HashSet::new();
+    // Diagnóstico de contactos (`VIBER_CONTACT_DEBUG=1`): por frame, os hits do
+    // KCC do herói e a resolução do dono do script. Foi o que mostrou que um
+    // push contra um NPC parava no terreno ("chunk …") e que o hook do NPC só
+    // dispara quando o collider tocado resolve para uma entidade com
+    // `LuaScriptRef`.
+    let contact_debug = std::env::var_os("VIBER_CONTACT_DEBUG").is_some();
     for (hero, output) in &controllers {
+        if contact_debug {
+            info!(
+                target: "viber::contacts",
+                "kcc hero={hero:?} collisions={} grounded={}",
+                output.collisions.len(),
+                output.grounded,
+            );
+            for hit in &output.collisions {
+                let owner = script_owner(hit.entity, &scripts, &parents);
+                let hit_name = names.get(hit.entity).ok().map(|n| n.to_string());
+                let parent = parents.get(hit.entity).ok().map(|p| p.parent());
+                let parent_script = parent
+                    .and_then(|p| scripts.get(p).ok())
+                    .map(|s| s.path.clone());
+                info!(
+                    target: "viber::contacts",
+                    "  hit {:?} name={:?} sensor={} owner={:?} parent={:?} parent_script={:?}",
+                    hit.entity,
+                    hit_name,
+                    is_sensor(hit.entity, &sensors, &parents),
+                    owner,
+                    parent,
+                    parent_script,
+                );
+            }
+        }
         for hit in &output.collisions {
             if is_sensor(hit.entity, &sensors, &parents) {
                 continue;
