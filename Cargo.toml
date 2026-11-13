@@ -5,6 +5,10 @@
 members = [
     "crates/bevy_ext_core",
     "crates/bevy_ext_terrain_runtime",
+    "crates/bevy_ext_elements",
+    "crates/bevy_ext_flora",
+    "crates/bevy_ext_gradmesh",
+    "crates/bevy_ext_scene",
     "crates/bevy_ext_postfx",
     "crates/bevy_ext_luau",
     "crates/bevy_ext_nav",
@@ -21,6 +25,10 @@ members = [
     "crates/bevy_ext_ui",
     "crates/bevy_ext_postfx",
     "crates/bevy_ext_terrain_runtime",
+    "crates/bevy_ext_elements",
+    "crates/bevy_ext_flora",
+    "crates/bevy_ext_gradmesh",
+    "crates/bevy_ext_scene",
 ]
 # Crates que ainda dependem do `viber` em path: compilam standalone (lock
 # próprio) até a onda de desacoplamento final.
@@ -58,6 +66,10 @@ bevy_ext_ai = { version = "0.1.0", path = "crates/bevy_ext_ai" }
 bevy_ext_ui = { version = "0.1.0", path = "crates/bevy_ext_ui" }
 bevy_ext_postfx = { version = "0.1.0", path = "crates/bevy_ext_postfx" }
 bevy_ext_terrain_runtime = { version = "0.1.0", path = "crates/bevy_ext_terrain_runtime" }
+bevy_ext_elements = { version = "0.1.0", path = "crates/bevy_ext_elements" }
+bevy_ext_flora = { version = "0.1.0", path = "crates/bevy_ext_flora" }
+bevy_ext_gradmesh = { version = "0.1.0", path = "crates/bevy_ext_gradmesh" }
+bevy_ext_scene = { version = "0.1.0", path = "crates/bevy_ext_scene" }
 bevy_rapier3d = "0.37"
 bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_mesh"] }
 bevy_landmass = "0.13"
@@ -71,18 +83,21 @@ jackdaw_feathers = "=0.20.2"
 jackdaw_panels = "=0.20.2"
 jackdaw_scene_types = { version = "=0.20.2", default-features = false }
 lucide-icons = "0.563.0"
+meshopt = "0.7"
+bevy_kira_audio = { version = "0.27.1", features = ["ogg"] }
+tempfile = "3"
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+wesl = "0.6.0"
 
 anyhow = "1"
 jackdaw_bsn = "=0.20.2"
+jackdaw_prefab = "=0.20.2"
 roxmltree = "0.21"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
 dirs = "7"
-tempfile = "3"
-meshopt = "0.7"
 transvoxel = "2"
 
 # Backend de áudio do Viber (kira); o Vael e a engine partilham a mesma linha.
-bevy_kira_audio = { version = "0.27.1", features = ["ogg"] }

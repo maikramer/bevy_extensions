@@ -672,6 +672,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ext_elements"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "bevy_ext_flora"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_flora",
+]
+
+[[package]]
 name = "bevy_ext_gltf"
 version = "0.1.1"
 dependencies = [
@@ -680,6 +695,16 @@ dependencies = [
  "meshopt",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "bevy_ext_gradmesh"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_ext_scene",
+ "bevy_gradmesh",
+ "bevy_rapier3d",
 ]
 
 [[package]]
@@ -724,6 +749,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "bevy_ext_scene"
+version = "0.1.0"
+dependencies = [
+ "bevy",
 ]
 
 [[package]]
@@ -775,8 +807,11 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
+ "bevy_ext_scene",
+ "bevy_ext_terrain",
  "flate2",
  "jackdaw_bsn",
+ "jackdaw_prefab",
  "roxmltree",
  "serde",
  "serde_yaml",
@@ -811,6 +846,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "bevy_flora"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a83dec479241fc877348e6b7e29f44e6accba51619ee87c7a394d6e71b7285f"
+dependencies = [
+ "bevy",
 ]
 
 [[package]]
@@ -873,6 +917,7 @@ dependencies = [
  "bevy_render",
  "bevy_shader",
  "bevy_shape",
+ "bevy_sprite_render",
  "bevy_transform",
  "bevy_utils",
  "bytemuck",
@@ -913,6 +958,17 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "wgpu-types",
+]
+
+[[package]]
+name = "bevy_gradmesh"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34a0ce233f49f30435ea543b6b56ecab12a50405ee1c3dceeb685d3b51579052"
+dependencies = [
+ "bevy",
+ "bevy_asset",
+ "bevy_material",
 ]
 
 [[package]]
@@ -2244,9 +2300,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "bytemuck"
@@ -3397,6 +3453,8 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -3480,6 +3538,18 @@ dependencies = [
  "serde",
  "smol_str",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "jackdaw_prefab"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56fcbeed57ba8ce22050bd8eb8a73d17487a8d48e61c93d993b423988b15ab5c"
+dependencies = [
+ "bevy",
+ "jackdaw_bsn",
+ "path-slash",
+ "pathdiff",
 ]
 
 [[package]]
@@ -6364,3 +6434,18 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
+]
