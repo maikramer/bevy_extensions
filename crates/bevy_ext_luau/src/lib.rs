@@ -13,10 +13,13 @@
 //! integração do adaptador do Vael.
 
 pub mod game;
+pub mod keys;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use bevy::input::keyboard::KeyCode;
+use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy_ext_core::ScriptToast;
 use bevy_mod_scripting::bindings::InteropError;
@@ -41,12 +44,25 @@ pub struct ScriptHostState {
     pub scene: Option<String>,
 }
 
+/// Snapshot de input do frame (`viber.input.*`): teclado e rato nos três
+/// estados. Publicado por [`publish_input`] a partir dos `ButtonInput`.
+#[derive(Debug, Default, Clone)]
+pub struct InputSnapshot {
+    pub keys_pressed: HashSet<KeyCode>,
+    pub keys_down: HashSet<KeyCode>,
+    pub keys_released: HashSet<KeyCode>,
+    pub mouse_pressed: HashSet<MouseButton>,
+    pub mouse_down: HashSet<MouseButton>,
+    pub mouse_released: HashSet<MouseButton>,
+}
+
 #[derive(Debug, Default)]
 struct ScriptGlobals {
     time: f64,
     player: Option<Vec3>,
     scene: Option<String>,
     toasts: VecDeque<String>,
+    input: InputSnapshot,
 }
 
 static SCRIPT_GLOBALS: OnceLock<Arc<RwLock<ScriptGlobals>>> = OnceLock::new();
@@ -69,7 +85,10 @@ impl Plugin for VaelScriptingPlugin {
             .add_plugins(
                 LuaScriptingPlugin::default().add_context_initializer(init_context),
             )
-            .add_systems(PreUpdate, (publish_globals, game::apply_game_patches))
+            .add_systems(
+                PreUpdate,
+                (publish_globals, publish_input, game::apply_game_patches),
+            )
             .add_systems(Update, drain_toasts);
     }
 }
@@ -94,6 +113,29 @@ fn publish_globals(state: Res<ScriptHostState>) {
         globals.time = state.time;
         globals.player = state.player;
         globals.scene.clone_from(&state.scene);
+    }
+}
+
+/// Publica o snapshot de input do frame para `viber.input.*`. Com `Option`
+/// as apps sem `InputPlugin` (headless/REPL) publicam um snapshot vazio em
+/// vez de ficarem com o frame anterior congelado.
+fn publish_input(
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+) {
+    let mut input = InputSnapshot::default();
+    if let Some(keys) = keys {
+        input.keys_pressed = keys.get_just_pressed().copied().collect();
+        input.keys_down = keys.get_pressed().copied().collect();
+        input.keys_released = keys.get_just_released().copied().collect();
+    }
+    if let Some(mouse) = mouse {
+        input.mouse_pressed = mouse.get_just_pressed().copied().collect();
+        input.mouse_down = mouse.get_pressed().copied().collect();
+        input.mouse_released = mouse.get_just_released().copied().collect();
+    }
+    if let Ok(mut globals) = globals().write() {
+        globals.input = input;
     }
 }
 
@@ -168,6 +210,8 @@ fn install_viber_api_with(
             Ok(())
         })?,
     )?;
+
+    keys::install(lua, &viber, globals.clone())?;
 
     let toast_globals = globals;
     viber.set(
@@ -396,4 +440,47 @@ mod tests {
             .expect("isolamento");
         assert!(missing);
     }
+    #[test]
+    fn input_lee_os_tres_estados_do_snapshot() {
+        let (lua, globals, _store) = vm();
+        {
+            let mut g = globals.write().expect("globals");
+            g.input.keys_down.insert(KeyCode::KeyE);
+            g.input.keys_down.insert(KeyCode::KeyW);
+            g.input.keys_pressed.insert(KeyCode::KeyJ);
+            g.input.keys_released.insert(KeyCode::KeyF);
+            g.input.mouse_down.insert(MouseButton::Left);
+            g.input.mouse_pressed.insert(MouseButton::Right);
+        }
+        let cases: Vec<bool> = lua
+            .load(r#"
+              return {
+                viber.input.down('e'), viber.input.down('w'),
+                viber.input.pressed('j'), viber.input.released('f'),
+                viber.input.down('lmb'), viber.input.pressed('rmb'),
+                viber.input.down('x') == false,
+                viber.input.pressed('e') == false,
+                viber.input.released('e') == false,
+              }
+            "#)
+            .eval()
+            .expect("input");
+        assert!(cases.iter().all(|c| *c), "casos: {cases:?}");
+    }
+
+    #[test]
+    fn input_normaliza_e_recusa_nomes() {
+        let (lua, _globals, _store) = vm();
+        let arrow: bool = lua
+            .load("return viber.input.down('Arrow_Up')")
+            .eval()
+            .expect("arrow");
+        assert!(!arrow); // sem snapshot: false, mas o nome foi aceite
+        let erro: bool = lua
+            .load("local ok = pcall(function() viber.input.down('não-existe') end) return not ok")
+            .eval()
+            .expect("erro");
+        assert!(erro);
+    }
+
 }
