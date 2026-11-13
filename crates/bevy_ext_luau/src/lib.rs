@@ -12,8 +12,10 @@
 //! engine (movimento, IA, vitais, `viber.vael.*`, NLU/decisão) ficam para a
 //! integração do adaptador do Vael.
 
+pub mod commands;
 pub mod game;
 pub mod keys;
+pub mod sfx;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -28,6 +30,7 @@ use bevy_mod_scripting::lua::LuaContext;
 use bevy_mod_scripting::prelude::*;
 use mlua::{IntoLua, Lua, MultiValue};
 
+pub use commands::{ScriptCommand, ScriptCommandMessage};
 pub use game::{GameValue, apply_game_patches, game_snapshot, publish_game_patch};
 
 /// Entidade do attach corrente (scripts `EntityScript`); `None` em scripts
@@ -71,6 +74,9 @@ struct ScriptGlobals {
     menu_open: bool,
     toasts: VecDeque<String>,
     input: InputSnapshot,
+    /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
+    /// move-os para as mensagens no Update.
+    commands: VecDeque<commands::ScriptCommand>,
 }
 
 static SCRIPT_GLOBALS: OnceLock<Arc<RwLock<ScriptGlobals>>> = OnceLock::new();
@@ -93,11 +99,14 @@ impl Plugin for VaelScriptingPlugin {
             .add_plugins(
                 LuaScriptingPlugin::default().add_context_initializer(init_context),
             )
+            // Mensagem dos comandos sem consumidor no core (feedback de
+            // câmara/animação); o adaptador do Vael regista o leitor.
+            .add_message::<commands::ScriptCommandMessage>()
             .add_systems(
                 PreUpdate,
                 (publish_globals, publish_input, game::apply_game_patches),
             )
-            .add_systems(Update, drain_toasts);
+            .add_systems(Update, (drain_toasts, commands::drain_commands));
     }
 }
 
@@ -165,6 +174,17 @@ fn drain_toasts(mut toasts: Option<MessageWriter<ScriptToast>>) {
     };
     while let Some(text) = globals.toasts.pop_front() {
         writer.write(ScriptToast(text));
+    }
+}
+
+/// Enfila um comando `viber.*` (falha silenciosa só quando o lock está
+/// envenenado — um pânico noutro teste/thread).
+fn push_command(
+    globals: &Arc<RwLock<ScriptGlobals>>,
+    command: commands::ScriptCommand,
+) {
+    if let Ok(mut globals) = globals.write() {
+        globals.commands.push_back(command);
     }
 }
 
@@ -254,6 +274,162 @@ fn install_viber_api_with(
                 .map(|globals| globals.menu_open)
                 .unwrap_or(false))
         })?,
+    )?;
+
+    // ── Comandos enfileirados (drenados no Update) ──────────────────────
+
+    // viber.sound_at_player(name) — SFX curto na posição do herói; sem
+    // herói toca como som de interface (volume cheio). Nome inválido =
+    // erro de script (o silêncio era o pior diagnóstico).
+    let sfx_globals = globals.clone();
+    viber.set(
+        "sound_at_player",
+        lua.create_function(move |_, name: String| {
+            let clip = sfx::sfx_clip_from_str(&name).ok_or_else(|| {
+                let names: Vec<&str> =
+                    sfx::SFX_NAME_REGISTRY.iter().map(|(n, _)| *n).collect();
+                mlua::Error::runtime(format!(
+                    "clip de som desconhecido '{name}' ({})",
+                    names.join(", ")
+                ))
+            })?;
+            let position = sfx_globals.read().ok().and_then(|g| g.player);
+            push_command(&sfx_globals, commands::ScriptCommand::PlaySfx { clip, position });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.play_clip(nome [, opts]) — clip de ação no rig (opts:
+    // {speed = 1.0, id = bits, lock = false}). Sem `id` a integração
+    // resolve para a entidade do script.
+    let clip_globals = globals.clone();
+    viber.set(
+        "play_clip",
+        lua.create_function(move |_, (name, opts): (String, Option<mlua::Table>)| {
+            let (speed, id, lock) = match opts {
+                Some(t) => (
+                    t.raw_get::<f32>("speed").ok().unwrap_or(1.0),
+                    t.raw_get::<i64>("id").ok(),
+                    t.raw_get::<bool>("lock").ok().unwrap_or(false),
+                ),
+                None => (1.0, None, false),
+            };
+            if !speed.is_finite() || speed <= 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.play_clip: speed tem de ser finito e > 0",
+                ));
+            }
+            let entity = match id {
+                Some(bits) => Some(commands::entity_from_id(bits)?),
+                None => None,
+            };
+            push_command(
+                &clip_globals,
+                commands::ScriptCommand::Gesture { entity, name, speed, lock },
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.shake(amount) / viber.fov_kick(deg) / viber.hit_stop(secs)
+    let shake_globals = globals.clone();
+    viber.set(
+        "shake",
+        lua.create_function(move |_, amount: f32| {
+            if !amount.is_finite() || amount < 0.0 {
+                return Err(mlua::Error::runtime("viber.shake: valor finito e >= 0"));
+            }
+            push_command(&shake_globals, commands::ScriptCommand::Shake(amount));
+            Ok(())
+        })?,
+    )?;
+    let fov_globals = globals.clone();
+    viber.set(
+        "fov_kick",
+        lua.create_function(move |_, deg: f32| {
+            if !deg.is_finite() {
+                return Err(mlua::Error::runtime("viber.fov_kick: valor não finito"));
+            }
+            push_command(&fov_globals, commands::ScriptCommand::FovKick(deg));
+            Ok(())
+        })?,
+    )?;
+    let hitstop_globals = globals.clone();
+    viber.set(
+        "hit_stop",
+        lua.create_function(move |_, secs: f32| {
+            if !secs.is_finite() || secs < 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.hit_stop: segundos finitos e >= 0",
+                ));
+            }
+            push_command(&hitstop_globals, commands::ScriptCommand::HitStop(secs));
+            Ok(())
+        })?,
+    )?;
+
+    // viber.damage_number(texto [, opts]) — default: 1,8 m acima do herói;
+    // cada eixo dado SUBSTITUI o default (um `{y = 3}` não exige x e z).
+    let dmg_globals = globals.clone();
+    viber.set(
+        "damage_number",
+        lua.create_function(move |_, (text, opts): (String, Option<mlua::Table>)| {
+            let base = dmg_globals
+                .read()
+                .ok()
+                .and_then(|g| g.player)
+                .unwrap_or(Vec3::ZERO)
+                + Vec3::Y * 1.8;
+            let mut pos = base;
+            let mut color = None;
+            if let Some(t) = opts {
+                let axis = |name: &str, fallback: f32| {
+                    t.raw_get::<f32>(name)
+                        .ok()
+                        .filter(|value| value.is_finite())
+                        .unwrap_or(fallback)
+                };
+                pos = Vec3::new(axis("x", base.x), axis("y", base.y), axis("z", base.z));
+                if let Ok(Some(hex)) = t.raw_get::<Option<String>>("color") {
+                    color = Some(commands::parse_hex_color(&hex).ok_or_else(|| {
+                        mlua::Error::runtime(format!(
+                            "viber.damage_number: cor inválida '{hex}'"
+                        ))
+                    })?);
+                }
+            }
+            push_command(
+                &dmg_globals,
+                commands::ScriptCommand::DamageNumber { text, pos, color },
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.ring(x, z, raio [, cor "#hex"]) — anel de choque no chão.
+    let ring_globals = globals.clone();
+    viber.set(
+        "ring",
+        lua.create_function(
+            move |_, (x, z, radius, color): (f32, f32, f32, Option<String>)| {
+                if !(x.is_finite() && z.is_finite() && radius.is_finite()) || radius <= 0.0 {
+                    return Err(mlua::Error::runtime(
+                        "viber.ring: coordenadas finitas e raio > 0",
+                    ));
+                }
+                let color = match color {
+                    Some(hex) => Some(commands::parse_hex_color(&hex).ok_or_else(|| {
+                        mlua::Error::runtime(format!("viber.ring: cor inválida '{hex}'"))
+                    })?),
+                    None => None,
+                };
+                push_command(
+                    &ring_globals,
+                    commands::ScriptCommand::Ring { x, z, radius, color },
+                );
+                Ok(())
+            },
+        )?,
     )?;
 
     viber.set(
@@ -565,5 +741,219 @@ mod tests {
             .expect("defaults");
         assert!(entry_nil && biome_nil && menu_closed);
     }
+
+    #[test]
+    fn sound_at_player_fila_o_clip_na_posicao_do_heroi() {
+        let (lua, globals, _store) = vm();
+        globals.write().expect("globals").player = Some(Vec3::new(10.0, 4.0, 20.0));
+
+        lua.load("viber.sound_at_player('notification')")
+            .exec()
+            .expect("som");
+        let queued = {
+            let mut g = globals.write().expect("globals");
+            g.commands.pop_front().expect("comando")
+        };
+        match queued {
+            commands::ScriptCommand::PlaySfx { clip, position } => {
+                assert_eq!(clip, bevy_ext_core::SfxClip::Notification);
+                assert_eq!(position, Some(Vec3::new(10.0, 4.0, 20.0)));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+
+        // Sem herói: som de interface (position None).
+        globals.write().expect("globals").player = None;
+        lua.load("viber.sound_at_player('growl')").exec().expect("growl");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::PlaySfx { clip, position } => {
+                assert_eq!(clip, bevy_ext_core::SfxClip::WolfGrowl);
+                assert_eq!(position, None);
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+
+        // Clip desconhecido é ERRO de script (não silêncio).
+        let erro: bool = lua
+            .load("return not pcall(function() viber.sound_at_player('piano') end)")
+            .eval()
+            .expect("erro");
+        assert!(erro);
+    }
+
+    #[test]
+    fn play_clip_valida_e_enfila_o_gesto() {
+        let (lua, globals, _store) = vm();
+        lua.load("viber.play_clip('mine', { speed = 1.4 })")
+            .exec()
+            .expect("clip");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::Gesture { entity, name, speed, lock } => {
+                assert_eq!(name, "mine");
+                assert_eq!((speed, lock), (1.4, false));
+                assert_eq!(entity, None);
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+
+        // Com id: os bits viram Entity (e lixo vira erro).
+        let e = Entity::try_from_bits(9u64).expect("entidade");
+        lua.load(format!("viber.play_clip('chop', {{ id = {}, lock = true }})", e.to_bits() as i64))
+            .exec()
+            .expect("clip com id");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::Gesture { entity, lock, .. } => {
+                assert_eq!(entity, Some(e));
+                assert!(lock);
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        let erro: bool = lua
+            .load("return not pcall(function() viber.play_clip('x', { speed = 0 }) end)")
+            .eval()
+            .expect("speed inválido");
+        assert!(erro);
+        let erro: bool = lua
+            .load("return not pcall(function() viber.play_clip('x', { id = 0 }) end)")
+            .eval()
+            .expect("id inválido");
+        assert!(erro);
+    }
+
+    #[test]
+    fn feedback_de_camara_valida_e_enfila() {
+        let (lua, globals, _store) = vm();
+        lua.load("viber.shake(0.4) viber.fov_kick(-6.5) viber.hit_stop(0.08)")
+            .exec()
+            .expect("feedback");
+        let mut queued = Vec::new();
+        {
+            let mut g = globals.write().expect("globals");
+            while let Some(c) = g.commands.pop_front() {
+                queued.push(c);
+            }
+        }
+        assert_eq!(queued.len(), 3);
+        assert!(matches!(queued[0], commands::ScriptCommand::Shake(0.4)));
+        assert!(matches!(queued[1], commands::ScriptCommand::FovKick(-6.5)));
+        assert!(matches!(queued[2], commands::ScriptCommand::HitStop(0.08)));
+
+        // NaN/negativos são erro de script.
+        let erro: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.shake(-0.1) end),
+                not pcall(function() viber.shake(0.0 / 0.0) end),
+                not pcall(function() viber.fov_kick(0.0 / 0.0) end),
+                not pcall(function() viber.hit_stop(-1) end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erro.iter().all(|e| *e));
+    }
+
+    #[test]
+    fn damage_number_cai_acima_do_heroi_por_omissao() {
+        let (lua, globals, _store) = vm();
+        globals.write().expect("globals").player = Some(Vec3::new(1.0, 2.0, 3.0));
+        lua.load("viber.damage_number('-12')")
+            .exec()
+            .expect("número");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::DamageNumber { text, pos, color } => {
+                assert_eq!(text, "-12");
+                assert_eq!(pos, Vec3::new(1.0, 3.8, 3.0));
+                assert_eq!(color, None);
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+
+        // Cada eixo dado substitui o default; cor valida.
+        lua.load(
+            "viber.damage_number('+5', { y = 9, color = '#f80' })",
+        )
+        .exec()
+        .expect("com overrides");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::DamageNumber { pos, color, .. } => {
+                assert_eq!(pos, Vec3::new(1.0, 9.0, 3.0));
+                assert_eq!(color, Some([1.0, 136.0 / 255.0, 0.0]));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        let erro: bool = lua
+            .load("return not pcall(function() viber.damage_number('x', { color = 'vermelho' }) end)")
+            .eval()
+            .expect("cor inválida");
+        assert!(erro);
+    }
+
+    #[test]
+    fn ring_valida_coordenadas_e_cor() {
+        let (lua, globals, _store) = vm();
+        lua.load("viber.ring(3, 4, 2.5, '#ff0000')")
+            .exec()
+            .expect("anel");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::Ring { x, z, radius, color } => {
+                assert_eq!((x, z, radius), (3.0, 4.0, 2.5));
+                assert_eq!(color, Some([1.0, 0.0, 0.0]));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        let erro: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.ring(0, 0, 0) end),
+                not pcall(function() viber.ring(0.0 / 0.0, 0, 1) end),
+                not pcall(function() viber.ring(0, 0, 1, '#12345') end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erro.iter().all(|e| *e));
+    }
+
+    #[derive(Resource, Default)]
+    struct Seen {
+        sfx: usize,
+        feedback: usize,
+    }
+
+    fn count_seen(
+        mut sfx: MessageReader<bevy_ext_core::SfxEvent>,
+        mut feedback: MessageReader<ScriptCommandMessage>,
+        mut seen: ResMut<Seen>,
+    ) {
+        seen.sfx += sfx.read().count();
+        seen.feedback += feedback.read().count();
+    }
+
+    #[test]
+    fn drain_roteia_sfx_e_feedback_para_mensagens() {
+        // O dreno real corre num App mínimo e lê o store DO PROCESSO —
+        // nenhum outro teste enfileira nele (todos usam stores injetados).
+        let mut app = App::new();
+        app.add_message::<bevy_ext_core::SfxEvent>()
+            .add_message::<ScriptCommandMessage>()
+            .init_resource::<Seen>()
+            .add_systems(Update, (commands::drain_commands, count_seen));
+
+        let lua = Lua::new();
+        install_viber_api(&lua).expect("viber do processo");
+        lua.load("viber.sound_at_player('coin') viber.shake(1.0)")
+            .exec()
+            .expect("comandos");
+        // 1.º tick: o dreno escreve as mensagens (o leitor inicializa a
+        // marca no fim da fila — não vê nada ainda); 2.º tick: o leitor
+        // conta.
+        app.update();
+        app.update();
+
+        let seen = app.world().resource::<Seen>();
+        assert_eq!((seen.sfx, seen.feedback), (1, 1));
+    }
+
 
 }
