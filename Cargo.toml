@@ -46,22 +46,22 @@ bevy = { version = "0.20.1", default-features = false }
 
 # Família lockstep + path local (o path é removido no `.crate` publicado).
 bevy_ext_core = { version = "0.1.0", path = "crates/bevy_ext_core" }
-bevy_ext_terrain_runtime = { version = "0.1.0", path = "crates/bevy_ext_terrain_runtime" }
-bevy_ext_postfx = { version = "0.1.0", path = "crates/bevy_ext_postfx" }
-bevy_ext_luau = { version = "0.1.0", path = "crates/bevy_ext_luau" }
-bevy_ext_nav = { version = "0.1.0", path = "crates/bevy_ext_nav" }
 bevy_ext_luau = { version = "0.1.0", path = "crates/bevy_ext_luau" }
 bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
 bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
 bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }
 bevy_ext_terrain = { version = "0.1.0", path = "crates/bevy_ext_terrain" }
-bevy_ext_ui = { version = "0.1.0", path = "crates/bevy_ext_ui" }
 bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
 bevy_ext_audio = { version = "0.1.0", path = "crates/bevy_ext_audio" }
 bevy_ext_nav = { version = "0.1.0", path = "crates/bevy_ext_nav" }
 bevy_ext_ai = { version = "0.1.0", path = "crates/bevy_ext_ai" }
 bevy_ext_ui = { version = "0.1.0", path = "crates/bevy_ext_ui" }
+bevy_ext_postfx = { version = "0.1.0", path = "crates/bevy_ext_postfx" }
 bevy_ext_terrain_runtime = { version = "0.1.0", path = "crates/bevy_ext_terrain_runtime" }
+bevy_rapier3d = "0.37"
+bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_mesh"] }
+bevy_landmass = "0.13"
+landmass_rerecast = "0.4"
 
 # Jackdaw 0.20 line: the editor extension pins the same version as the Vael
 # editor so type paths and `.bsn` defaults agree.
