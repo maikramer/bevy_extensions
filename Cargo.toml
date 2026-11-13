@@ -9,6 +9,7 @@ members = [
     "crates/bevy_ext_save",
     "crates/bevy_ext_terrain",
     "crates/bevy_ext_world",
+    "crates/bevy_ext_ai",
     "crates/bevy_voxel_terrain",
 ]
 exclude = ["crates/bevy_voxel_terrain_jackdaw"]
@@ -33,6 +34,7 @@ bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
 bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
 bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }
 bevy_ext_terrain = { version = "0.1.0", path = "crates/bevy_ext_terrain" }
+bevy_ext_ai = { version = "0.1.0", path = "crates/bevy_ext_ai" }
 bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
 
 # Jackdaw 0.20 line: the editor extension pins the same version as the Vael
@@ -55,3 +57,6 @@ dirs = "7"
 tempfile = "3"
 meshopt = "0.7"
 transvoxel = "2"
+# Física — só o LOS das criaturas (`bevy_ext_ai` faz `cast_ray`); a mesma
+# linha do monólito (`Viber`), sem render/async-collider que a IA não usa.
+bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"] }
