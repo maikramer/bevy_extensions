@@ -1,0 +1,21 @@
+[package]
+name = "bevy_ext_audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Runtime audio for Bevy games: typed buses, ducking, reverb, BGM layers and SFX playback"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "audio", "music", "sfx", "gamedev"]
+categories = ["game-development", "multimedia"]
+
+[dependencies]
+# ECS/asset/câmara: os sistemas leem o `AssetServer` e a câmara (o "ouvido").
+bevy = { workspace = true, features = ["std", "bevy_asset", "bevy_camera"] }
+# Contratos partilhados: SfxClip/SfxEvent/SfxLoudEvent, AudioMixerSettings,
+# Player e InteriorSceneConfig (tipos com o TypePath histórico do viber).
+bevy_ext_core = { workspace = true }
+# Backend kira: buses tipados, instâncias por loop e reverb nos tracks.
+bevy_kira_audio = { workspace = true }
