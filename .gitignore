@@ -8,3 +8,9 @@ extensions/**/*.jdext
 # (excluído do workspace da raiz; ver crates/bevy_ext_engine/Cargo.toml).
 crates/bevy_ext_engine/Cargo.lock
 .viber_engine_target/
+
+# Worktrees locais de sessões concorrentes
+.worktrees/
+
+# Build das extensões Jackdaw (jd build)
+extensions/*/target/
