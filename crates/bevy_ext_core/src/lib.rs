@@ -192,3 +192,125 @@ impl Default for TeleportSettle {
         Self { frames: 30 }
     }
 }
+
+// ── física de efeitos (pura) ─────────────────────────────────────────────
+
+/// Decaimento exponencial do knockback (por segundo).
+pub const KNOCKBACK_DECAY: f32 = 6.0;
+/// Velocidade mínima abaixo da qual o knockback termina.
+pub const KNOCKBACK_EPSILON: f32 = 0.05;
+/// Duração da queda de um destrutível (s).
+pub const FALL_DURATION: f32 = 0.9;
+/// Ângulo total da queda (graus).
+pub const FALL_ANGLE_DEG: f32 = 88.0;
+
+/// Velocidade horizontal residual de um impacto (m/s).
+#[derive(Debug, Clone, Component, Reflect)]
+#[reflect(Component)]
+#[type_path = "viber::physics_fx"]
+pub struct Knockback {
+    pub velocity: Vec3,
+}
+
+/// Destrutível a tombar (`break-style: fall`).
+#[derive(Debug, Clone, Component, Reflect)]
+#[reflect(Component)]
+#[type_path = "viber::physics_fx"]
+pub struct Falling {
+    pub axis: Vec3,
+    pub timer: f32,
+    pub initial: Quat,
+}
+
+pub fn knockback_after(direction: Vec3, strength: f32) -> Knockback {
+    let mut dir = direction;
+    dir.y = 0.0;
+    Knockback {
+        velocity: dir.normalize_or_zero() * strength,
+    }
+}
+
+pub fn knockback_decay_factor(dt: f32) -> f32 {
+    if KNOCKBACK_DECAY > 0.0 {
+        (-KNOCKBACK_DECAY * dt).exp()
+    } else {
+        1.0
+    }
+}
+
+pub fn knockback_travel_factor(dt: f32) -> f32 {
+    if KNOCKBACK_DECAY > 0.0 {
+        (1.0 - knockback_decay_factor(dt)) / KNOCKBACK_DECAY
+    } else {
+        dt
+    }
+}
+
+pub fn push_velocity(displacement: Vec3) -> Vec3 {
+    displacement.with_y(0.0) * KNOCKBACK_DECAY
+}
+
+pub fn fall_rotation(axis: Vec3, angle_deg: f32) -> Quat {
+    let axis = axis.try_normalize().unwrap_or(Vec3::X);
+    Quat::from_axis_angle(axis, angle_deg.to_radians())
+}
+
+pub fn fall_angle(t: f32, duration: f32) -> f32 {
+    let phase = (t / duration).clamp(0.0, 1.0);
+    FALL_ANGLE_DEG * phase * phase
+}
+
+pub fn radial_strength(distance: f32, radius: f32, strength: f32) -> Option<f32> {
+    if radius.is_nan() || radius <= 0.0 || !distance.is_finite() || distance > radius {
+        return None;
+    }
+    Some(strength * (1.0 - 0.6 * (distance / radius)))
+}
+
+// ── câmara conduzida por script ──────────────────────────────────────────
+
+/// Altura do pivô olhado pela câmara de terceira pessoa.
+pub const LOOK_PIVOT_HEIGHT: f32 = 1.5;
+
+#[derive(Debug, Clone, Default, Resource, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::camera"]
+pub struct ScriptCameraFree {
+    pub active: bool,
+    pub pos: Vec3,
+    pub look: Vec3,
+}
+
+#[derive(Debug, Clone, Default, Resource, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::camera"]
+pub struct CameraSnapshot {
+    pub pos: Vec3,
+    pub yaw_deg: f32,
+    pub pitch_deg: f32,
+}
+
+// ── marcadores do HUD ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Reflect)]
+#[type_path = "viber::hud::markers"]
+pub struct HudPoint {
+    pub position: Vec3,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Reflect)]
+#[type_path = "viber::hud::markers"]
+pub struct HudBlip {
+    pub position: Vec3,
+    pub tower: bool,
+}
+
+#[derive(Debug, Clone, Resource, Default, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::hud::markers"]
+pub struct HudMarkers {
+    pub blips: Vec<HudBlip>,
+    pub beacons: Vec<Vec3>,
+    pub waypoint: Option<HudPoint>,
+}
