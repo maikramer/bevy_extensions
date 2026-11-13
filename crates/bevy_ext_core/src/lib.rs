@@ -7,6 +7,7 @@
 //! The types here were moved out of the `viber` monolith in Phase 1; the root
 //! re-exports them so existing `viber::…` paths keep working.
 
+pub mod animation;
 pub mod rng;
 pub mod script_kind;
 

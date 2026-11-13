@@ -15,7 +15,10 @@
 
 use bevy::ecs::reflect::{ReflectComponent, ReflectResource};
 
-pub mod assets;
+// A arte do HUD (fonte, gradientes, marcadores) saiu para o
+// `bevy_ext_engine::hud_assets` (onda exit2/hubs) — o caminho
+// `viber::hud::assets` continua a resolver.
+pub use bevy_ext_engine::hud_assets as assets;
 pub mod compass;
 pub mod elements;
 pub mod interact;

@@ -59,22 +59,10 @@ pub const AUTO_FOLLOW_ALIGN_MIN: f32 = 0.0;
 pub const AUTO_SETTLE_TAU: f32 = 0.9;
 pub const AUTO_SETTLE_MAX_RATE: f32 = 60.0;
 
-/// Camera-to-target offset for a third-person rig. Formula: the
-/// pitch ring sits `height` ABOVE the follow point (`desiredY = followY +
-/// height + sin(pitch)·dist`) — the authored `height` is additive framing,
-/// not the pivot. Pitch 0 keeps the ring horizontal; +90° is straight above.
-pub fn camera_offset(yaw_deg: f32, pitch_deg: f32, distance: f32, height: f32) -> Vec3 {
-    let yaw = yaw_deg.to_radians();
-    // A ±90° o `look_at(…, Vec3::Y)` fica paralelo ao up (roll arbitrário) e
-    // além disso `cos` troca de sinal, pondo a câmara do lado oposto e de
-    // pernas para o ar. Um grau de folga mantém o rig estável.
-    let pitch = pitch_deg.clamp(-89.0, 89.0).to_radians();
-    Vec3::new(
-        yaw.sin() * pitch.cos() * distance,
-        height + pitch.sin() * distance,
-        yaw.cos() * pitch.cos() * distance,
-    )
-}
+// `camera_offset` (e o componente `OrbitCamera`) saíram para o
+// `bevy_ext_engine::camera` (onda exit2/hubs); o caminho histórico continua
+// a resolver.
+pub use bevy_ext_engine::camera::camera_offset;
 
 /// Constante de tempo do salto entre salas da câmara de interior (s).
 ///

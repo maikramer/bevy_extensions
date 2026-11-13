@@ -11,11 +11,12 @@ use bevy_rapier3d::prelude::{
     Collider, GravityScale, ImpulseJoint, RigidBody, SphericalJointBuilder, Velocity,
 };
 
-// TODO(viber-exit): o animador de personagens (`CharacterAnimator`,
-// `FrozenAnimation`, `normalize_clip_name`) e a marca de cadáver (`Corpse`)
-// ainda vivem no monólito; os helpers de IK também.
-use viber::animation::{CharacterAnimator, FrozenAnimation};
-use viber::corpse::Corpse;
+// O contrato de animação vive congelado no `bevy_ext_core`; `Corpse` e os
+// helpers de IK são deste crate.
+use bevy_ext_core::animation::{CharacterAnimator, FrozenAnimation};
+use bevy_ext_core::animation::normalize_clip_name;
+use crate::corpse::Corpse;
+use crate::ik::{is_head, is_left_hip, is_right_hip};
 
 pub const RAGDOLL_SECS: f32 = 2.5;
 
@@ -56,7 +57,7 @@ pub fn chain_spec() -> &'static [(&'static str, Option<&'static str>)] {
 }
 
 fn kind_of(name: &str) -> Option<&'static str> {
-    let n = viber::animation::normalize_clip_name(name);
+    let n = normalize_clip_name(name);
     for (kind, _) in chain_spec() {
         if n == *kind || n.ends_with(kind) {
             return Some(*kind);
@@ -73,7 +74,7 @@ fn kind_of(name: &str) -> Option<&'static str> {
     if n.contains("spine") || n.ends_with("chest") {
         return Some("spine");
     }
-    if viber::ik::is_head(name) {
+    if is_head(name) {
         return Some("head");
     }
     // `upperarm_l`/`upperarm_r` são os braços da pipeline (lado no FIM).
@@ -83,10 +84,10 @@ fn kind_of(name: &str) -> Option<&'static str> {
     if n.ends_with("rightarm") || n.ends_with("rightupperarm") || n.ends_with("upperarmr") {
         return Some("rightarm");
     }
-    if viber::ik::is_left_hip(name) {
+    if is_left_hip(name) {
         return Some("leftupleg");
     }
-    if viber::ik::is_right_hip(name) {
+    if is_right_hip(name) {
         return Some("rightupleg");
     }
     None
@@ -340,18 +341,17 @@ impl Plugin for RagdollPlugin {
 mod tests {
     use super::*;
     use bevy::animation::graph::AnimationNodeIndex;
+    use bevy_ext_core::animation::AnimState;
 
-    /// Animator mínimo para os testes do ragdoll.
-    ///
-    /// TODO(viber-exit): réplica de `animation::test_animator`, que é
-    /// `#[cfg(test)]` no monólito e por isso não é visível daqui.
+    /// Animator mínimo para os testes do ragdoll (réplica de
+    /// `animation::test_animator`, que é `#[cfg(test)]` no monólito).
     fn test_animator(player: Entity) -> CharacterAnimator {
         CharacterAnimator {
             clip_names: vec!["idle".into()],
             nodes: vec![AnimationNodeIndex::new(1)],
             durations: vec![1.0],
             player,
-            state: Some(viber::animation::AnimState::Idle),
+            state: Some(AnimState::Idle),
             current: None,
             action_time: 0.0,
             locked: false,

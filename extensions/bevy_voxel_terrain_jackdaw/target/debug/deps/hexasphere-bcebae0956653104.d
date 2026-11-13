@@ -1,0 +1,9 @@
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/hexasphere-bcebae0956653104.d: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/interpolation.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/math.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/shapes.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/slice.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/libhexasphere-bcebae0956653104.rmeta: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/interpolation.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/math.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/shapes.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/slice.rs
+
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/lib.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/interpolation.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/math.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/shapes.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hexasphere-19.0.0/src/slice.rs:

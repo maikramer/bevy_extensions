@@ -33,18 +33,23 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
-// TODO(viber-exit): `profiler` (Group/timed), `terrain` (runtime, cliffs,
-// water), `spawner` (exclusões) e `ambient::point_in_polygon` ainda vivem no
-// monólito; `recipes::spawn::startup` e `scene_loader::SceneLoad` são os
-// ganchos de ordem do spawn de cena.
-use viber::ambient::point_in_polygon;
-use viber::profiler::{Group, timed};
-use viber::recipes::spawn::startup;
-use viber::scene_loader::SceneLoad;
-use viber::spawner::{SpawnExclusion, SpawnExclusions};
-use viber::terrain::cliffs::CliffMask;
-use viber::terrain::runtime::TerrainRuntime;
-use viber::terrain::water::{CONTOUR_PEAK, WaterKind};
+// Profiling local (núcleo `timed` movido para `crate::profiler`), exclusões
+// de spawn e schedule de carga de cena — também deste crate; terreno,
+// biomas e `point_in_polygon` dos crates de terreno/postfx.
+use bevy_ext_postfx::env::point_in_polygon;
+use bevy_ext_terrain_runtime::cliffs::CliffMask;
+use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+use bevy_ext_terrain_runtime::water::{CONTOUR_PEAK, WaterKind};
+use crate::profiler::{Group, timed};
+use crate::scene_loader::SceneLoad;
+use crate::spawner::{SpawnExclusion, SpawnExclusions};
+
+/// Âncora de ordem do spawn do mundo: os hosts inserem o sistema de spawn
+/// das receitas neste set (`.in_set(WorldSpawn)`) — no monólito era o
+/// `recipes::spawn::startup`. Sem a ordem, o shader da relva especializava
+/// as consts do vento com o fallback antes do `<Weather>` do mundo chegar.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WorldSpawn;
 
 use crate::worldsys::{BiomeRegions, WeatherState};
 
@@ -538,12 +543,13 @@ impl bevy::app::Plugin for GrassPlugin {
         app.init_resource::<GrassSettings>()
             .init_resource::<GrassField>()
             .add_plugins(bevy::pbr::MaterialPlugin::<GrassMaterial>::default())
-            // The wind consts come from `<Weather>`, which `spawn::startup`
-            // inserts — without the ordering, the shader could specialize on
-            // the fallback wind before the world's weather lands.
+            // The wind consts come from `<Weather>`, which the world spawn
+            // (set [`WorldSpawn`]) inserts — without the ordering, the shader
+            // could specialize on the fallback wind before the world's
+            // weather lands.
             .add_systems(
                 bevy::app::Startup,
-                configure_shader.after(startup),
+                configure_shader.after(WorldSpawn),
             )
             // Troca de cena: o `<Weather>` do mundo NOVO tem de voltar a
             // especializar as consts do vento no shader. O `Assets<Shader>` é
@@ -552,7 +558,7 @@ impl bevy::app::Plugin for GrassPlugin {
             // mundo do jogo não declara nenhum) para sempre.
             .add_systems(
                 SceneLoad,
-                configure_shader.after(startup),
+                configure_shader.after(WorldSpawn),
             )
             .add_systems(
                 bevy::app::Update,
@@ -1579,6 +1585,7 @@ fn emit_pebble(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy_ext_postfx::env::BiomeRegionData;
 
     #[test]
     fn config_block_is_rewritten() {
@@ -1707,7 +1714,7 @@ mod tests {
     fn biome_reads_the_authored_wedges() {
         let regions = BiomeRegions {
             list: vec![
-                viber::worldsys::BiomeRegionData {
+                BiomeRegionData {
                     id: "desert".into(),
                     display_name: "Deserto".into(),
                     polygon: vec![
@@ -1722,7 +1729,7 @@ mod tests {
                     pp_bloom_strength: None,
                     rain_scale: None,
                 },
-                viber::worldsys::BiomeRegionData {
+                BiomeRegionData {
                     id: "dark-forest".into(),
                     display_name: "Floresta Sombria".into(),
                     polygon: vec![

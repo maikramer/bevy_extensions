@@ -9,6 +9,12 @@
 pub mod spawn;
 pub mod transform;
 
+// O IR puro das receitas (`Shape`, `TransformSpec`,
+// `parse_component_string`) saiu para o `bevy_ext_scene` (onda exit2/hubs)
+// — o physics extraído e o engine leem o MESMO tipo. Aqui ficam o parser
+// (`parse_*`, `ParsedWorld`) e o spawn.
+pub use bevy_ext_scene::recipes::{Shape, TransformSpec, parse_component_string};
+
 use crate::physics::{BodyKind, PhysicsSpec, parse_body};
 use std::collections::BTreeMap;
 
@@ -152,43 +158,6 @@ struct ParseCtx {
     composition_depth: usize,
     /// `<Cinematic>` lidas pelo caminho (o mundo as toca, não as spawna).
     cinematics: Vec<crate::cinematic::CinematicSpec>,
-}
-
-/// Local transform of an entity (world transform comes from the hierarchy).
-#[derive(Debug, Clone)]
-pub struct TransformSpec {
-    pub translation: [f32; 3],
-    /// Degrees, XYZ order (`euler="x y z"`).
-    pub euler_deg: Option<[f32; 3]>,
-    /// Raw quaternion `x y z w` — wins over `euler` when both are present.
-    pub rotation_quat: Option<[f32; 4]>,
-    pub scale: [f32; 3],
-}
-
-impl Default for TransformSpec {
-    fn default() -> Self {
-        Self {
-            translation: [0.0; 3],
-            euler_deg: None,
-            rotation_quat: None,
-            scale: [1.0; 3],
-        }
-    }
-}
-
-/// Mesh primitive shapes, mirroring the `bevy::math::primitives` constructors.
-#[derive(Debug, Clone)]
-pub enum Shape {
-    /// `Cuboid` — half extents per axis.
-    Cuboid { half_size: [f32; 3] },
-    /// `Sphere` — radius.
-    Sphere { radius: f32 },
-    /// `Cylinder` — half height + radius.
-    Cylinder { half_height: f32, radius: f32 },
-    /// `Plane3d` — half size on the XZ plane.
-    Plane { half_size: [f32; 2] },
-    /// `Capsule` — radius + half height (vertical).
-    Capsule { radius: f32, half_height: f32 },
 }
 
 /// `StandardMaterial` overrides; unset fields use Bevy defaults.
@@ -1657,22 +1626,6 @@ fn parse_common(node: &XmlNode, ctx: &mut ParseCtx) -> Result<(Common, Vec<(Stri
         }
     }
     Ok((common, rest))
-}
-
-/// Parse a component string (`"pos: 0 1 0; preset: fire"`) into
-/// key/value pairs; keys are lowercased and trimmed.
-pub fn parse_component_string(value: &str) -> Vec<(String, String)> {
-    value
-        .split(';')
-        .filter_map(|part| {
-            let part = part.trim();
-            if part.is_empty() {
-                return None;
-            }
-            let (key, val) = part.split_once(':')?;
-            Some((key.trim().to_ascii_lowercase(), val.trim().to_string()))
-        })
-        .collect()
 }
 
 fn warn_ignored(node: &XmlNode, rest: Vec<(String, String)>, ctx: &mut ParseCtx) {

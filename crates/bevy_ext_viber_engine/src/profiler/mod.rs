@@ -26,9 +26,14 @@ pub mod frames_tab;
 pub mod mem;
 pub mod physics_tab;
 pub mod script;
-pub mod timed;
-pub mod trace;
 pub mod world_tab;
+
+// O núcleo de instrumentação (`timed` — anéis de stats por sistema) e o
+// gravador de traces saíram para o `bevy_ext_engine::profiler` (onda
+// exit2/hubs); as TABS (queries de mundo/física/áudio) continuam aqui e lêem
+// os MESMOS anéis globais pelo reexport.
+pub use bevy_ext_engine::profiler::timed;
+pub use bevy_ext_engine::profiler::trace;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -46,7 +51,7 @@ use crate::particles::ParticleEmitter;
 use crate::player::Player;
 use crate::terrain::plugin::TerrainChunk;
 
-pub use timed::{Group, TimingStats, timed};
+pub use timed::{Group, TimingStats};
 
 /// Frames guardados na janela deslizante (~3 s a 60 fps).
 const FRAME_WINDOW: usize = 180;

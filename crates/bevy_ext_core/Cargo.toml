@@ -18,5 +18,6 @@ keywords = ["bevy", "gamedev", "engine", "contracts"]
 categories = ["game-development"]
 
 [dependencies]
-# Only the ECS/reflect/math re-exports: no window, render or audio stack.
-bevy = { workspace = true, features = ["std"] }
+# ECS/reflect/math + a camada de animação (contrato `CharacterAnimator`/
+# `FrozenAnimation`: `AnimationNodeIndex`/`AnimationGraphHandle` do glTF).
+bevy = { workspace = true, features = ["std", "bevy_animation"] }

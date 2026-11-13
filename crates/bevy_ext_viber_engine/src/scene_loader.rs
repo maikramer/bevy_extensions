@@ -22,7 +22,6 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use bevy::ecs::change_detection::Tick;
 use bevy::ecs::query::SpawnDetails;
-use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 use serde::Serialize;
 
@@ -39,9 +38,10 @@ pub struct SceneEntity;
 #[reflect(Component)]
 pub struct Persistent;
 
-/// O schedule que (re)carrega uma cena: os mesmos sistemas do `Startup` que montam o mundo.
-#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SceneLoad;
+// O schedule saiu para o `bevy_ext_engine::scene_loader` (onda exit2/hubs)
+// — o grass/cinemática extraídos entram no MESMO schedule; o caminho
+// histórico continua a resolver.
+pub use bevy_ext_engine::scene_loader::SceneLoad;
 
 /// Conta as cenas carregadas (sistemas "uma vez por cena" comparam com o seu `Local`).
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq, Reflect)]

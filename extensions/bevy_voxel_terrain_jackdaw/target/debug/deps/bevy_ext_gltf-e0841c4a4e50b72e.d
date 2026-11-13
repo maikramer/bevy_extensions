@@ -1,0 +1,8 @@
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/bevy_ext_gltf-e0841c4a4e50b72e.d: /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/lib.rs /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/meshopt.rs /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/glb_bounds.rs /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/textures.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/libbevy_ext_gltf-e0841c4a4e50b72e.rmeta: /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/lib.rs /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/meshopt.rs /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/glb_bounds.rs /media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/textures.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/lib.rs:
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/meshopt.rs:
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/glb_bounds.rs:
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/crates/bevy_ext_gltf/src/textures.rs:

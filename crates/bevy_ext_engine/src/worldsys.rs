@@ -22,12 +22,12 @@ pub use bevy_ext_core::{
 // SplitMix64 que o `spawner` do monólito reexporta do core.
 use bevy_ext_core::rng::Rng;
 use bevy_ext_core::Player as PlayerMarker;
-// TODO(viber-exit): amostragem de terreno, biomas parseados do mundo, o
-// `point_in_polygon` do `ambient` e o ganho do IBL ainda vivem no monólito.
-use viber::ambient::point_in_polygon;
-use viber::ibl::IBL_INTENSITY;
-use viber::terrain::runtime::TerrainRuntime;
-pub use viber::worldsys::BiomeRegions;
+// Amostragem de terreno (runtime de terreno), biomas com TypePath congelado
+// no postfx, o mesmo `point_in_polygon` e o ganho do IBL (neste crate).
+use bevy_ext_postfx::env::point_in_polygon;
+use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+use crate::ibl::IBL_INTENSITY;
+pub use bevy_ext_postfx::env::BiomeRegions;
 
 /// Como o `<DayCycle>` conduz o VISUAL (sol, céu, névoa, grade).
 ///
@@ -1119,6 +1119,7 @@ impl Plugin for WorldsysPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy_ext_postfx::env::BiomeRegionData;
 
     /// Câmara de interior: o alvo é o CENTRO DA SALA, quantizado pela grelha
     /// — é o que faz o enquadramento saltar de sala em sala (JRPG 16 bits) em
@@ -1332,7 +1333,7 @@ mod tests {
     #[test]
     fn test_rain_scale_at_picks_the_region_under_the_point() {
         let region = |id: &str, polygon: Vec<[f32; 2]>, rain_scale: Option<f32>| {
-            viber::worldsys::BiomeRegionData {
+            BiomeRegionData {
             id: id.into(),
             display_name: String::new(),
             polygon,

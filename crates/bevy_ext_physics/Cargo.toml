@@ -3,7 +3,7 @@ name = "bevy_ext_physics"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Rapier physics for the Viber world contract: declarative colliders, deferred mesh shapes, voxel terrain streaming, knockback/fall FX and short ragdolls"
+description = "Rapier physics for the Viber world contract: declarative colliders, deferred mesh shapes, voxel terrain streaming, knockback/fall FX, ragdolls, corpse marker and foot/head IK"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -25,14 +25,11 @@ bevy = { workspace = true, features = [
 ] }
 bevy_rapier3d.workspace = true
 bevy_ext_core = { workspace = true }
-# TODO(viber-exit): interop transitória com o monólito enquanto o terrain
-# runtime (`TerrainRuntime`/`TerrainChunk`/`VoxelChunk`/`ChunkMeshData`),
-# o sampler do herói (`ground_near`) e os tipos de animação/morte
-# (`CharacterAnimator`, `Corpse`) não saem para crates próprios. O caminho
-# aponta para um snapshot local do checkout irmão (`viber-wt/Viber`,
-# fora do git) com symlinks `bevy_extensions`/`CelerAI` para os irmãos —
-# no merge, trocar por `path = "../../../Viber"`.
-viber = { path = "../../viber-wt/Viber" }
+# IR das receitas (`Shape`/`TransformSpec`/`parse_component_string`).
+bevy_ext_scene = { workspace = true }
+# Runtime de terreno: streaming de colliders voxel lê `TerrainRuntime`,
+# `TerrainChunk`, `VoxelChunk`, `TerrainSet` e o `ChunkMeshData` do mesher.
+bevy_ext_terrain_runtime = { workspace = true }
 
 [dev-dependencies]
 # (nenhuma por agora; os testes usam MinimalPlugins do próprio bevy)

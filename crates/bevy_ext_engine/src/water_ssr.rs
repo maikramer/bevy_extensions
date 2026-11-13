@@ -55,10 +55,8 @@ use bevy::render::{Extract, Render, RenderApp, RenderStartup, RenderSystems};
 
 use std::sync::OnceLock;
 
-// TODO(viber-exit): `terrain::runtime` (corpos de água) e
-// `config::ReflectionsConfig` (config.yaml) ainda vivem no monólito.
-use viber::config::ReflectionsConfig;
-use viber::terrain::runtime::TerrainRuntime;
+use crate::config::ReflectionsConfig;
+use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
 
 use crate::graphics::{GraphicsPreset, preset};
 use crate::worldsys::WeatherState;

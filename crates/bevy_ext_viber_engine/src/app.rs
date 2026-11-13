@@ -24,7 +24,6 @@ use bevy::app::{App, PluginGroup};
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::{Res, ResMut};
 use bevy::log::info;
-use bevy::prelude::Resource;
 use bevy::time::{Time, Virtual};
 use bevy_kira_audio::AudioApp;
 
@@ -39,15 +38,9 @@ use crate::{
     spawner, streaming, terrain, textures, time_fx, ui, worldsys, xml,
 };
 
-/// Para quê a App é montada.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
-pub enum RunMode {
-    /// `viber run`: o jogo.
-    #[default]
-    Game,
-    /// Modo de edição in-process: cena congelada.
-    Edit,
-}
+// `RunMode` saiu para o `bevy_ext_engine::app` (onda exit2/hubs); o
+// caminho histórico continua a resolver.
+pub use bevy_ext_engine::app::RunMode;
 
 /// De onde vêm os scripts de comportamento.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

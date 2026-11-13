@@ -27,17 +27,10 @@ pub struct ScriptSay {
     pub seconds: f32,
 }
 
-/// A component marking an entity as owned by a Luau script (`scripts/<path>`
-/// relative to the world directory).
-///
-/// WIRED-BY-ORCHESTRATOR: inserted by the spawn step; this module only
-/// observes it (`on_add` / update / `on_remove`).
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component)]
-pub struct LuaScriptRef {
-    /// Script path relative to `world_dir/scripts/` (e.g. `"doors/gate.lua"`).
-    pub path: String,
-}
+// A marca de script saiu para o `bevy_ext_engine::luau` (onda exit2/hubs)
+// — a folhagem/cinemática extraídas filtram o MESMO tipo; o caminho
+// histórico continua a resolver.
+pub use bevy_ext_engine::luau::LuaScriptRef;
 
 /// Valores por instância dos props exportados pelo script (atributos
 /// `prop-<nome>` do nó, sem o prefixo, texto cru). O tipo vem das anotações

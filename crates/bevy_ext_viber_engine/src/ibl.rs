@@ -55,10 +55,11 @@ const TINT_MIX_GROUND: f32 = 0.65;
 /// lia como falta de ancoragem das silhuetas).
 const IBL_GROUND_FROM_HORIZON: f32 = 0.42;
 
-/// Escala da intensidade do IBL gerado. O filtro integra a RADIÂNCIA do
-/// cubemap — a paleta do `AtmosphereState` vive na mesma escala que o domo
-/// do céu desenha, portanto 1.0 deixa o ambiente proporcional ao céu visível.
-pub const IBL_INTENSITY: f32 = 1.0;
+
+// O ganho do IBL saiu para o `bevy_ext_engine::ibl` (onda exit2/hubs) —
+// o caminho histórico continua a resolver.
+pub use bevy_ext_engine::ibl::IBL_INTENSITY;
+
 
 /// Marcador do probe do IBL (um só, tamanho do mundo).
 #[derive(Component, Reflect)]
