@@ -77,6 +77,39 @@ pub fn parse_vec2_list(value: &str, ctx: &str) -> Result<Vec<[f32; 2]>> {
         .collect()
 }
 
+/// Parse `"x y z x y z …"` into a list of 3D points (sweep paths).
+/// An empty value yields an empty list; a component count not divisible by 3
+/// is an error.
+pub fn parse_vec3_list(value: &str, ctx: &str) -> Result<Vec<[f32; 3]>> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    if !parts.len().is_multiple_of(3) {
+        bail!(
+            "{ctx}: expected a multiple of 3 components (x y z triples), got {}: `{value}`",
+            parts.len()
+        );
+    }
+    parts
+        .chunks(3)
+        .map(|triple| {
+            Ok([
+                parse_f32(triple[0], ctx)?,
+                parse_f32(triple[1], ctx)?,
+                parse_f32(triple[2], ctx)?,
+            ])
+        })
+        .collect()
+}
+
+/// Parse `"x y x y | x y x y"` into one contour per `|`-separated group
+/// (holes of an extruded polygon). Each group uses [`parse_vec2_list`].
+pub fn parse_vec2_groups(value: &str, ctx: &str) -> Result<Vec<Vec<[f32; 2]>>> {
+    value
+        .split('|')
+        .filter(|group| !group.trim().is_empty())
+        .map(|group| parse_vec2_list(group, ctx))
+        .collect()
+}
+
 /// Parse `"a"` or `"a b c …"` into a list of finite numbers — a value that
 /// varies along a path (a cave that widens into a hall, say).
 ///

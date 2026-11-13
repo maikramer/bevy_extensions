@@ -1,0 +1,29 @@
+[package]
+name = "bevy_ext_gradmesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Primitive descriptors and bevy_gradmesh conversion shared by the Vael game and the Jackdaw editor"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "procedural", "mesh", "editor", "gradmesh"]
+categories = ["game-development", "rendering"]
+
+[features]
+default = []
+# Exact Rapier colliders for the procedural shapes. The editor preview does
+# not need it; the game enables it.
+physics = ["dep:bevy_rapier3d"]
+
+[dependencies]
+# Geometria/procedurais: o crate decide o look dos objetos de primitivas tanto
+# no jogo como no preview do editor, por isso é o MESMO código nos dois.
+bevy = { workspace = true, features = ["bevy_render", "bevy_pbr"] }
+# Contrato de primitivas (Shape/MaterialSpec/PrimitivePart), sem render.
+bevy_ext_scene.workspace = true
+# Pin exato: o crate publica várias versões por semana (0.3.x).
+bevy_gradmesh = "=0.3.9"
+# Colliders exatos (feature `physics`). A mesma versão do jogo.
+bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"], optional = true }

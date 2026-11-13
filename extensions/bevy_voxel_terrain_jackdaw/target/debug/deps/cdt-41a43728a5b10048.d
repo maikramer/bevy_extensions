@@ -1,0 +1,11 @@
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/cdt-41a43728a5b10048.d: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/contour.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/predicates.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/half.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/hull.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/indexes.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/triangulate.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/libcdt-41a43728a5b10048.rmeta: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/contour.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/predicates.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/half.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/hull.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/indexes.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/triangulate.rs
+
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/lib.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/contour.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/predicates.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/half.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/hull.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/indexes.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cdt-0.1.0/src/triangulate.rs:

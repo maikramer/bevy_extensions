@@ -1,0 +1,8 @@
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/transvoxel_data-fc8326b62527b3b7.d: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/regular_cell_data.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/transition_cell_data.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/prelude.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/libtransvoxel_data-fc8326b62527b3b7.rmeta: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/regular_cell_data.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/transition_cell_data.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/prelude.rs
+
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/lib.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/regular_cell_data.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/transition_cell_data.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/transvoxel-data-0.2.1/src/prelude.rs:

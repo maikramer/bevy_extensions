@@ -1,0 +1,36 @@
+[package]
+name = "bevy_voxel_terrain_jackdaw"
+version = "0.1.18"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Official Jackdaw editor extension for bevy_voxel_terrain: VoxelTerrain panel and viewport preview"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/maikramer/bevy_extensions"
+authors = ["Maikeu Locatelli"]
+readme = "README.md"
+publish = false
+
+# An official Jackdaw extension project is standalone: `jd build` generates a
+# shim under `.jackdaw/` and compiles this crate against the editor's SDK.
+[workspace]
+
+[package.metadata.jackdaw]
+label = "Vael: Voxel Terrain"
+
+[dependencies]
+# Albedo das camadas do splat (webp) para o preview do terreno.
+image-webp = "0.2"
+# `jd` redirects these to the editor's shared SDK dylib.
+bevy = "0.20"
+jackdaw_extension = "0.20"
+# `DefaultArea` for the dock window; same SDK copy as jackdaw_extension.
+jackdaw_api = "0.20"
+
+# Runtime-safe scene contract and core algorithms. These are ordinary path
+# dependencies: they must stay independent of Jackdaw and Bevy's editor side.
+bevy_ext_terrain = { path = "../../crates/bevy_ext_terrain" }
+bevy_voxel_terrain = { path = "../../crates/bevy_voxel_terrain" }
+bevy_ext_world = { path = "../../crates/bevy_ext_world" }
+# Só `GlbBounds` (lê o AABB do GLB sem loader): o preview oficial precisa da
+# pegada dos props que o pool meshopt/KTX2 não deixa carregar.
+bevy_ext_gltf = { path = "../../crates/bevy_ext_gltf" }

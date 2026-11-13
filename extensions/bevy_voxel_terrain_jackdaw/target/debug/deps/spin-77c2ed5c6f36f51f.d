@@ -1,0 +1,12 @@
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/spin-77c2ed5c6f36f51f.d: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/barrier.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/lazylock.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/mutex.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/mutex/spin.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/once.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/relax.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/rwlock.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/libspin-77c2ed5c6f36f51f.rmeta: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/barrier.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/lazylock.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/mutex.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/mutex/spin.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/once.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/relax.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/rwlock.rs
+
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/lib.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/barrier.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/lazylock.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/mutex.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/mutex/spin.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/once.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/relax.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/spin-0.12.3/src/rwlock.rs:

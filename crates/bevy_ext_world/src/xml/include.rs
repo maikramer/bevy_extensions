@@ -24,10 +24,16 @@ use super::XmlNode;
 pub const MAX_INCLUDE_DEPTH: usize = 8;
 
 /// A fully expanded world: root attributes plus include-free children.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LoadedWorld {
     pub root_attrs: Vec<(String, String)>,
     pub nodes: Vec<XmlNode>,
+    /// Entidades `.bsn` sem `WorldNode` com componentes próprios (definições
+    /// autoradas no Jackdaw: ambiente, pós-processamento, espécies…). O
+    /// parser do DSL não as vê; o jogo lê-as com [`crate::bsn::settings`].
+    pub native: Vec<crate::bsn::NativeEntity>,
+    /// Documentos lidos para montar o mundo (para recarregar ao gravar).
+    pub sources: Vec<std::path::PathBuf>,
 }
 
 /// Directório pai de um caminho já canónico. `/` canónico não tem pai — os
@@ -94,6 +100,7 @@ pub fn load_world_in(path: &Path, root_dir: &Path) -> Result<LoadedWorld> {
     Ok(LoadedWorld {
         root_attrs: doc.root_attrs,
         nodes,
+        ..Default::default()
     })
 }
 

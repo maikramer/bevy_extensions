@@ -30,6 +30,14 @@ como app/fachada transitória até o Vael deixar de o usar.
 | `bevy_ext_terrain` | contrato de cena do voxel: `VoxelTerrain`/features, adapter `.ahgt` | `bevy_voxel_terrain` |
 | `bevy_ext_save` | `SaveGame`, slots, paths, IO atómico e migração legacy | `bevy_ext_world` |
 
+`bevy_ext_world` tem uma feature opcional `terrain` (dep `bevy_ext_terrain`):
+o loader devolve os componentes `VoxelTerrain`/`VoxelCave`/`VoxelArch`/
+`VoxelBridge` à vista DSL do Viber, e o `bsn_migrate --terrain` faz a
+migração inversa (âncora + `<Cave>` → componente) com gate de ida-e-volta por
+valor. Desligada por defeito — a ordem de publicação core→world→… não muda;
+o Viber e o `viber_tools_core` liguem-na. O `bsn_equiv` precisa dela para
+comparar mundos com features em componente.
+
 `bevy_voxel_terrain` é a exceção deliberada ao prefixo: o sistema é único e o
 nome está livre. `bevy_voxel_terrain_jackdaw` é WIP concorrente (plugin do
 editor Jackdaw) e fica fora do workspace/release até compilar.
@@ -88,3 +96,25 @@ o que já tem crate pronto (`bevy_hanabi`, `bevy_kira_audio`,
 heightfield/SDF, água de lagos/rios, decals, streaming/LOD, animação/IK, UI
 XML, save slots e profiler game-aware continuam sem equivalente no crates.io
 e justificam os pacotes da família.
+
+## Extensões oficiais do Jackdaw (2026-11-12)
+
+O Vael deixou de usar o editor próprio (`vael-editor`) como fluxo. A autoria
+é no **Jackdaw oficial** (`jd open .`); o que é nosso entra como extensão
+`.jdext` assinada, num projeto standalone em `extensions/`.
+
+| Projeto | O que é | Estado |
+|---|---|---|
+| `crates/bevy_ext_terrain` | Componentes runtime-safe `VoxelTerrain`/`VoxelCave`/`VoxelArch`/`VoxelBridge`, leitor `.ahgt` e `build_voxel_field` | 0.1.0, 4 testes |
+| `extensions/bevy_voxel_terrain_jackdaw` | Extensão oficial: painel `Vael: Voxel Terrain`, operadores `vael.voxel.*`/`vael.preview.*`, preview progressivo do mundo (heightfield + paint, caixas, modelos reais e um mesh único para os distantes) | 0.1.12, `.jdext` instalado e carregado |
+
+Ciclo: `jd build` → `jd extension pack` → `jd extension install
+<bundle>.jdext --trust-publisher` → reiniciar o editor (extensões com
+`app_plugin` ativam no arranque seguinte). `jackdaw check-extensions
+--expect <id>` valida sem abrir janela.
+
+Limite conhecido: o editor oficial regista o asset source antes de qualquer
+extensão e o stock loader não lê `EXT_meshopt_compression`/KTX2. O preview
+do mundo descodifica os GLBs do pool para `assets/public/.jackdaw-cache/glb`
+e mostra o resultado; as cenas glTF reais ficam limitadas ao tier próximo. O
+resto do mundo é caixa (perto) ou o mesh fundido (longe).

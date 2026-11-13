@@ -1,0 +1,29 @@
+[package]
+name = "vael_scene_jackdaw"
+version = "0.1.5"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Jackdaw editor extension for Vael scenes: outliner icons, typed-component categories, gizmos (colliders, spawn regions, portals, lights) and a scene panel with checks"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/maikramer/bevy_extensions"
+authors = ["Maikeu Locatelli"]
+publish = false
+
+# Extensão oficial do Jackdaw: projeto standalone; `jd build` gera o shim em
+# `.jackdaw/` e compila contra o SDK do editor.
+[workspace]
+
+[package.metadata.jackdaw]
+label = "Vael: Cena"
+
+[dependencies]
+# `jd` redireciona estes para o dylib partilhado do SDK do editor.
+bevy = "0.20"
+jackdaw_extension = "0.20"
+jackdaw_api = "0.20"
+
+# Componentes tipados da cena (colisor, corpo, destrutível, colheita).
+bevy_ext_scene = { path = "../../crates/bevy_ext_scene" }
+# Altura do chão para colocar/pintar props (o mesmo heightfield do jogo).
+bevy_ext_terrain = { path = "../../crates/bevy_ext_terrain" }
+bevy_voxel_terrain = { path = "../../crates/bevy_voxel_terrain" }

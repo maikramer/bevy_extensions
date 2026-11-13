@@ -1,0 +1,15 @@
+[package]
+name = "bevy_ext_elements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Scene settings for bevy_elements: world clock, location, start weather and a sun-position helper"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "settings", "editor", "jackdaw"]
+categories = ["game-development"]
+
+[dependencies]
+# Contrato de cena partilhado pelo jogo e pelo editor: só ECS/reflect/math.
+bevy = { workspace = true, features = ["std"] }

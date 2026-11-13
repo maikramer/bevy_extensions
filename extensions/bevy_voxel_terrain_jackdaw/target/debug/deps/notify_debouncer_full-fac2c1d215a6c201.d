@@ -1,0 +1,8 @@
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/notify_debouncer_full-fac2c1d215a6c201.d: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/cache.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/time.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/file_id_map.rs
+
+/media/maikeu/b1e73891-ddde-49a0-9382-903accb68b49/GitClones/bevy_extensions/extensions/bevy_voxel_terrain_jackdaw/target/debug/deps/libnotify_debouncer_full-fac2c1d215a6c201.rmeta: /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/lib.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/cache.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/time.rs /home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/file_id_map.rs
+
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/lib.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/cache.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/time.rs:
+/home/maikeu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/notify-debouncer-full-0.7.0/src/file_id_map.rs:
