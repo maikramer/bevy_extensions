@@ -11,6 +11,12 @@ readme = "README.md"
 keywords = ["bevy", "physics", "rapier", "colliders", "voxel"]
 categories = ["game-development"]
 
+[features]
+# Apps de teste headless (sem `GizmoConfigStore`): o debug render do rapier,
+# mesmo desligado, panica à procura do store — não registar o plugin. O
+# dev-dep do monólito liga esta feature nos testes dele.
+headless = []
+
 [dependencies]
 bevy = { workspace = true, features = [
     "std",
@@ -23,7 +29,9 @@ bevy = { workspace = true, features = [
     "bevy_mesh",
     "bevy_render",
 ] }
-bevy_rapier3d.workspace = true
+# Mesma linha do `viber`: dim3 + debug-render (o toggle F3 dos colisores usa
+# o `RapierDebugRenderPlugin`); a feature fica explícita para o `-p` isolado.
+bevy_rapier3d = { workspace = true, features = ["debug-render-3d"] }
 bevy_ext_core = { workspace = true }
 # IR das receitas (`Shape`/`TransformSpec`/`parse_component_string`).
 bevy_ext_scene = { workspace = true }

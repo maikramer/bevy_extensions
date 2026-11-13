@@ -12,6 +12,13 @@
     clippy::type_complexity
 )]
 
+// NOTA(exit2/scene): `config`, `camera`, `interact`, `meshopt`, `particles`,
+// `animation` (o `AnimatedScene`), `hud` e `music` têm GÉMEOS no
+// `bevy_ext_scene_runtime` — este crate mantém as cópias porque as retirar
+// (com shim para o scene_runtime) é CICLO enquanto o scene_runtime depender
+// deste crate pela ponte do `luau` (onda exit2/luau). Quando a ponte morrer,
+// apagar as cópias e re-exportar daí. O `terrain` e o `physics` JÁ são shims
+// para os crates extraídos.
 pub mod a11y;
 pub mod adaptive_quality;
 pub mod ai;
@@ -58,7 +65,7 @@ pub mod music;
 pub mod nav;
 pub mod netplay;
 pub mod particles;
-pub mod physics;
+pub use bevy_ext_physics::physics as physics;
 pub mod physics_fx;
 pub mod placement;
 pub mod player;
@@ -87,7 +94,8 @@ pub use bevy_ext_engine::sky_nishita;
 pub mod spawn_gate;
 pub mod spawner;
 pub mod streaming;
-pub mod terrain;
+pub use bevy_ext_terrain_runtime as terrain;
+pub mod terrain_host;
 pub mod textures;
 pub mod time_fx;
 pub mod ui;

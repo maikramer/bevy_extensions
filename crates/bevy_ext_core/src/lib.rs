@@ -54,6 +54,21 @@ impl MenusOpen {
     }
 }
 
+/// Para quê a App foi montada: o jogo de si próprio, ou o editor
+/// in-process (cena congelada, portais e trocas de cena silenciados).
+///
+/// Nascido em `viber::app`; o runtime de cena (`bevy_ext_scene_runtime`) e
+/// o host leem o MESMO resource — um enum pequeno de mais para pagar uma
+/// dependência entre crates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
+pub enum RunMode {
+    /// `viber run`: o jogo.
+    #[default]
+    Game,
+    /// Modo de edição in-process: cena congelada.
+    Edit,
+}
+
 /// A toast requested by a script (`viber.toast`) or by gameplay code.
 ///
 /// The HUD consumes it; the bridge logs it. Kept in `core` so the save layer

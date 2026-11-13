@@ -908,8 +908,12 @@ pub fn physics_anchors(app: &mut App, schedule: impl bevy::ecs::schedule::Schedu
 /// Lock partilhado pelos testes que tocam nos globais (anéis, acumulador,
 /// freeze). `script.rs` também o usa: `reset` limpa o acumulador por frame e
 /// não pode correr a meio de um teste de atribuição.
-#[cfg(test)]
-pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+///
+/// Público e sempre compilado: os testes do monólito (`viber::profiler` —
+/// agora neste crate via shim) fecham-no por cima da ponte `pub use`, e uma
+/// dependência nunca é construída com `cfg(test)` do consumidor.
+#[allow(dead_code)]
+pub static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {

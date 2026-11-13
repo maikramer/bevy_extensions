@@ -472,8 +472,10 @@ impl bevy::app::Plugin for PhysicsPlugin {
         // [`ColliderDebugToggle`] sem precisar da env.
         // Nos testes headless não há `GizmoPlugin`: o debug render (mesmo
         // desligado) panica à procura do store. O jogo e o editor trazem os
-        // gizmos pelos DefaultPlugins.
-        if self.debug || !cfg!(test) {
+        // gizmos pelos DefaultPlugins; os hosts de teste ligam a feature
+        // `headless` (o antigo `cfg!(test)` deste ficheiro não atravessa a
+        // extração — o crate é testado por fora).
+        if self.debug || !cfg!(feature = "headless") {
             let debug_render = RapierDebugRenderPlugin::default();
             app.add_plugins(if self.debug {
                 debug_render
@@ -614,6 +616,17 @@ pub fn collider_for_shape(shape: &Shape, scale: Vec3) -> Collider {
             0.02,
             (half_size[1] * scale.z).max(1e-3),
         ),
+        // Primitivas procedurais (ondas exit2/scene): bounds box escalada
+        // (aproximação conservadora — o plugin do jogo troca pelo colisor
+        // exato do gradmesh; ver `PrimitivePart` no spawn).
+        other => {
+            let bounds = bevy_ext_scene::primitives::bounds(other);
+            Collider::cuboid(
+                (bounds.half.x * scale.x).max(1e-3),
+                (bounds.half.y * scale.y).max(1e-3),
+                (bounds.half.z * scale.z).max(1e-3),
+            )
+        }
     }
 }
 

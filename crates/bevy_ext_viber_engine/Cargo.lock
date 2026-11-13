@@ -917,6 +917,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ext_audio"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_ext_core",
+ "bevy_kira_audio",
+]
+
+[[package]]
 name = "bevy_ext_core"
 version = "0.1.1"
 dependencies = [
@@ -1027,12 +1036,14 @@ dependencies = [
  "arboard",
  "base64 0.23.1",
  "bevy",
+ "bevy_ext_audio",
  "bevy_ext_core",
  "bevy_ext_engine",
  "bevy_ext_gltf",
  "bevy_ext_physics",
  "bevy_ext_save",
  "bevy_ext_scene",
+ "bevy_ext_terrain_runtime",
  "bevy_ext_world",
  "bevy_gradmesh",
  "bevy_kira_audio",

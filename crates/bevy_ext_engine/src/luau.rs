@@ -167,7 +167,9 @@ impl ScriptEventQueue {
 /// (folhagem, cinemáticas) usam-na como filtro.
 #[derive(Debug, Clone, Component, Reflect)]
 #[reflect(Component)]
-#[type_path = "viber::luau"]
+// Caminho congelado da whitelist do espelho Luau (`viber::luau::components::…`
+// em `luau/ecs.rs` do monólito); o default do Rust mudaria ao sair daí.
+#[type_path = "viber::luau::components"]
 pub struct LuaScriptRef {
     /// Script path relative to `world_dir/scripts/` (e.g. `"doors/gate.lua"`).
     pub path: String,

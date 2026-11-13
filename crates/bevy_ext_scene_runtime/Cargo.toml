@@ -1,20 +1,28 @@
 [package]
 name = "bevy_ext_scene_runtime"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
 description = "Scene runtime for declarative Viber worlds: scene loader, world spawner, spawn gates and streaming rings"
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/maikramer/bevy_extensions"
+authors = ["Maikeu Locatelli"]
 keywords = ["bevy", "scenes", "gamedev", "portals", "streaming"]
 categories = ["game-development"]
+
+# Workspace PRÓPRIO (vazio), de propósito: este crate fica EXCLUÍDO do
+# workspace irmão (`../Cargo.toml` da raiz) enquanto depender do monólito em
+# path — mantém o grafo da raiz leve e os paths da família `../…` uniformes
+# (padrão do `bevy_ext_engine`). Quando a dep do `viber` morrer: mover para
+# os members da raiz, trocar os paths por `{ workspace = true }` e apagar
+# esta tabela.
+[workspace]
 
 [dependencies]
 # ECS/reflect/math + os subsistemas que o runtime de cena toca (UI do fade,
 # GLTF pendente, cenas, luzes, meshes). A união de features com o resto do
 # grafo (o `viber` transitório liga o set completo) garante uma só build.
-bevy = { workspace = true, features = [
+bevy = { version = "0.20.1", default-features = false, features = [
     "std",
     "bevy_asset",
     "bevy_scene",
@@ -29,19 +37,10 @@ bevy = { workspace = true, features = [
     "bevy_picking",
 ] }
 # Contrato de primitivas (`Shape`/`MaterialSpec`/`PrimitivePart`), já
-# extraído. TRANSITÓRIO (TODO(viber-exit)): o path segue o MESMO que o do
-# `viber` (checkout irmão, ainda não commitado neste repo) — mesmo pacote,
-# portanto os tipos são idênticos aos que a engine usa. Quando o crate for
-# commitado aqui e o `viber` trocar para os members deste workspace, trocar
-# para `{ workspace = true }`.
-bevy_ext_scene = { version = "0.1.0", path = "../../../bevy_extensions/crates/bevy_ext_scene" }
-# Os restantes contratos extraídos (`Player`, `TeleportSettle`, `Knockback`,
-# `MenusOpen`, `ScriptToast`, `SfxEvent`, `AudioMixerSettings`, …) chegam
-# ATRAVÉS do `viber` (re-exports `viber::player::…`, `viber::menus::…`), que
-# é quem os usa — assim há UMA só cópia de cada pacote no grafo e os tipos
-# casam com os sistemas da engine. NÃO adicionar `bevy_ext_core` diretamente
-# enquanto o `viber` apontar para o checkout irmão: um segundo path para o
-# mesmo (nome, versão) colide no lockfile e cria tipos duplicados.
+# extraído. O path tem de ser O MESMO que o do monólito (`viber` usa
+# `../bevy_ext_scene`): senão o cargo compila duas cópias do pacote e os
+# tipos deixam de casar com os da engine.
+bevy_ext_scene = { version = "0.1.0", path = "../bevy_ext_scene" }
 # Física (o spawn monta corpos/colisores Rapier; o gate congela até haver chão).
 bevy_rapier3d = { version = "0.37", default-features = false, features = [
     "dim3",
@@ -52,16 +51,39 @@ bevy_rapier3d = { version = "0.37", default-features = false, features = [
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 # O varrimento de cena pára os loops kira das entidades condenadas.
 bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
-anyhow.workspace = true
-serde.workspace = true
+anyhow = "1.0"
+serde = { version = "1", features = ["derive"] }
+# `config.yaml` (serde_yaml) + `~` do save.dir (dirs).
+serde_yaml = "0.9"
+dirs = "7"
 
-# TODO(viber-exit): dependência TRANSITÓRIA ao monólito — o hub do runtime de
-# cena ainda consome da engine o parser do mundo (`recipes::parse_world`), os
-# specs do terreno, a física, o spawner de grupos, o host Luau, a UI/HUD, o
-# céu, o navmesh e o `bake::headless_app` dos testes. Cada módulo em baixo
-# lista o que usa; apagar a linha quando esse pedaço sair do `viber` para um
-# crate próprio.
-viber = { path = "../../../Viber" }
+# Contratos de partilha já extraídos, consumidos DIRECTAMENTE (a ponte ao
+# `viber` só mantém o que ainda não saiu). Os paths têm de ser OS MESMOS que
+# os que o monólito usa (`../…` a partir de `crates/`): `Player`, `SfxEvent`,
+# `Knockback`, `MenusOpen` são re-exports `viber::*` → core, e um segundo
+# path para o mesmo (nome, versão) colide no lockfile e cria tipos
+# duplicados.
+bevy_engine_core = { package = "bevy_ext_core", version = "0.1.0", path = "../bevy_ext_core" }
+bevy_world_xml = { package = "bevy_ext_world", version = "0.1.0", path = "../bevy_ext_world" }
+# Música/BGM (loops kira, `MusicLayerTag`, overrides por cena).
+bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
+# Navmesh (`reset_for_scene` no fim da troca de cena).
+bevy_ext_nav = { version = "0.1.0", path = "../bevy_ext_nav" }
+# Terreno volumétrico (specs das features, runtime, plugin/delta — reset por cena).
+bevy_ext_terrain_runtime = { version = "0.1.0", path = "../bevy_ext_terrain_runtime" }
+# Física declarativa (colisores, `PendingCollider`, `VoxelCollider`).
+bevy_ext_physics = { version = "0.1.0", path = "../bevy_ext_physics" }
+# Decoder GLB meshopt/KTX2 (`load_gltf` + ladder implícita de LODs).
+bevy_ext_gltf = { version = "0.1.0", path = "../bevy_ext_gltf" }
+
+# TODO(viber-exit): dependência TRANSITÓRIA ao monólito (a cópia
+# `bevy_ext_viber_engine`, com o lib name histórico `viber`) — o hub do
+# runtime de cena ainda consome da engine o parser do mundo
+# (`recipes::parse_world`), o spawner de grupos, o host Luau, a UI/HUD, o
+# céu, as cinemáticas, o ragdoll e os módulos de editor (`scene`, …). A
+# lista em `src/lib.rs` diz o que falta; apagar a linha quando esse pedaço
+# sair do `viber` para um crate próprio.
+viber = { package = "bevy_ext_viber_engine", path = "../bevy_ext_viber_engine" }
 
 [features]
 default = ["experimental_pbr_pcss"]
@@ -70,4 +92,4 @@ default = ["experimental_pbr_pcss"]
 experimental_pbr_pcss = ["bevy/experimental_pbr_pcss"]
 
 [dev-dependencies]
-tempfile.workspace = true
+tempfile = "3"

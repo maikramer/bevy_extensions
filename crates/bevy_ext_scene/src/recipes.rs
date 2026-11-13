@@ -6,6 +6,12 @@
 //! São tipos de dados puros (sem ECS nem reflection): o monólito reexporta-os
 //! (`viber::recipes::{Shape, TransformSpec, parse_component_string}`) e o
 //! physics usa-os para derivar colisores exatos de primitivas.
+//!
+//! O [`Shape`] é o MESMO tipo do [`crate::primitives`] (as ondas exit2/scene
+//! e exit2/hubs partiram o mesmo enum em dois sítios; a integração fica com
+//! o superset procedurais das primitivas como canónico e o IR reexporta).
+
+pub use crate::primitives::Shape;
 
 /// Local transform of an entity (world transform comes from the hierarchy).
 #[derive(Debug, Clone)]
@@ -27,21 +33,6 @@ impl Default for TransformSpec {
             scale: [1.0; 3],
         }
     }
-}
-
-/// Mesh primitive shapes, mirroring the `bevy::math::primitives` constructors.
-#[derive(Debug, Clone)]
-pub enum Shape {
-    /// `Cuboid` — half extents per axis.
-    Cuboid { half_size: [f32; 3] },
-    /// `Sphere` — radius.
-    Sphere { radius: f32 },
-    /// `Cylinder` — half height + radius.
-    Cylinder { half_height: f32, radius: f32 },
-    /// `Plane3d` — half size on the XZ plane.
-    Plane { half_size: [f32; 2] },
-    /// `Capsule` — radius + half height (vertical).
-    Capsule { radius: f32, half_height: f32 },
 }
 
 /// Parse a component string (`"pos: 0 1 0; preset: fire"`) into
