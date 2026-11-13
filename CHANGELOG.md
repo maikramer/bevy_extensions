@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- New `bevy_ext_audio`: the Viber runtime audio stack — SFX one-shots
+  (`SfxEvent`/`SfxLoudEvent` with distance attenuation and pitch jitter),
+  ambient loops (water/waterfall/rain), typed kira buses with live
+  `mixer_sync`, stacking per-bus ducking, reverb presets, BGM layers with
+  zone crossfade and combat music. The host publishes `AudioPaths`,
+  `AudioWorldState` and `HostWaterBodies` (a trait over terrain water); the
+  kira backend and channels stay host-side. Shared types are re-exported
+  from `bevy_ext_core`, `viber::*` reflection paths frozen.
+
 ## 0.1.0 — 2026-11-12
 
 First release of the monorepo.
