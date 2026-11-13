@@ -3,3 +3,7 @@
 # .jdext vão para os assets do GitHub Release, não para o git).
 extensions/*/.jackdaw/
 extensions/**/*.jdext
+
+# O `bevy_ext_engine` é um workspace próprio enquanto depender do `viber`
+# (excluído do workspace da raiz; ver crates/bevy_ext_engine/Cargo.toml).
+crates/bevy_ext_engine/Cargo.lock
