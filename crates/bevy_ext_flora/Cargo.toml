@@ -1,0 +1,16 @@
+[package]
+name = "bevy_ext_flora"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Scene settings for bevy_flora: tree species and LOD/impostor distances"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "settings", "editor", "jackdaw"]
+categories = ["game-development"]
+
+[dependencies]
+# Contrato de cena partilhado pelo jogo e pelo editor: só ECS/reflect/math.
+bevy = { workspace = true, features = ["std"] }
+bevy_flora = "0.47"

@@ -23,7 +23,7 @@ fn from_v2(p: Vec2) -> [f32; 2] {
 
 /// The voxel terrain entity: a heightfield plus the 3D mods authored as
 /// children.
-#[derive(Component, Reflect, Default, Clone, Debug)]
+#[derive(Component, Reflect, Clone, Debug)]
 #[reflect(Component, Default, Debug, Clone)]
 #[type_path = "bevy_ext_terrain::voxel"]
 pub struct VoxelTerrain {
@@ -40,6 +40,19 @@ pub struct VoxelTerrain {
     pub voxel_size: f32,
     /// Optional material path/name for the preview and the runtime.
     pub material: String,
+}
+
+impl Default for VoxelTerrain {
+    fn default() -> Self {
+        Self {
+            heightmap: String::new(),
+            world_size: 4000.0,
+            max_height: 200.0,
+            cell_size: 1.0,
+            voxel_size: 1.0,
+            material: String::new(),
+        }
+    }
 }
 
 impl VoxelTerrain {
@@ -75,7 +88,7 @@ pub fn build_voxel_field(
 }
 
 /// A room inside a cave (`<Chamber>`).
-#[derive(Reflect, Default, Clone, Debug)]
+#[derive(Reflect, Clone, Debug)]
 #[reflect(Default, Debug, Clone)]
 #[type_path = "bevy_ext_terrain::voxel"]
 pub struct VoxelChamber {
@@ -86,6 +99,19 @@ pub struct VoxelChamber {
     pub height: f32,
     /// `None` inherits the cave's depth.
     pub depth: Option<f32>,
+}
+
+impl Default for VoxelChamber {
+    fn default() -> Self {
+        let spec = CaveChamberSpec::default();
+        Self {
+            name: String::new(),
+            at: from_v2(spec.at),
+            radius: spec.radius,
+            height: spec.height,
+            depth: spec.depth,
+        }
+    }
 }
 
 impl VoxelChamber {
@@ -101,7 +127,7 @@ impl VoxelChamber {
 }
 
 /// A chimney to the surface (`<Shaft>`).
-#[derive(Reflect, Default, Clone, Debug)]
+#[derive(Reflect, Clone, Debug)]
 #[reflect(Default, Debug, Clone)]
 #[type_path = "bevy_ext_terrain::voxel"]
 pub struct VoxelShaft {
@@ -109,6 +135,18 @@ pub struct VoxelShaft {
     pub at: [f32; 2],
     pub radius: f32,
     pub depth: Option<f32>,
+}
+
+impl Default for VoxelShaft {
+    fn default() -> Self {
+        let spec = CaveShaftSpec::default();
+        Self {
+            name: String::new(),
+            at: from_v2(spec.at),
+            radius: spec.radius,
+            depth: spec.depth,
+        }
+    }
 }
 
 impl VoxelShaft {
@@ -356,6 +394,62 @@ impl VoxelFeature for VoxelBridge {
 
     fn build(&self, base: &dyn HeightField) -> Vec<Box<dyn VoxelMod>> {
         self.to_spec().build(base)
+    }
+}
+
+/// An authored cliff face (`<Cliff>`). Scene-contract carrier only: the band
+/// (face/talus) is resolved by the host against the carved grid, so there is
+/// no `VoxelFeature` impl and no camera-local CSG preview — the editor edits
+/// the fields and the world preview shows the terrain around it.
+///
+/// Defaults mirror the host `CliffSpec`.
+#[derive(Component, Reflect, Clone, Debug)]
+#[reflect(Component, Default, Debug, Clone)]
+#[type_path = "bevy_ext_terrain::voxel"]
+pub struct VoxelCliff {
+    pub name: String,
+    /// Crest polyline in world XZ.
+    pub path: Vec<[f32; 2]>,
+    /// Horizontal run of the face (meters).
+    pub width: f32,
+    /// Total drop; `None` = the natural elevation difference of the place.
+    pub height: Option<f32>,
+    /// Face slope in degrees; with `height`, derives the width.
+    pub angle: Option<f32>,
+    /// `vertical|concave|convex|columnar|terraced|overhang|arch`.
+    pub profile: String,
+    /// `auto|left|right`.
+    pub side: String,
+    /// Band-edge wobble as a fraction of `width`.
+    pub noise: f32,
+    /// Erosion gullies as a fraction of `width` (0–0.6).
+    pub gullies: f32,
+    /// Crest notches as a fraction of the local drop (0–0.5).
+    pub notches: f32,
+    /// Debris apron at the toe.
+    pub talus: bool,
+    /// Angle of repose of the apron (degrees).
+    pub talus_angle: f32,
+    pub seed: u64,
+}
+
+impl Default for VoxelCliff {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            path: Vec::new(),
+            width: 6.0,
+            height: None,
+            angle: None,
+            profile: "vertical".to_string(),
+            side: "auto".to_string(),
+            noise: 0.15,
+            gullies: 0.0,
+            notches: 0.0,
+            talus: false,
+            talus_angle: 36.0,
+            seed: 0,
+        }
     }
 }
 

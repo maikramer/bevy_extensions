@@ -65,6 +65,44 @@ impl WorldNode {
     }
 }
 
+/// Nome que o editor mostra para um nó sem `name` explícito.
+///
+/// O emissor grava sempre um `#Name` (a árvore do Jackdaw fica legível); o
+/// loader só o devolve como atributo `name` quando difere deste valor, ou
+/// seja, quando o nó já tinha `name` ou foi renomeado no editor.
+pub fn display_name(tag: &str, attrs: &[(String, String)]) -> String {
+    let get = |key: &str| {
+        attrs
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.trim())
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(name) = get("name") {
+        return name.to_string();
+    }
+    if tag.eq_ignore_ascii_case("include")
+        && let Some(src) = get("src")
+    {
+        return file_stem(src).to_string();
+    }
+    if let Some(id) = get("id") {
+        return format!("{tag} {id}");
+    }
+    for key in ["url", "src", "path", "model"] {
+        if let Some(value) = get(key) {
+            return format!("{tag} {}", file_stem(value));
+        }
+    }
+    tag.to_string()
+}
+
+fn file_stem(path: &str) -> &str {
+    let last = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = last.split_once('.').map_or(last, |(stem, _)| stem);
+    stem.strip_suffix("_lod0").unwrap_or(stem)
+}
+
 /// Tags cujo `Transform` não deve ser traduzido para atributos de pose.
 ///
 /// São configurações de terreno/UI/cinemática: o runtime lê `at`/`path`/attrs

@@ -1,0 +1,16 @@
+[package]
+name = "bevy_ext_scene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Typed scene components (colliders, bodies, destructibles, harvest) that replace DSL attribute strings"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "scene", "editor", "jackdaw"]
+categories = ["game-development"]
+
+[dependencies]
+# Contrato de cena partilhado pelo jogo, pelo loader e pelo editor: só
+# ECS/reflect/math.
+bevy = { workspace = true, features = ["std"] }

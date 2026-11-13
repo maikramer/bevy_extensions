@@ -11,6 +11,11 @@ readme = "README.md"
 keywords = ["bevy", "xml", "world", "gamedev"]
 categories = ["game-development", "parser-implementations"]
 
+[features]
+# Ponte dos componentes `bevy_ext_terrain::voxel.*` para a vista DSL no loader.
+# Desligada por defeito: a ordem de publish core→world→… fica intacta.
+terrain = ["dep:bevy_ext_terrain"]
+
 [dependencies]
 # Only ECS/reflect/math: the parser and the binary format are independent of
 # the renderer and the runtime. `bevy_ecs`/`bevy_reflect` are needed by the
@@ -19,6 +24,13 @@ bevy = { workspace = true, features = ["std", "bevy_camera", "bevy_log"] }
 # Formato `.bsn` (Jackdaw): o jogo lê o documento e reconstrói `XmlNode`; não
 # puxa `jackdaw_runtime` nem o editor.
 jackdaw_bsn.workspace = true
+# `IsA` (prefab do Jackdaw): os `<Include>` são instâncias que o editor
+# expande; o loader resolve-as com o mesmo código.
+jackdaw_prefab.workspace = true
+# Componentes tipados (colisor, corpo, destrutível, colheita) ↔ atributos.
+bevy_ext_scene.workspace = true
+# Componentes do terreno (caves/arcos/pontes) ↔ nós DSL, opt-in.
+bevy_ext_terrain = { workspace = true, optional = true }
 anyhow.workspace = true
 roxmltree.workspace = true
 flate2.workspace = true

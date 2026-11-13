@@ -6,7 +6,7 @@
 //! Transvoxel builder around the active camera and rebuilds when the terrain
 //! or one of its feature components changes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::pbr::StandardMaterial;
@@ -18,7 +18,8 @@ use bevy_ext_terrain::{
 use bevy_voxel_terrain::{
     HeightField, TintParams, VoxelChunkParams, VoxelField, VoxelMod, build_voxel_mesh,
 };
-use jackdaw_editor_core::project::ProjectRoot;
+use jackdaw_extension::document::SceneFilePath;
+use jackdaw_extension::scene::EditorHidden;
 
 /// A generated preview chunk. The terrain entity is kept so a later rebuild
 /// can remove every chunk belonging to it.
@@ -52,15 +53,22 @@ pub(super) fn mark_dirty(
         (),
         Or<(
             Changed<VoxelTerrain>,
-            Changed<Children>,
             Changed<VoxelCave>,
             Changed<VoxelArch>,
             Changed<VoxelBridge>,
         )>,
     >,
+    mut removed_caves: RemovedComponents<VoxelCave>,
+    mut removed_arches: RemovedComponents<VoxelArch>,
+    mut removed_bridges: RemovedComponents<VoxelBridge>,
     mut state: ResMut<VoxelPreviewState>,
 ) {
-    if !changed.is_empty() {
+    // Do NOT watch `Changed<Children>` on the terrain: the preview chunks are
+    // its children, so a rebuild would dirty itself forever.
+    let removed = removed_caves.read().next().is_some()
+        || removed_arches.read().next().is_some()
+        || removed_bridges.read().next().is_some();
+    if !changed.is_empty() || removed {
         state.dirty = true;
     }
 }
@@ -96,9 +104,7 @@ pub(super) fn rebuild_preview(world: &mut World) {
         .next()
         .map(|transform| transform.translation());
 
-    let project_root = world
-        .get_resource::<ProjectRoot>()
-        .map(|project| project.root.clone());
+    let project_root = project_root(world);
 
     for (entity, terrain) in terrains {
         let base = heightfield(&terrain, project_root.as_deref());
@@ -180,6 +186,24 @@ fn heightfield(
     })
 }
 
+fn project_root(world: &World) -> Option<PathBuf> {
+    // The open scene tells us where the project is even when the editor was
+    // launched from another directory: walk up to the world/`jackdaw.toml`.
+    if let Some(scene) = world
+        .get_resource::<SceneFilePath>()
+        .and_then(|scene| scene.path.as_ref())
+    {
+        let mut dir = Path::new(scene).parent();
+        while let Some(candidate) = dir {
+            if candidate.join("world.bsn").is_file() || candidate.join("jackdaw.toml").is_file() {
+                return Some(candidate.to_path_buf());
+            }
+            dir = candidate.parent();
+        }
+    }
+    std::env::current_dir().ok()
+}
+
 fn resolve_path(path: &str, project_root: Option<&std::path::Path>) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
@@ -242,7 +266,11 @@ fn spawn_chunk(
             let material = world
                 .resource_mut::<Assets<StandardMaterial>>()
                 .add(StandardMaterial {
-                    base_color: Color::WHITE,
+                    // The editor viewport may have no environment light while
+                    // the project's GLBs are still loading; an unlit preview
+                    // still shows the authored shape.
+                    base_color: Color::srgb(0.62, 0.70, 0.52),
+                    unlit: true,
                     perceptual_roughness: 0.9,
                     metallic: 0.0,
                     ..default()
@@ -254,6 +282,7 @@ fn spawn_chunk(
 
     world.spawn((
         VoxelPreviewChunk { terrain },
+        EditorHidden,
         Mesh3d(mesh),
         MeshMaterial3d(material),
         Transform::from_translation(origin - terrain_pos),

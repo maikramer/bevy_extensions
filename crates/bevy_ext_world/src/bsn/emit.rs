@@ -3,9 +3,14 @@
 //! O conversor lê o XML cru (`parse_file`) e escreve, por cada nó, uma
 //! entidade com:
 //!
-//! - `#Name` quando há `name`;
+//! - `#Name` sempre (o `name` ou um nome derivado, ver [`display_name`]);
 //! - `Transform` (pose canónica) quando a tag usa pose;
-//! - previews nativas para o viewport do Jackdaw: `GltfSource` e luzes;
+//! - `<Include>` vira uma instância de prefab do Jackdaw
+//!   (`IsA { source }` relativo ao documento): o editor mostra o módulo
+//!   dentro da árvore e o loader resolve-o com o mesmo `jackdaw_prefab`;
+//! - luzes nativas para o viewport do Jackdaw (os modelos não levam
+//!   `GltfSource`: o loader do editor não lê meshopt/KTX2 e cada um era uma
+//!   leitura falhada do GLB inteiro; o preview vem da extensão do terreno);
 //! - `WorldNode { tag, attrs, text, origin, pose }`.
 //!
 //! O jogo não usa as previews: o loader reconstrói `XmlNode` a partir do
@@ -16,15 +21,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use bevy::math::Vec3;
 
-use crate::bsn::components::tag_uses_transform;
+use crate::bsn::components::{display_name, tag_uses_transform};
 use crate::bsn::pose::{Pose, direction_to_rotation, format_f32, read_pose};
 use crate::xml::values::{parse_bool, parse_color, parse_f32, parse_vec3};
 use crate::xml::{NodeOrigin, XmlDocument, XmlNode};
 
 const WORLD_NODE: &str = "bevy_world_xml::bsn::WorldNode";
 const WORLD_PROP: &str = "bevy_world_xml::bsn::WorldProp";
+const ISA: &str = "jackdaw::prefab::components::IsA";
 const TRANSFORM: &str = "bevy_transform::components::transform::Transform";
-const GLTF_SOURCE: &str = "jackdaw_scene_types::types::GltfSource";
 const POINT_LIGHT: &str = "bevy_light::point_light::PointLight";
 const RECT_LIGHT: &str = "bevy_light::rect_light::RectLight";
 const DIRECTIONAL_LIGHT: &str = "bevy_light::directional_light::DirectionalLight";
@@ -97,21 +102,31 @@ fn emit_entity(
     index: u32,
 ) -> Result<String> {
     let mut out = String::new();
-    if let Some(name) = attr(attrs, "name") {
-        out.push_str(&format!("#\"{}\"\n", escape_string(name)));
-    }
+    out.push_str(&format!(
+        "#\"{}\"\n",
+        escape_string(&display_name(tag, attrs))
+    ));
 
-    let pose = if tag_uses_transform(tag) {
+    let include_source = if tag.eq_ignore_ascii_case("include") {
+        include_source(attrs, origin)
+    } else {
+        None
+    };
+    let pose_authoritative = tag_uses_transform(tag) || include_source.is_some();
+    let pose = if pose_authoritative {
         pose_for_tag(tag, attrs)?
     } else {
         Pose::default()
     };
     out.push_str(&emit_transform(pose));
+    if let Some(source) = &include_source {
+        out.push_str(&format!(
+            "{ISA} {{ source: \"{}\", deleted: [] }}\n",
+            escape_string(source)
+        ));
+    }
 
     if options.preview {
-        if let Some(gltf) = emit_gltf_preview(tag, attrs) {
-            out.push_str(&gltf);
-        }
         if let Some(light) = emit_light_preview(tag, attrs)? {
             out.push_str(&light);
         }
@@ -138,7 +153,7 @@ fn emit_entity(
         text,
         &origin_file,
         &origin_path,
-        tag_uses_transform(tag),
+        pose_authoritative,
     ));
 
     if !children.is_empty() {
@@ -165,6 +180,65 @@ fn emit_entity(
         out.push_str("]\n");
     }
     Ok(out)
+}
+
+/// `IsA.source` de um `<Include src>`: o `.bsn` do módulo, relativo à pasta
+/// do documento que o inclui (é como o Jackdaw resolve uma instância).
+/// `None` quando o módulo ainda não tem `.bsn` — fica o `<Include>` antigo.
+fn include_source(attrs: &[(String, String)], origin: &OriginContext) -> Option<String> {
+    let src = attr(attrs, "src")?.trim();
+    if src.is_empty() {
+        return None;
+    }
+    let current = origin
+        .current_file
+        .canonicalize()
+        .unwrap_or_else(|_| origin.current_file.clone());
+    let dir = current.parent().unwrap_or(&origin.root_dir);
+    let target =
+        crate::xml::include::resolve_include_path(src, dir, &origin.root_dir).with_extension("bsn");
+    // O conversor escreve o `.bsn` de cada include ao lado do XML; quando o
+    // include ainda não foi convertido, contamos com a conversão em curso.
+    let xml = target.with_extension("xml");
+    if !target.is_file() && !xml.is_file() {
+        return None;
+    }
+    Some(relative_to(&target, dir))
+}
+
+/// Caminho de `path` relativo à pasta `base` (lexical, com `..`).
+fn relative_to(path: &Path, base: &Path) -> String {
+    let path = normalize(path);
+    let base = normalize(base);
+    let path_parts: Vec<_> = path.components().collect();
+    let base_parts: Vec<_> = base.components().collect();
+    let common = path_parts
+        .iter()
+        .zip(&base_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = PathBuf::new();
+    for _ in common..base_parts.len() {
+        out.push("..");
+    }
+    for part in &path_parts[common..] {
+        out.push(part.as_os_str());
+    }
+    out.to_string_lossy().replace('\\', "/")
+}
+
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn pose_for_tag(tag: &str, attrs: &[(String, String)]) -> Result<Pose> {
@@ -202,26 +276,10 @@ fn emit_transform(pose: Pose) -> String {
     )
 }
 
-fn emit_gltf_preview(tag: &str, attrs: &[(String, String)]) -> Option<String> {
-    if !matches!(
-        tag.to_ascii_lowercase().as_str(),
-        "gltfscene" | "playergltf" | "gltfloader"
-    ) {
-        return None;
-    }
-    let url = attr(attrs, "url")?;
-    let path = url.trim_start_matches('/');
-    let path = path.to_string();
-    Some(format!(
-        "{GLTF_SOURCE} {{ path: \"{}\", scene_index: 0 }}\n",
-        escape_string(&path)
-    ))
-}
-
 fn emit_light_preview(tag: &str, attrs: &[(String, String)]) -> Result<Option<String>> {
     let color = light_color(attrs)?;
     let color_text = format!(
-        "bevy_color::color::Color::Srgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }}",
+        "bevy_color::color::Color::Srgba(bevy_color::srgba::Srgba {{ red: {}, green: {}, blue: {}, alpha: 1.0 }})",
         bsn_float(color[0]),
         bsn_float(color[1]),
         bsn_float(color[2]),

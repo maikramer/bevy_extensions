@@ -13,9 +13,13 @@ pub mod components;
 pub mod emit;
 pub mod load;
 pub mod pose;
+pub mod settings;
+pub mod specs;
+#[cfg(feature = "terrain")]
+pub mod terrain;
 
 pub use compare::worlds_equivalent;
-pub use components::{WorldNode, WorldProp, tag_uses_transform};
+pub use components::{WorldNode, WorldProp, display_name, tag_uses_transform};
 pub use emit::{EmitOptions, emit_document, emit_file, emit_file_checked, validate_emitted};
-pub use load::{load_bsn_world, load_bsn_world_in};
+pub use load::{NativeEntity, load_bsn_world, load_bsn_world_in};
 pub use pose::{Pose, read_pose, write_pose_attrs};

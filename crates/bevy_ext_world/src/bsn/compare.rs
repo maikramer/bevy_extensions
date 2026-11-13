@@ -148,10 +148,89 @@ fn attrs_equivalent(
         remove(&mut right, "url");
     }
 
+    #[cfg(feature = "terrain")]
+    if matches!(
+        tag.as_str(),
+        "cave" | "chamber" | "shaft" | "arch" | "cliff"
+    ) {
+        terrain_attrs_equivalent(&tag, &mut left, &mut right, path)?;
+    }
+
     if left != right {
         return Err(format!("{path}: attrs {left:?} != {right:?}"));
     }
     Ok(())
+}
+
+/// Attrs de features de terreno: um attr ausente vale o default do spec e os
+/// valores comparam-se numericamente — a forma canónica do componente pode
+/// mudar `"2.0"` para `"2"` sem mudar o mundo que o jogo carrega.
+#[cfg(feature = "terrain")]
+pub(crate) fn terrain_attrs_equivalent(
+    tag: &str,
+    left: &mut BTreeMap<String, String>,
+    right: &mut BTreeMap<String, String>,
+    path: &str,
+) -> Result<(), String> {
+    // O DSL do arco aceita `width` e `span` para o mesmo campo do spec.
+    if tag == "arch" {
+        let normalize = |map: &mut BTreeMap<String, String>| {
+            if let Some(width) = map.remove("width") {
+                map.entry("span".to_string()).or_insert(width);
+            }
+        };
+        normalize(left);
+        normalize(right);
+    }
+    let mut keys: Vec<String> = left.keys().chain(right.keys()).cloned().collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        let resolve = |map: &BTreeMap<String, String>| {
+            map.get(&key)
+                .cloned()
+                .or_else(|| bevy_ext_terrain::feature_attr_default(tag, &key))
+        };
+        let (Some(left_value), Some(right_value)) = (resolve(left), resolve(right)) else {
+            return Err(format!("{path}: `{key}` só existe de um dos lados"));
+        };
+        if !terrain_values_equal(&left_value, &right_value) {
+            return Err(format!("{path}: {key} {left_value:?} != {right_value:?}"));
+        }
+        remove(left, &key);
+        remove(right, &key);
+    }
+    Ok(())
+}
+
+/// Booleanos (`parse_bool`: `1`/`true`/`yes`/`on`…) comparam como bools e
+/// listas de números comparam por valor (tolerância de pose); o resto é
+/// exacto.
+#[cfg(feature = "terrain")]
+fn terrain_values_equal(left: &str, right: &str) -> bool {
+    let as_bool = |text: &str| match text.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    };
+    if let (Some(left), Some(right)) = (as_bool(left), as_bool(right)) {
+        return left == right;
+    }
+    let numbers = |text: &str| -> Option<Vec<f32>> {
+        text.split_whitespace()
+            .map(|part| part.parse::<f32>().ok())
+            .collect()
+    };
+    match (numbers(left), numbers(right)) {
+        (Some(left), Some(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(&right)
+                    .all(|(a, b)| (a - b).abs() <= EPS_POS)
+        }
+        _ => left == right,
+    }
 }
 
 enum LightValue {
