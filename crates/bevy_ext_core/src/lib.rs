@@ -347,3 +347,85 @@ pub fn footstep_due(step_timer: &mut f32, grounded: bool, speed: f32, dt: f32) -
         }
     }
 }
+
+// ── configuração de interior e fronteira do mundo ────────────────────────
+
+/// `<WorldBorder>` config.
+#[derive(Debug, Clone, Resource, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::worldsys"]
+pub struct WorldBorderConfig {
+    pub radius: f32,
+    pub warn_seconds: f32,
+    pub margin: f32,
+}
+
+pub const INTERIOR_CAMERA_DISTANCE: f32 = 22.0;
+pub const INTERIOR_CAMERA_PITCH_DEG: f32 = 58.0;
+pub const INTERIOR_FLOOR_Y: f32 = 0.6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Resource, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::worldsys"]
+pub struct InteriorSceneConfig {
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+    pub room_size: [f32; 2],
+    pub camera_distance: f32,
+    pub camera_pitch_deg: f32,
+    pub camera_yaw_deg: f32,
+    pub room_origin: [f32; 2],
+}
+
+impl Default for InteriorSceneConfig {
+    fn default() -> Self {
+        Self {
+            min: [0.0, 0.0],
+            max: [0.0, 0.0],
+            room_size: [0.0, 0.0],
+            camera_distance: INTERIOR_CAMERA_DISTANCE,
+            camera_pitch_deg: INTERIOR_CAMERA_PITCH_DEG,
+            camera_yaw_deg: 0.0,
+            room_origin: [0.0, 0.0],
+        }
+    }
+}
+
+impl InteriorSceneConfig {
+    pub fn contains(&self, x: f32, z: f32) -> bool {
+        x >= self.min[0] && x <= self.max[0] && z >= self.min[1] && z <= self.max[1]
+    }
+
+    pub fn room_center(&self, x: f32, z: f32) -> [f32; 2] {
+        let center_of = |min: f32, max: f32, origin: f32, p: f32, step: f32| {
+            if step <= 0.0 {
+                return 0.5 * (min + max);
+            }
+            let k = ((p - origin) / step).round();
+            (origin + k * step).clamp(min, max)
+        };
+        [
+            center_of(
+                self.min[0],
+                self.max[0],
+                self.room_origin[0],
+                x,
+                self.room_size[0],
+            ),
+            center_of(
+                self.min[1],
+                self.max[1],
+                self.room_origin[1],
+                z,
+                self.room_size[1],
+            ),
+        ]
+    }
+}
+
+#[derive(Debug, Resource, Default, Clone, Copy, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::worldsys"]
+pub struct InteriorLighting {
+    pub active: bool,
+}
