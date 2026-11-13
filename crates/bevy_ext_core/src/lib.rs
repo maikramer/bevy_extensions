@@ -124,6 +124,9 @@ pub trait NavQuery: Send + Sync + 'static {
     fn path(&self, from: Vec3, to: Vec3) -> Option<Vec<Vec3>>;
 }
 
+/// Sonda acima dos pés ao perguntar `surface_below` pelo chão.
+pub const GROUND_PROBE: f32 = 0.05;
+
 /// Speed base do herói (`BASE_SPEED` do controller original).
 pub const BASE_SPEED: f32 = 4.0;
 
@@ -313,4 +316,34 @@ pub struct HudMarkers {
     pub blips: Vec<HudBlip>,
     pub beacons: Vec<Vec3>,
     pub waypoint: Option<HudPoint>,
+}
+
+// ── passos do herói ─────────────────────────────────────────────────────
+
+/// Distância de uma passada a velocidade de caminhada (m).
+pub const STEP_STRIDE_M: f32 = 2.2;
+/// Abaixo desta velocidade não há passos.
+pub const STEP_MIN_SPEED: f32 = 0.8;
+
+/// Intervalo entre passos para uma velocidade (s), ou `None` parado.
+pub fn step_interval(speed: f32) -> Option<f32> {
+    (speed >= STEP_MIN_SPEED && speed.is_finite()).then(|| STEP_STRIDE_M / speed)
+}
+
+/// Decide um passo: decrementa o timer e devolve o intervalo no frame em
+/// que o SFX deve soar. Parado/airborne reinicia o timer.
+pub fn footstep_due(step_timer: &mut f32, grounded: bool, speed: f32, dt: f32) -> Option<f32> {
+    *step_timer -= dt;
+    match step_interval(speed).filter(|_| grounded) {
+        Some(interval) if *step_timer <= 0.0 => {
+            *step_timer = interval;
+            Some(interval)
+        }
+        _ => {
+            if !grounded || speed < STEP_MIN_SPEED {
+                *step_timer = 0.0;
+            }
+            None
+        }
+    }
 }
