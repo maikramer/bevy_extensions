@@ -42,6 +42,11 @@ pub struct ScriptHostState {
     pub time: f64,
     pub player: Option<Vec3>,
     pub scene: Option<String>,
+    /// Entrada `<SceneEntry>` por onde se chegou à cena (`viber.scene_entry`).
+    pub scene_entry: Option<String>,
+    /// Id do `BiomeRegion` atual; `None` fora de biomas/interiores
+    /// (`viber.biome`).
+    pub biome: Option<String>,
 }
 
 /// Snapshot de input do frame (`viber.input.*`): teclado e rato nos três
@@ -61,6 +66,9 @@ struct ScriptGlobals {
     time: f64,
     player: Option<Vec3>,
     scene: Option<String>,
+    scene_entry: Option<String>,
+    biome: Option<String>,
+    menu_open: bool,
     toasts: VecDeque<String>,
     input: InputSnapshot,
 }
@@ -108,11 +116,19 @@ fn init_context(
         .map_err(InteropError::external)
 }
 
-fn publish_globals(state: Res<ScriptHostState>) {
+/// Publica o estado do frame: os campos do `ScriptHostState` e o
+/// `MenusOpen` do jogo (falta do recurso = menus fechados, apps mínimas).
+fn publish_globals(
+    state: Res<ScriptHostState>,
+    menus: Option<Res<bevy_ext_core::MenusOpen>>,
+) {
     if let Ok(mut globals) = globals().write() {
         globals.time = state.time;
         globals.player = state.player;
         globals.scene.clone_from(&state.scene);
+        globals.scene_entry.clone_from(&state.scene_entry);
+        globals.biome.clone_from(&state.biome);
+        globals.menu_open = menus.as_ref().is_some_and(|menus| menus.any());
     }
 }
 
@@ -200,6 +216,43 @@ fn install_viber_api_with(
                 .read()
                 .ok()
                 .and_then(|globals| globals.scene.clone()))
+        })?,
+    )?;
+
+    // viber.scene_entry() — entrada por onde se chegou (nil = nenhuma).
+    let entry_globals = globals.clone();
+    viber.set(
+        "scene_entry",
+        lua.create_function(move |_, ()| {
+            Ok(entry_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.scene_entry.clone()))
+        })?,
+    )?;
+
+    // viber.biome() — id do bioma atual (nil fora de bioma/interior).
+    let biome_globals = globals.clone();
+    viber.set(
+        "biome",
+        lua.create_function(move |_, ()| {
+            Ok(biome_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.biome.clone()))
+        })?,
+    )?;
+
+    // viber.menu_open() — menu, mapa, viagem ou cinemática a roubar o input
+    // (o `MenusOpen::any()` que o movimento nativo consulta).
+    let menu_globals = globals.clone();
+    viber.set(
+        "menu_open",
+        lua.create_function(move |_, ()| {
+            Ok(menu_globals
+                .read()
+                .map(|globals| globals.menu_open)
+                .unwrap_or(false))
         })?,
     )?;
 
@@ -481,6 +534,36 @@ mod tests {
             .eval()
             .expect("erro");
         assert!(erro);
+    }
+
+    #[test]
+    fn cena_entrada_e_bioma_vem_do_estado_publicado() {
+        let (lua, globals, _store) = vm();
+        {
+            let mut g = globals.write().expect("globals");
+            g.scene = Some("discordia".into());
+            g.scene_entry = Some("from-town".into());
+            g.biome = Some("floresta".into());
+            g.menu_open = true;
+        }
+        let (scene, entry, biome, menu): (String, String, String, bool) = lua
+            .load(
+                "return viber.scene_name(), viber.scene_entry(), viber.biome(), viber.menu_open()",
+            )
+            .eval()
+            .expect("estado");
+        assert_eq!((scene.as_str(), entry.as_str(), biome.as_str(), menu),
+                   ("discordia", "from-town", "floresta", true));
+
+        // Sem publicação: nil/nil/nil e menus fechados.
+        let (lua2, _g2, _s2) = vm();
+        let (entry_nil, biome_nil, menu_closed): (bool, bool, bool) = lua2
+            .load(
+                "return viber.scene_entry() == nil, viber.biome() == nil, viber.menu_open() == false",
+            )
+            .eval()
+            .expect("defaults");
+        assert!(entry_nil && biome_nil && menu_closed);
     }
 
 }
