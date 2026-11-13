@@ -88,29 +88,10 @@ pub struct PostFxConfig {
     pub ssao: Option<String>,
 }
 
-/// `reflections:` — o custo do reflexo de CENA (SSR raster).
-///
-/// O passe (`src/water_ssr.rs`) faz raymarch screen-space na água e, com
-/// chuva, no chão molhado. O chão é o que cobre o ecrã inteiro quando chove;
-/// `wet-ground: false` deixa lá o sheen PBR barato (`walls_b.w` no shader do
-/// terreno) e reserva o raymarch para a água.
-#[derive(Debug, Clone, Default, Deserialize, bevy::prelude::Reflect)]
-#[serde(rename_all = "kebab-case")]
-pub struct ReflectionsConfig {
-    /// `auto` (default: SSR só no preset `alto`) | `off` | `water` (só água)
-    /// | `full` (água + chão molhado). `VIBER_WATER_SSR` sobrepõe-se.
-    #[serde(default)]
-    pub mode: Option<String>,
-    /// O chão molhado entra no raymarch? `false` é o modo barato.
-    #[serde(default)]
-    pub wet_ground: Option<bool>,
-    /// Passos do raymarch (default 24). Menos passos = reflexo mais curto.
-    #[serde(default)]
-    pub steps: Option<u32>,
-    /// Alcance do raymarch em metros (default 140).
-    #[serde(default)]
-    pub max_distance: Option<f32>,
-}
+// A secção `reflections:` do `game.yaml` saiu para o
+// `bevy_ext_engine::config` (onda exit2/hubs) — o water_ssr extraído lê o
+// MESMO tipo; o caminho histórico continua a resolver.
+pub use bevy_ext_engine::config::ReflectionsConfig;
 
 #[derive(Debug, Clone, Deserialize, bevy::prelude::Reflect)]
 pub struct AssetsConfig {

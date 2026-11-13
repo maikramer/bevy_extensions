@@ -1,6 +1,10 @@
 //! Shared HUD art and drawing helpers: the display font, generated
 //! textures (panel gradient, minimap arrow), the AAA panel palette and the
 //! text/positioning primitives every HUD module builds on.
+//!
+//! Movido do monólito (`hud/assets.rs`); o monólito reexporta este módulo
+//! como `viber::hud::assets`. Os helpers eram `pub(crate)` no monólito —
+//! aqui são `pub` para o reexport servir os módulos hud do monólito.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
@@ -11,7 +15,7 @@ use bevy::ui::BoxShadow;
 /// Display font for the whole HUD (Cinzel Bold, OFL, latin subset) — a
 /// monospace engine default reads as "programmer demo"; a display serif
 /// reads as a shipped game.
-pub static DISPLAY_FONT: &[u8] = include_bytes!("../../assets/fonts/cinzel-700.ttf");
+pub static DISPLAY_FONT: &[u8] = include_bytes!("../assets/fonts/cinzel-700.ttf");
 
 /// Lazily-created HUD art: display font + generated panel gradient + minimap
 /// arrow + minimap markers. Created once per process (single world per run).
@@ -82,7 +86,7 @@ fn panel_gradient_image() -> Image {
 
 /// 36×36 upward triangle with a dark outline and soft AA — the minimap
 /// player arrow (bevy_ui has no polygon nodes).
-pub(crate) fn arrow_image() -> Image {
+pub fn arrow_image() -> Image {
     let s = 36usize;
     let (tip, left, right): ((f32, f32), (f32, f32), (f32, f32)) =
         ((17.5, 2.0), (4.0, 31.0), (32.0, 31.0));
@@ -133,7 +137,7 @@ pub(crate) fn arrow_image() -> Image {
 /// Renderer de ícones com anti-aliasing de caixa: desenha a `ss`× a
 /// resolução final e faz a média dos sub-píxeis. O `shade` devolve a cor
 /// RGBA por ponto em coordenadas FINAIS — é tudo o que um glifo precisa.
-pub(crate) fn supersampled_image(
+pub fn supersampled_image(
     side: usize,
     ss: usize,
     shade: impl Fn(f32, f32) -> [u8; 4],
@@ -175,7 +179,7 @@ pub(crate) fn supersampled_image(
 /// Gerado (não asset) por decisão: o HUD é da engine, corre em QUALQUER
 /// mundo, e um asset ausente deixaria os pontos de quest invisíveis em
 /// silêncio — exactamente a falha que o `arrow_image` já evitou.
-pub(crate) fn quest_marker_image() -> Image {
+pub fn quest_marker_image() -> Image {
     const GOLD: [u8; 4] = [216, 180, 106, 255];
     const INK: [u8; 4] = [43, 29, 16, 255];
     supersampled_image(48, 4, |x, y| {
@@ -203,7 +207,7 @@ pub(crate) fn quest_marker_image() -> Image {
 /// Âncora do marco assinado (A Nota) no minimapa: pin de mapa dourado
 /// furado — a forma que qualquer jogador lê como "destino", e o par
 /// "quest = !, destino = pin" distingue os dois à primeira.
-pub(crate) fn map_pin_image() -> Image {
+pub fn map_pin_image() -> Image {
     const GOLD: [u8; 4] = [232, 196, 118, 255];
     const INK: [u8; 4] = [43, 29, 16, 255];
     supersampled_image(48, 4, |x, y| {
@@ -237,22 +241,22 @@ pub(crate) fn map_pin_image() -> Image {
 // ------------------------------------------------------------- palette
 
 /// Warm dark base under the gradient of every AAA panel.
-pub(crate) fn panel_base() -> BackgroundColor {
+pub fn panel_base() -> BackgroundColor {
     BackgroundColor(Color::srgba(0.055, 0.05, 0.04, 0.9))
 }
 
 /// Panel tint carried by the gradient overlay (slightly lighter on top).
-pub(crate) fn panel_tint() -> Color {
+pub fn panel_tint() -> Color {
     Color::srgba(0.13, 0.12, 0.105, 0.82)
 }
 
 /// Light inner border (top bevel highlight).
-pub(crate) fn panel_edge() -> BorderColor {
+pub fn panel_edge() -> BorderColor {
     BorderColor::all(Color::srgba(1.0, 0.96, 0.85, 0.16))
 }
 
 /// Soft drop shadow under every panel — the #1 AAA tell.
-pub(crate) fn panel_shadow() -> BoxShadow {
+pub fn panel_shadow() -> BoxShadow {
     BoxShadow::new(
         Color::srgba(0.0, 0.0, 0.0, 0.5),
         Val::Px(2.0),
@@ -264,7 +268,7 @@ pub(crate) fn panel_shadow() -> BoxShadow {
 
 /// Panel gradient overlay CHILD bundle (spans the whole panel, tinted).
 /// Spawn as the panel's FIRST child — content children render above it.
-pub(crate) fn gradient_overlay(hud: &HudAssets, radius: f32) -> impl Bundle {
+pub fn gradient_overlay(hud: &HudAssets, radius: f32) -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
@@ -284,7 +288,7 @@ pub(crate) fn gradient_overlay(hud: &HudAssets, radius: f32) -> impl Bundle {
 }
 
 /// Styled text with the HUD display font.
-pub(crate) fn label(
+pub fn label(
     hud: &HudAssets,
     text: impl Into<String>,
     size: f32,
@@ -303,7 +307,7 @@ pub(crate) fn label(
 
 /// An absolutely-positioned child centered on its parent anchor point via a
 /// −50 % self translation (compass letters, minimap dots).
-pub(crate) fn centered_at(left: Val, top: Val) -> Node {
+pub fn centered_at(left: Val, top: Val) -> Node {
     Node {
         position_type: PositionType::Absolute,
         left,

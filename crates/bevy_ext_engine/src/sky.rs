@@ -6,7 +6,7 @@
 //! (default `analytic`; override `VIBER_SKY_MODEL`):
 //! - **analytic** — o gradiente estilizado por paleta (legado, intacto).
 //! - **nishita** — scattering físico Rayleigh + Mie portado do
-//!   `bevy_atmosphere` v0.13.0 (ver [`viber::sky_nishita`]): o gradiente e o
+//!   `bevy_atmosphere` v0.13.0 (ver [`crate::sky_nishita`]): o gradiente e o
 //!   glow do sol passam a sair do raymarch, e TUDO o resto (nuvens, lua,
 //!   estrelas, via láctea, aurora, meteoros) compõe-se por cima no mesmo
 //!   fragment shader.
@@ -48,10 +48,59 @@ use bevy::shader::ShaderRef;
 
 use crate::worldsys::AtmosphereState;
 
-// TODO(viber-exit): o modelo Nishita (`sky_nishita`) e o parser de specs do
-// mundo (`recipes`) ainda vivem no monólito.
-use viber::recipes::{EntityKind, EntitySpec};
-use viber::sky_nishita::{MIE_BASE, NIGHT_FLOOR, NISHITA_GAIN, NishitaModel};
+// O modelo Nishita saiu para `crate::sky_nishita`. O IR do mundo
+// (`EntitySpec`/`EntityKind`) é uma RÉPLICA LOCAL mínima — só os campos que
+// o céu lê; quando o parser de receitas do monólito sair para o crate de
+// specs, trocar por ele e apagar esta cópia.
+use crate::sky_nishita::{MIE_BASE, NIGHT_FLOOR, NISHITA_GAIN, NishitaModel};
+
+/// Entidade do IR do mundo (réplica mínima local do `recipes::EntitySpec`):
+/// o céu só precisa do `kind` e dos filhos.
+#[derive(Debug, Clone, Default)]
+pub struct EntitySpec {
+    pub kind: EntityKind,
+    pub children: Vec<EntitySpec>,
+}
+
+/// Variantes do IR do mundo que o céu distingue (réplica local mínima do
+/// `recipes::EntityKind` — campos completos das variantes lidas por
+/// [`walk_entities`]; tudo o resto é [`EntityKind::Other`]).
+#[derive(Debug, Clone, Default)]
+pub enum EntityKind {
+    /// Nada de relevante para o céu (container, primitiva, criatura…).
+    #[default]
+    Other,
+    /// `<Sky>` é parseado como HudElement (legado do plumbing): os attrs
+    /// chegam aqui inteiros.
+    HudElement {
+        tag: String,
+        attrs: Vec<(String, String)>,
+    },
+    DayCycle {
+        minute_of_day: f32,
+        minutes_per_real_second: f32,
+        dawn_minute: f32,
+        dusk_minute: f32,
+        ambient_day: f32,
+        ambient_night: f32,
+        drive_ambient: bool,
+        max_sun_elevation: f32,
+        sun_azimuth_base: f32,
+        min_sun_elevation: f32,
+        day_speed_scale: f32,
+        night_speed_scale: f32,
+        night_cap_minute: f32,
+        /// O modo é o enum congelado do `worldsys` (aqui e no monólito).
+        mode: crate::worldsys::DayCycleMode,
+        day_minute: f32,
+        night_minute: f32,
+        transition_seconds: f32,
+        shadow_refresh_hz: f32,
+    },
+    Weather {
+        wind: [f32; 2],
+    },
+}
 
 /// Template WGSL do céu (defaults; `viber run` reescreve o bloco CONFIG com
 /// os valores do mundo antes de o renderer o carregar).
@@ -70,7 +119,7 @@ const CONFIG_END: &str = "// === END WORLD CONFIG ===";
 
 /// Modelo visual do céu — `analytic` é o gradiente estilizado por paleta
 /// (comportamento histórico), `nishita` é o scattering físico do
-/// `bevy_atmosphere` ([`viber::sky_nishita`]) com as mesmas features por
+/// `bevy_atmosphere` ([`crate::sky_nishita`]) com as mesmas features por
 /// cima. O `VIBER_SKY_MODEL` sobrepõe o attr do XML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
 #[type_path = "viber::sky"]
@@ -795,24 +844,12 @@ mod tests {
     /// `from_world` lê `<Sky>`, `<DayCycle>` e `<Weather>` (incl. filhos).
     #[test]
     fn test_sky_config_from_world() {
-        use viber::physics::PhysicsSpec;
-        use viber::recipes::TransformSpec;
-
         let spec = |kind: EntityKind| EntitySpec {
-            prototype_instance: None,
-            name: None,
-            tag: None,
-            script: None,
-            props: Vec::new(),
-            links: Default::default(),
-            transform: TransformSpec::default(),
-            physics: PhysicsSpec::default(),
             kind,
             children: Vec::new(),
-            source: None,
         };
         let world = vec![
-            spec(EntityKind::Group),
+            spec(EntityKind::Other),
             spec(EntityKind::HudElement {
                 tag: "sky".to_string(),
                 attrs: vec![
@@ -835,9 +872,7 @@ mod tests {
                 day_speed_scale: 1.0,
                 night_speed_scale: 1.0,
                 night_cap_minute: 0.0,
-                // TODO(viber-exit): o `EntityKind` é do monólito; o enum
-                // de modo é o dele até o parser sair de lá.
-                mode: viber::worldsys::DayCycleMode::Continuous,
+                mode: crate::worldsys::DayCycleMode::Continuous,
                 day_minute: 720.0,
                 night_minute: 1320.0,
                 transition_seconds: 4.0,

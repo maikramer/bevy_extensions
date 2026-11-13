@@ -1,24 +1,14 @@
 [package]
 name = "bevy_ext_engine"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97.1"
-description = "Grab-bag transitório de sistemas pequenos da engine Viber (netplay, cinemáticas, folhagem, relva, céu, vitais, pacing, drivers do mundo); será dividido depois"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/maikramer/bevy_extensions"
-authors = ["Maikeu Locatelli"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Grab-bag de sistemas pequenos da engine Viber (cinemáticas, folhagem, relva, céu, water SSR, pacing, drivers do mundo, profiler); será dividido depois"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 keywords = ["bevy", "gamedev", "engine"]
 categories = ["game-development"]
-# Workspace PRÓPRIO (vazio), de propósito: este crate está EXCLUÍDO do
-# workspace irmão (`../Cargo.toml` da raiz) enquanto depender do monólito
-# `viber` em path — o `viber` aponta a família `bevy_ext_*` para o checkout
-# irmão (`../bevy_extensions`) e membro + viber colidem no lockfile (duas
-# fontes com o mesmo name+version). As deps da família em baixo usam OS
-# MESMOS caminhos que o `viber` (padrão do `bevy_ext_scene_runtime`,
-# exit/scene), por isso os tipos são idênticos aos da engine. Quando a dep do
-# `viber` morrer: mover para os members da raiz, trocar os paths por
-# `{ workspace = true }` e apagar esta tabela.
-[workspace]
 
 [features]
 default = []
@@ -26,12 +16,15 @@ default = []
 # `dlss_wgpu` precisa do SDK da NVIDIA em compile-time (`DLSS_SDK`, ver
 # src/dlss.rs). Sem a feature o módulo reduz-se ao parser (testável em CI).
 dlss = ["bevy/dlss"]
+# O método `ScriptGameEvent::to_table` (evento → tabela Lua) precisa do
+# runtime mlua; o monólito liga esta feature, os consumidores sem host Luau
+# empilham/lêem eventos sem a tabela.
+luau = ["dep:mlua"]
 
 [dependencies]
 # O grab-bag toca no ECS, no render (pbr/pós-processo/TAA), na UI e na
 # janela: os plugins registam sistemas em Update/PostUpdate/Last/Core3d.
-# Mesma linha da raiz (`bevy = { version = "0.20.1", default-features = false }`).
-bevy = { version = "0.20.1", default-features = false, features = [
+bevy = { workspace = true, features = [
     "std",
     "bevy_asset",
     "bevy_anti_alias",
@@ -50,29 +43,26 @@ bevy = { version = "0.20.1", default-features = false, features = [
     "bevy_world_serialization",
     "bevy_light",
 ] }
-serde_json = "1"
-# Colisores/rigídios no gate do batch de folhagem (`foliage.rs`); mesma
-# linha do `viber` para os tipos coincidirem com os da engine.
-bevy_rapier3d = { version = "0.37", default-features = false, features = [
-    "dim3",
-] }
-# TODO(viber-exit): TRANSITÓRIO — os três caminhos em baixo têm de ser OS
-# MESMOS que os que o `viber` usa (checkout irmão `../bevy_extensions`),
-# senão o cargo compila duas cópias do pacote e os tipos deixam de casar com
-# os da engine (`Player` do `netplay`/`vitals` deixaria de ser o `Player` do
-# monólito). Quando o `viber` trocar para os members do workspace, trocar
-# aqui pelos paths da raiz.
-bevy_ext_core = { version = "0.1.0", path = "../../../bevy_extensions/crates/bevy_ext_core" }
-bevy_ext_gltf = { version = "0.1.0", path = "../../../bevy_extensions/crates/bevy_ext_gltf" }
-bevy_ext_world = { version = "0.1.0", path = "../../../bevy_extensions/crates/bevy_ext_world" }
-# TODO(viber-exit): dependência TRANSITÓRIA ao monólito. Os módulos deste
-# crate ainda leem da engine o que ainda não saiu de lá: `input_map`,
-# `profiler` (Group/timed), `terrain` (runtime/cliffs/water/plugin),
-# `camera::camera_offset`, `luau` (fila de eventos/gate de SFX/LuaScriptRef),
-# `animation`, `physics`, `spawner` (exclusões), `ambient`
-# (point_in_polygon), `hud::assets`, `ibl`, `app::RunMode`, `menus`,
-# `render_lod`, `scene::pose`, `scene_loader`, `recipes` (specs/spawn),
-# `config` (ReflectionsConfig), `sky_nishita` e `worldsys` (biomas). Cada uso
-# está marcado com `// TODO(viber-exit)`; quando o módulo de origem sair,
-# trocar pelo crate novo e apagar esta dep.
-viber = { path = "../../../Viber" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Simplificação de malhas na ladder de LOD (`render_lod`).
+meshopt = { workspace = true }
+# Colisores/rigídios no gate do batch de folhagem (`foliage.rs`).
+bevy_rapier3d = { workspace = true }
+# Contratos: `Player`, `SfxClip`, `CharacterAnimator` (anim. congelada), RNG.
+bevy_ext_core = { workspace = true }
+bevy_ext_gltf = { workspace = true }
+bevy_ext_world = { workspace = true }
+# Colisores pendentes/especs de física no gate da folhagem e nos testes do céu.
+bevy_ext_physics = { workspace = true }
+# Runtime de terreno: `TerrainRuntime`, `ChunkLodState`, cliffs/water/sets.
+bevy_ext_terrain_runtime = { workspace = true }
+# Biomas (`BiomeRegions`/`BiomeRegionData` com TypePath `viber::worldsys`
+# congelado lá) e `point_in_polygon`.
+bevy_ext_postfx = { workspace = true }
+# Runtime mlua — só para `ScriptGameEvent::to_table` (feature `luau`).
+mlua = { version = "0.12", features = ["luau", "vendored", "send"], optional = true }
+
+[dev-dependencies]
+# Export de trace para ficheiro nos testes do gravador.
+tempfile = { workspace = true }

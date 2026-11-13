@@ -28,34 +28,10 @@ use crate::terrain::runtime::TerrainRuntime;
 pub use crate::rng::Rng;
 pub use bevy_world_xml::PlacedInstance;
 
-/// Todos os discos `<SpawnExclusion>` do mundo, como RECURSO.
-///
-/// Separado do [`PendingSpawnGroups`] (que é estado de uma passagem só e é
-/// removido no fim da colocação) porque os discos são dados AUTORAIS e têm
-/// mais do que um consumidor: os spawners (colocação) e a relva procedural
-/// (`src/grass.rs`, que desenha um tapete por cima de tudo e ignorava os
-/// discos — um acampamento numa clareira acordava enterrado em tufos).
-#[derive(Debug, Default, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct SpawnExclusions(pub Vec<SpawnExclusion>);
-
-impl SpawnExclusions {
-    /// `(x, z)` está dentro de algum disco?
-    pub fn contains(&self, x: f32, z: f32) -> bool {
-        self.0.iter().any(|e| {
-            let dx = x - e.center.x;
-            let dz = z - e.center.y;
-            dx * dx + dz * dz <= e.radius * e.radius
-        })
-    }
-}
-
-/// Global no-spawn circle (`<SpawnExclusion at="x z" radius="n">`).
-#[derive(Debug, Clone, Copy, Reflect)]
-pub struct SpawnExclusion {
-    pub center: bevy::math::Vec2,
-    pub radius: f32,
-}
+// Os discos de exclusão saíram para o `bevy_ext_engine::spawner`
+// (onda exit2/hubs) — a relva extraída lê o MESMO tipo; o caminho histórico
+// continua a resolver.
+pub use bevy_ext_engine::spawner::{SpawnExclusion, SpawnExclusions};
 
 /// Largura da célula do registo de ocupação (metros) — props são
 /// escala-metro, e células de 4 m mantêm cada consulta num vizinhança 3×3.

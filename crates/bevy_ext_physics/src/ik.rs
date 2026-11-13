@@ -1,12 +1,13 @@
 //! IK de dois ossos (pés) e look-at da cabeça.
 //!
 //! A função [`solve_two_bone`] é pura. O sistema só corre em rigs com
-//! [`FootIk`] que não estão congelados ([`crate::animation::FrozenAnimation`]):
+//! [`FootIk`] que não estão congelados ([`bevy_ext_core::animation::FrozenAnimation`]):
 //! é o mesmo corte que já evita animar criaturas longe.
 
 use bevy::prelude::*;
 
-use crate::animation::{AnimState, CharacterAnimator, FrozenAnimation};
+// Contrato de animação congelado no `bevy_ext_core` (TypePath `viber::animation`).
+use bevy_ext_core::animation::{AnimState, CharacterAnimator, FrozenAnimation};
 
 /// Folga (m) entre a planta do pé e a superfície amostrada.
 pub const FOOT_CLEARANCE: f32 = 0.02;
@@ -20,6 +21,8 @@ pub const HEAD_LOOK_MAX: f32 = 40.0_f32.to_radians();
 /// Marca um personagem cujos pés assentam no terreno.
 #[derive(Component, Debug, Default, Reflect)]
 #[reflect(Component)]
+// Preserva o TypePath histórico (o crate mudou de nome para bevy_ext_physics).
+#[type_path = "viber::ik"]
 pub struct FootIk;
 
 /// Peso do IK de pés para um estado de locomoção. No ar e em one-shots é 0.
@@ -82,7 +85,7 @@ pub fn solve_two_bone(root: Vec3, mid: Vec3, end: Vec3, target: Vec3) -> (Vec3, 
 
 /// Nome normalizado casa com um osso (`leftfoot`, `mixamorig:LeftFoot`, …).
 pub fn bone_matches(name: &str, needles: &[&str]) -> bool {
-    let n = crate::animation::normalize_clip_name(name);
+    let n = bevy_ext_core::animation::normalize_clip_name(name);
     needles
         .iter()
         .any(|needle| n == *needle || n.ends_with(needle))
@@ -162,7 +165,7 @@ pub fn is_right_hip(name: &str) -> bool {
 }
 
 pub fn is_head(name: &str) -> bool {
-    let n = crate::animation::normalize_clip_name(name);
+    let n = bevy_ext_core::animation::normalize_clip_name(name);
     n == "head" || n.ends_with("head") && !n.contains("headtop")
 }
 
@@ -272,7 +275,7 @@ struct PendingRotation {
 fn solve_leg(
     (hip, knee, foot): (Entity, Entity, Entity),
     root_y: f32,
-    terrain: &crate::terrain::runtime::TerrainRuntime,
+    terrain: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
     weight: f32,
     parents: &Query<&ChildOf>,
     locals: &Query<(&Transform, Option<&ChildOf>)>,
@@ -373,7 +376,7 @@ pub(crate) fn foot_ik_system(
     globals: Query<&GlobalTransform>,
     mut sets: ParamSet<(Query<&mut Transform>, Query<(&Transform, Option<&ChildOf>)>)>,
     rigs: Query<Has<FrozenAnimation>>,
-    terrain: Option<Res<crate::terrain::runtime::TerrainRuntime>>,
+    terrain: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
     mut bone_cache: Local<std::collections::HashMap<Entity, CachedFootIkBones>>,
 ) {
     let Some(terrain) = terrain.as_deref() else {
@@ -452,6 +455,7 @@ pub(crate) fn foot_ik_system(
 /// Envelope de voz que abre a mandíbula enquanto o clip toca.
 #[derive(Resource, Default, Reflect)]
 #[reflect(Resource)]
+#[type_path = "viber::ik"]
 pub struct VoiceEnvelope {
     pub level: f32,
 }
@@ -506,6 +510,7 @@ pub fn jaw_system(
 /// `Quat::IDENTITY` remove a entrada.
 #[derive(Debug, Clone, Default, Resource, Reflect)]
 #[reflect(Resource)]
+#[type_path = "viber::ik"]
 pub struct PlayerBoneOffsets {
     pub entries: Vec<(String, Quat)>,
 }
@@ -553,7 +558,7 @@ fn find_animator<'a>(
 
 pub fn player_bone_offsets_system(
     offsets: Res<PlayerBoneOffsets>,
-    players: Query<Entity, With<crate::player::Player>>,
+    players: Query<Entity, With<bevy_ext_core::Player>>,
     animators: Query<(Entity, &CharacterAnimator)>,
     names: Query<&Name>,
     children: Query<&Children>,
@@ -578,7 +583,7 @@ pub fn player_bone_offsets_system(
         // A chave vem do script (`upperarm_r`), mas `bone_matches` normaliza
         // o NOME do osso (`upperarmr`) — sem normalizar a agulha também, o
         // `viber.bone_offset` documentado nunca casava com nada.
-        let needle = crate::animation::normalize_clip_name(bone);
+        let needle = bevy_ext_core::animation::normalize_clip_name(bone);
         let Some((entity, _)) = bones
             .iter()
             .find(|(_, name)| bone_matches(name, &[needle.as_str()]))

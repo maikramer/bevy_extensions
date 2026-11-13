@@ -24,10 +24,27 @@ pub use bevy_ext_core::{
     fall_angle, fall_rotation, knockback_after, knockback_decay_factor, knockback_travel_factor,
     push_velocity, radial_strength,
 };
-// TODO(viber-exit): o wrapper de profiling (`timed`/`Group`), o sampler do
-// herói (`ground_near`) e a marca de cadáver (`Corpse`) vivem no monólito.
-use viber::profiler::{Group, timed};
-use viber::terrain::runtime::TerrainRuntime;
+// Wrapper de profiling local (cópia do contrato `viber::profiler`); a marca
+// de cadáver saiu do monólito para este crate.
+use crate::corpse::Corpse;
+use crate::profiling::{Group, timed};
+use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+
+/// Chão para um reposicionamento CURTO (dash, lunge, knockback): a superfície
+/// sólida sob `from_y`, a superfície renderizada quando a sonda não vê nada e
+/// o próprio `from_y` fora da pegada do terreno.
+///
+/// Seam local: réplica exata do `player::ground_near` do monólito sobre o
+/// `TerrainRuntime` do `bevy_ext_terrain_runtime` (o sampler do herói
+/// continua no monólito; este crate não o pode dep).
+pub fn ground_near(terrain: &TerrainRuntime, x: f32, z: f32, from_y: f32) -> f32 {
+    if !terrain.in_field(x, z) {
+        return from_y;
+    }
+    terrain
+        .surface_below(x, z, from_y + bevy_ext_core::GROUND_PROBE)
+        .unwrap_or_else(|| terrain.sample_mesh_surface(x, z))
+}
 
 // ── sistemas ────────────────────────────────────────────────────────────
 
@@ -56,7 +73,7 @@ fn knockback_system(
             &mut Knockback,
             Option<&bevy_ext_core::Player>,
         ),
-        Without<viber::corpse::Corpse>,
+        Without<Corpse>,
     >,
     mut commands: Commands,
 ) {
@@ -98,8 +115,7 @@ fn knockback_system(
             }
         }
         if let Some(terrain) = terrain.as_deref() {
-            transform.translation.y =
-                viber::player::ground_near(terrain, x, z, transform.translation.y);
+            transform.translation.y = ground_near(terrain, x, z, transform.translation.y);
         }
         transform.translation.x = x;
         transform.translation.z = z;
@@ -231,8 +247,8 @@ mod tests {
                 Knockback {
                     velocity: Vec3::X * 2.0,
                 },
-                viber::corpse::Corpse {
-                    timer: viber::corpse::CORPSE_LIFETIME,
+                Corpse {
+                    timer: crate::corpse::CORPSE_LIFETIME,
                 },
             ))
             .id();
@@ -257,17 +273,17 @@ mod tests {
         // Grid procedural pequeno (mesmo setup dos testes de `ai.rs`) — sem
         // isto o branch do Y-slam nem corria e o teste não apanhava a
         // regressão.
-        let spec = viber::terrain::spec::TerrainSpec {
+        let spec = bevy_ext_terrain_runtime::spec::TerrainSpec {
             world_size: 128.0,
             max_height: 40.0,
             seed: 5,
-            ..viber::terrain::spec::TerrainSpec::default()
+            ..bevy_ext_terrain_runtime::spec::TerrainSpec::default()
         };
-        let map = viber::terrain::heightmap::HeightMapU16::procedural(
+        let map = bevy_ext_terrain_runtime::heightmap::HeightMapU16::procedural(
             &spec,
             spec.resolution.max(1) as usize,
         );
-        let grid = viber::terrain::brush::BrushGrid::from_height_map(
+        let grid = bevy_ext_terrain_runtime::brush::BrushGrid::from_height_map(
             &map,
             spec.world_size,
             spec.max_height,
@@ -280,9 +296,9 @@ mod tests {
             water: vec![],
             roads: vec![],
             pads: vec![],
-            voxel: Arc::new(viber::terrain::voxel::VoxelField::default()),
-            deltas: std::sync::Arc::new(viber::terrain::delta::DeltaGrid::default()),
-            paint: std::sync::Arc::new(viber::terrain::paint::PaintGrid::default()),
+            voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::paint::PaintGrid::default()),
             splat_tuning: Default::default(),
         });
 

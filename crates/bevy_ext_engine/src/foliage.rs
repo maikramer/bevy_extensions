@@ -17,11 +17,11 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::{Collider, RigidBody};
 
-// TODO(viber-exit): `luau::LuaScriptRef`, `animation::CharacterAnimator` e
-// `physics::PendingCollider` ainda vivem no monólito.
-use viber::animation::CharacterAnimator;
-use viber::luau::LuaScriptRef;
-use viber::physics::PendingCollider;
+// Contratos fora do monólito: animação congelada no core, marca de script e
+// colisor pendente nos crates próprios.
+use bevy_ext_core::animation::CharacterAnimator;
+use bevy_ext_physics::physics::PendingCollider;
+use crate::luau::LuaScriptRef;
 
 pub const TILE: f32 = 16.0;
 
