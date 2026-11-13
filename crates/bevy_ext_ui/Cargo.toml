@@ -1,0 +1,38 @@
+[package]
+name = "bevy_ext_ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Declarative UI for Bevy: XML tree, CSS-like stylesheet and a Luau surface"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "ui", "hud", "css", "gamedev"]
+categories = ["game-development", "gui"]
+
+[dependencies]
+# A facade completa do UI: `bevy_ui` (com `bevy_text`/`bevy_sprite`), os
+# widgets (`bevy_ui_widgets`), foco (`bevy_input_focus`), picking, asset,
+# janela e os macros `warn!`/`debug!` do prelude (`bevy_log`).
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_asset",
+    "bevy_color",
+    "bevy_input_focus",
+    "bevy_log",
+    "bevy_picking",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_widgets",
+    "bevy_window",
+    "default_font",
+] }
+bevy_ext_core = { workspace = true }
+# `XmlNode`/`parse_file` — a árvore declarativa nasce do mesmo parser XML do
+# mundo (`bevy_world_xml`, extraído do monólito).
+bevy_ext_world = { workspace = true }
+# A superfície `viber.ui.*` corre na VM Luau do host; o crate só precisa do
+# handle e da instalação da tabela.
+mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
+# `Locale::load` (contrato do host de localização) lê `locale/<lang>.json`.
+serde_json = { workspace = true }
