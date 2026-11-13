@@ -10,6 +10,10 @@ members = [
     "crates/bevy_ext_terrain",
     "crates/bevy_ext_world",
     "crates/bevy_voxel_terrain",
+    # Hub do runtime de cena (extração do monólito `viber`): depende do
+    # checkout `../Viber` em path durante a transição (TODO(viber-exit)) e
+    # NÃO é publicável enquanto isso durar.
+    "crates/bevy_ext_scene_runtime",
 ]
 exclude = ["crates/bevy_voxel_terrain_jackdaw"]
 resolver = "3"
@@ -27,13 +31,22 @@ authors = ["Maikeu Locatelli"]
 bevy = { version = "0.20.1", default-features = false }
 
 # Família lockstep + path local (o path é removido no `.crate` publicado).
-bevy_ext_core = { version = "0.1.0", path = "crates/bevy_ext_core" }
+# TRANSITÓRIO (TODO(viber-exit)): estes seis divergem da família (0.1.1)
+# porque o monólito `viber` ainda os dep do checkout irmão à 0.1.0
+# (direto ou pela feature `terrain` do `bevy_ext_world`) — (nome, versão)
+# iguais de paths diferentes colidem no lockfile. Reverter para 0.1.0
+# quando o `viber` apontar para os members deste workspace.
+bevy_ext_core = { version = "0.1.1", path = "crates/bevy_ext_core" }
 bevy_ext_luau = { version = "0.1.0", path = "crates/bevy_ext_luau" }
-bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
-bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
-bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }
-bevy_ext_terrain = { version = "0.1.0", path = "crates/bevy_ext_terrain" }
-bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
+bevy_ext_gltf = { version = "0.1.1", path = "crates/bevy_ext_gltf" }
+bevy_ext_world = { version = "0.1.1", path = "crates/bevy_ext_world" }
+bevy_ext_save = { version = "0.1.1", path = "crates/bevy_ext_save" }
+bevy_ext_terrain = { version = "0.1.1", path = "crates/bevy_ext_terrain" }
+bevy_voxel_terrain = { version = "0.1.1", path = "crates/bevy_voxel_terrain" }
+# Transitório: usa o `viber` monólita e as cópias do checkout principal em
+# path próprio (ver crates/bevy_ext_scene_runtime/Cargo.toml); entra no
+# `{ workspace = true }` só quando essa dependência morrer.
+bevy_ext_scene_runtime = { version = "0.1.0", path = "crates/bevy_ext_scene_runtime" }
 
 # Jackdaw 0.20 line: the editor extension pins the same version as the Vael
 # editor so type paths and `.bsn` defaults agree.

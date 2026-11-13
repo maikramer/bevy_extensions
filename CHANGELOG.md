@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- New `bevy_ext_scene_runtime` (branch `exit/scene`, **não publicável**):
+  runtime de cena extraído do monólito `viber` — troca de cena
+  (`scene_loader`), spawner do mundo (`recipes::spawn` com
+  `apply_script_spawns`), portão de spawn (`spawn_gate`) e anéis de
+  streaming (`streaming`). Depende do checkout `../Viber` em path durante a
+  transição (`TODO(viber-exit)`); os `TypePath` refletidos ficam congelados
+  nos caminhos `viber::*`.
+- TRANSITÓRIO: `bevy_ext_{core,gltf,save,terrain,world}` e
+  `bevy_voxel_terrain` divergem da família para `0.1.1` — o `viber` ainda
+  depende destes pacotes do checkout irmão à `0.1.0`, e dois paths com o
+  mesmo (nome, versão) colidem no lockfile. Reverter quando o `viber`
+  apontar para os members deste workspace.
+
 ## 0.1.0 — 2026-11-12
 
 First release of the monorepo.
