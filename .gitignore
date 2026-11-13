@@ -8,3 +8,6 @@ extensions/**/*.jdext
 # (excluído do workspace da raiz; ver crates/bevy_ext_engine/Cargo.toml).
 crates/bevy_ext_engine/Cargo.lock
 .viber_engine_target/
+
+# Builds dos crates standalone (excluídos da raiz; locks ficam, targets não)
+crates/*/target/

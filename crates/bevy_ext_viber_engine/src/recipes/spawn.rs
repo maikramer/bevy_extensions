@@ -141,17 +141,11 @@ impl GltfScenePending {
     }
 }
 
-/// Declarative terrain collected from the entity tree, consumed by the
-/// terrain runtime ([`crate::terrain::runtime`]) at startup.
-#[derive(Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct PendingTerrain {
-    pub base_dir: Option<PathBuf>,
-    #[reflect(ignore)]
-    pub terrain: Option<TerrainSpec>,
-    #[reflect(ignore)]
-    pub features: TerrainFeatures,
-}
+// Declarative terrain collected from the entity tree, consumed by the
+// terrain runtime ([`crate::terrain::runtime`]) at startup. O tipo vive no
+// `bevy_ext_terrain_runtime` (TypePath `viber::recipes::spawn` congelado
+// lá); o caminho `crate::recipes::spawn::PendingTerrain` mantém-se.
+pub use crate::terrain::runtime::PendingTerrain;
 
 fn is_ground_feature(kind: &EntityKind) -> bool {
     matches!(
@@ -945,9 +939,12 @@ enum MeshKey {
     Capsule(u32, u32),
 }
 
-fn mesh_key(shape: &Shape) -> MeshKey {
+/// Cache key for the engine's standard-material primitive meshes. Procedural
+/// shapes return `None`: the engine draws a bounds-box fallback and the
+/// gradmesh path (ou o plugin do jogo) troca o mesh real.
+fn mesh_key(shape: &Shape) -> Option<MeshKey> {
     let bits = |v: f32| v.to_bits();
-    match shape {
+    Some(match shape {
         Shape::Cuboid { half_size } => MeshKey::Cuboid(half_size.map(bits)),
         Shape::Sphere { radius } => MeshKey::Sphere(bits(*radius)),
         Shape::Cylinder {
@@ -959,7 +956,36 @@ fn mesh_key(shape: &Shape) -> MeshKey {
             radius,
             half_height,
         } => MeshKey::Capsule(bits(*radius), bits(*half_height)),
+        // Procedural shapes (and rounded boxes) have no Bevy primitive mesh.
+        Shape::RoundedCuboid { .. }
+        | Shape::Cone { .. }
+        | Shape::Pyramid { .. }
+        | Shape::Torus { .. }
+        | Shape::Lathe { .. }
+        | Shape::Sweep { .. }
+        | Shape::Extruded { .. } => return None,
+    })
+}
+
+/// Primitivas sem mesh Bevy: bounds box conservadora (o centro pode estar
+/// fora da origem — perfil de lathe, path de sweep).
+fn fallback_mesh(shape: &Shape) -> Mesh {
+    let bounds = bevy_ext_scene::primitives::bounds(shape);
+    let half = bounds.half.max(Vec3::splat(1e-3));
+    let mut mesh = Mesh::from(Cuboid::new(half.x * 2.0, half.y * 2.0, half.z * 2.0));
+    // The bounds may be off-centre (lathe profile, sweep path): bake the
+    // centre into the positions so the fallback sits where the real mesh will.
+    if bounds.center != Vec3::ZERO
+        && let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    {
+        for position in positions {
+            position[0] += bounds.center.x;
+            position[1] += bounds.center.y;
+            position[2] += bounds.center.z;
+        }
     }
+    mesh
 }
 
 /// Chave de cache de materiais: a spec canonizada em bits (f32 não é
@@ -1131,7 +1157,11 @@ pub struct StaticWorld(pub bool);
 /// Plane/Cuboid) NÃO entram na cache — `scale_primitive_uvs` assa a
 /// translation do mundo nas UVs.
 fn primitive_mesh_handle(ctx: &mut SpawnCtx, shape: &Shape) -> Handle<Mesh> {
-    let key = mesh_key(shape);
+    let Some(key) = mesh_key(shape) else {
+        // Procedural shape (gradmesh desligado/minimal app): bounds box
+        // conservadora até o plugin do jogo trocar o mesh real.
+        return ctx.meshes.add(fallback_mesh(shape));
+    };
     if let Some(handle) = ctx.mesh_cache.get(&key) {
         return handle.clone();
     }
@@ -2454,6 +2484,39 @@ fn gradmesh_shape(
             detail,
         ),
         Shape::Plane { .. } => return None,
+        // `Box round="…"` — o mesmo cuboid com roundness do autor.
+        Shape::RoundedCuboid { half_size, roundness } => GradShape::cuboid(
+            Vec3::new(half_size[0], half_size[1], half_size[2]) * 2.0,
+            roundness,
+            detail,
+        ),
+        Shape::Cone {
+            half_height,
+            radius,
+            ..
+        } => GradShape::cone(radius, half_height * 2.0, detail),
+        Shape::Pyramid {
+            sides,
+            radius,
+            half_height,
+            ..
+        } => GradShape::pyramid(sides, radius, half_height * 2.0, detail),
+        // Ângulos do XML em graus; o gradmesh consome radianos.
+        Shape::Torus {
+            radius,
+            thickness,
+            start_deg,
+            span_deg,
+        } => GradShape::torus(
+            radius,
+            thickness,
+            start_deg.to_radians(),
+            span_deg.to_radians(),
+            detail,
+        ),
+        // Lathe/Sweep/Extruded não têm mapeamento direto aqui ainda: caem no
+        // fallback de bounds box + `PrimitivePart` (o plugin do jogo troca).
+        Shape::Lathe { .. } | Shape::Sweep { .. } | Shape::Extruded { .. } => return None,
     })
 }
 
@@ -2527,6 +2590,9 @@ fn primitive_mesh(shape: &Shape) -> Mesh {
             radius,
             half_height,
         } => Mesh::from(Capsule3d::new(*radius, *half_height * 2.0)),
+        // Procedural shapes: a conservative bounds box until the game's
+        // plugin swaps in the real mesh.
+        other => fallback_mesh(other),
     }
 }
 
@@ -3037,6 +3103,7 @@ mod gradmesh_tests {
             texture: Some("/assets/stone/albedo.ktx2".into()),
             texture_tile: Some(2.0),
             normal_map: Some("/assets/stone/normal.ktx2".into()),
+            preset: None,
         }
     }
 

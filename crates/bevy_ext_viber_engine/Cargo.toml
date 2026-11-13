@@ -7,7 +7,17 @@ description = "Viber runtime de gameplay — transição do monólito para o Vae
 license = "MIT OR Apache-2.0"
 publish = false
 
+# Workspace PRÓPRIO (vazio): o crate fica fora dos members da raiz (a família
+# `bevy_ext_*` que consome é compilada pelos paths `../…` deste diretório) e
+# sem esta tabela o cargo subia até ao workspace da raiz e recusava o pacote
+# não-membro. Quando a extração terminar e entrar nos members da raiz,
+# apagar esta tabela.
+[workspace]
+
 [lib]
+# Nome histórico: o `main.rs` (e os consumidores via rename `viber = …`) usam
+# o caminho `viber::…` do monólito original.
+name = "viber"
 path = "src/lib.rs"
 
 [dependencies]
@@ -48,8 +58,20 @@ bevy_landmass = "0.13"
 landmass_rerecast = "0.4"
 bevy_gradmesh = "0.3.9"
 bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
+# BGM driver extraído (shim `src/music.rs`); os TypePaths `viber::music`
+# estão congelados no crate de áudio.
+bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
+# Terreno volumétrico extraído (shim `pub use … as terrain` em `lib.rs`); os
+# TypePaths `viber::terrain::…` estão congelados no crate.
+bevy_ext_terrain_runtime = { version = "0.1.0", path = "../bevy_ext_terrain_runtime" }
+# Física declarativa extraída (shim `pub use … as physics` em `lib.rs`); os
+# TypePaths `viber::physics` estão congelados no crate.
+bevy_ext_physics = { version = "0.1.0", path = "../bevy_ext_physics" }
 
 [dev-dependencies]
+# Nos testes deste crate o debug render do rapier não se registra (ver
+# `bevy_ext_physics` feature `headless`): os apps de teste não têm gizmos.
+bevy_ext_physics = { version = "0.1.0", path = "../bevy_ext_physics", features = ["headless"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 wesl = "0.6.0"

@@ -40,7 +40,22 @@ use bevy_rapier3d::prelude::*;
 
 // TODO(viber-exit): `parse_component_string` e a primitiva `Shape` são do
 // parser do monólito; saem para um crate de contrato quando o recipes sair.
-use viber::recipes::parse_component_string;
+// Cópia local do `viber::recipes::parse_component_string` (12 linhas, pura):
+// o crate do parser IR ainda não existe e o physics não pode depender do
+// monólito (o monólito é quem consome ESTE crate).
+fn parse_component_string(value: &str) -> Vec<(String, String)> {
+    value
+        .split(';')
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return None;
+            }
+            let (key, val) = part.split_once(':')?;
+            Some((key.trim().to_ascii_lowercase(), val.trim().to_string()))
+        })
+        .collect()
+}
 
 /// Where a collision mesh's origin sits relative to the entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
@@ -466,7 +481,7 @@ impl bevy::app::Plugin for PhysicsPlugin {
                     // chão debaixo do herói a cada troca de LOD.
                     // TODO(viber-exit): o set `TerrainSet::Columns` é do
                     // runtime de terrain do monólito.
-                    stream_voxel_colliders.after(viber::terrain::plugin::TerrainSet::Columns),
+                    stream_voxel_colliders.after(bevy_ext_terrain_runtime::plugin::TerrainSet::Columns),
                 ),
             );
         // O wireframe existe sempre; `enabled` segue `debug` (jogo:
@@ -474,8 +489,10 @@ impl bevy::app::Plugin for PhysicsPlugin {
         // [`ColliderDebugToggle`] sem precisar da env.
         // Nos testes headless não há `GizmoPlugin`: o debug render (mesmo
         // desligado) panica à procura do store. O jogo e o editor trazem os
-        // gizmos pelos DefaultPlugins.
-        if self.debug || !cfg!(test) {
+        // gizmos pelos DefaultPlugins; os hosts de teste ligam a feature
+        // `headless` (o antigo `cfg!(test)` deste ficheiro não atravessa a
+        // extração — o crate é testado por fora).
+        if self.debug || !cfg!(feature = "headless") {
             let debug_render = RapierDebugRenderPlugin::default();
             app.add_plugins(if self.debug {
                 debug_render
@@ -587,24 +604,24 @@ pub fn immediate_collider(shape: &ColliderShape) -> Option<(Collider, Transform)
 /// scale não-uniforme usa o maior eixo (elipsoide → ball); cilindro/cápsula
 /// usam o maior eixo horizontal para o raio (elipse → círculo).
 // TODO(viber-exit): a primitiva `Shape` é do recipes do monólito.
-pub fn collider_for_shape(shape: &viber::recipes::Shape, scale: Vec3) -> Collider {
+pub fn collider_for_shape(shape: &bevy_ext_scene::primitives::Shape, scale: Vec3) -> Collider {
     match shape {
-        viber::recipes::Shape::Cuboid { half_size } => Collider::cuboid(
+        bevy_ext_scene::primitives::Shape::Cuboid { half_size } => Collider::cuboid(
             (half_size[0] * scale.x).max(1e-3),
             (half_size[1] * scale.y).max(1e-3),
             (half_size[2] * scale.z).max(1e-3),
         ),
-        viber::recipes::Shape::Sphere { radius } => {
+        bevy_ext_scene::primitives::Shape::Sphere { radius } => {
             Collider::ball((radius * scale.max_element()).max(1e-3))
         }
-        viber::recipes::Shape::Cylinder {
+        bevy_ext_scene::primitives::Shape::Cylinder {
             half_height,
             radius,
         } => Collider::cylinder(
             (half_height * scale.y).max(1e-3),
             (radius * scale.x.max(scale.z)).max(1e-3),
         ),
-        viber::recipes::Shape::Capsule {
+        bevy_ext_scene::primitives::Shape::Capsule {
             radius,
             half_height,
         } => Collider::capsule_y(
@@ -612,11 +629,22 @@ pub fn collider_for_shape(shape: &viber::recipes::Shape, scale: Vec3) -> Collide
             (radius * scale.x.max(scale.z)).max(1e-3),
         ),
         // Planos XZ: lâmina fina (a mesma convenção do Pad/Plane).
-        viber::recipes::Shape::Plane { half_size } => Collider::cuboid(
+        bevy_ext_scene::primitives::Shape::Plane { half_size } => Collider::cuboid(
             (half_size[0] * scale.x).max(1e-3),
             0.02,
             (half_size[1] * scale.z).max(1e-3),
         ),
+        // Primitivas procedurais: bounds box escalada (aproximação
+        // conservadora — o plugin do jogo troca pelo colisor exato do
+        // gradmesh; ver `PrimitivePart` no spawn).
+        other => {
+            let bounds = bevy_ext_scene::primitives::bounds(other);
+            Collider::cuboid(
+                (bounds.half.x * scale.x).max(1e-3),
+                (bounds.half.y * scale.y).max(1e-3),
+                (bounds.half.z * scale.z).max(1e-3),
+            )
+        }
     }
 }
 
@@ -1426,7 +1454,7 @@ pub struct VoxelCollider;
 /// consegue tocar — nunca há collider assado de geometria mais grosseira do
 /// que a desenhada.
 // TODO(viber-exit): o `TerrainSpec` é do runtime de terrain do monólito.
-pub fn collision_keep_within(spec: &viber::terrain::spec::TerrainSpec) -> f32 {
+pub fn collision_keep_within(spec: &bevy_ext_terrain_runtime::spec::TerrainSpec) -> f32 {
     (spec.chunk_size * PHYSICS_CHUNK_RADIUS).min(spec.lod_distance())
 }
 
@@ -1436,13 +1464,13 @@ pub fn collision_keep_within(spec: &viber::terrain::spec::TerrainSpec) -> f32 {
 /// TODO(viber-exit): réplica de `terrain::plugin::chunk_edge`, que é
 /// `pub(crate)` no monólito; os dois têm de continuar em passo quando o
 /// runtime de terrain sair para crate próprio.
-fn chunk_edge(spec: &viber::terrain::spec::TerrainSpec) -> f32 {
+fn chunk_edge(spec: &bevy_ext_terrain_runtime::spec::TerrainSpec) -> f32 {
     let step = lod0_step(spec);
     (spec.chunk_size / step as f32).round().max(1.0) * step as f32
 }
 
 /// Passo da grelha LOD 0 — réplica local de `terrain::plugin::lod0_step`.
-fn lod0_step(spec: &viber::terrain::spec::TerrainSpec) -> usize {
+fn lod0_step(spec: &bevy_ext_terrain_runtime::spec::TerrainSpec) -> usize {
     let ideal = spec.chunk_size / spec.resolution.max(1) as f32;
     let step = ideal.round().max(1.0) as usize;
     if (spec.chunk_size / step as f32).abs().fract() > 1e-3 {
@@ -1509,7 +1537,7 @@ impl TerrainCollisionStatus {
 /// Triângulos acumulados das caixas de UMA coluna voxel, prontos para assar.
 ///
 /// Os buffers já existem — são exatamente os que o transvoxel devolve para
-/// render ([`viber::terrain::voxel::build_box_mesh`]) — acumulá-los não paga
+/// render ([`bevy_ext_terrain_runtime::voxel::build_box_mesh`]) — acumulá-los não paga
 /// memória extra além do bake em curso. Posições são origin-relative nos
 /// três eixos (o contracto de `spawn_box_entity`), por isso cada caixa entra
 /// com o próprio `origin` como offset.
@@ -1528,7 +1556,7 @@ impl ColumnColliderBake {
     ///
     /// TODO(viber-exit): o `ChunkMeshData` é do mesher do monólito
     /// (re-export de `bevy_voxel_terrain`).
-    pub fn add_mesh_data(&mut self, origin: Vec3, data: &viber::terrain::mesh::ChunkMeshData) {
+    pub fn add_mesh_data(&mut self, origin: Vec3, data: &bevy_ext_terrain_runtime::mesh::ChunkMeshData) {
         let base = self.vertices.len() as u32;
         self.vertices
             .extend(data.positions.iter().map(|p| origin + Vec3::from(*p)));
@@ -1606,16 +1634,16 @@ impl ColumnColliderBake {
 pub fn stream_voxel_colliders(
     mut commands: Commands,
     mut status: ResMut<TerrainCollisionStatus>,
-    runtime: Option<Res<viber::terrain::runtime::TerrainRuntime>>,
+    runtime: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
     players: Query<(Entity, &GlobalTransform), With<bevy_ext_core::Player>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<bevy_ext_core::Player>)>,
     columns: Query<(
         Entity,
-        &viber::terrain::plugin::TerrainChunk,
+        &bevy_ext_terrain_runtime::plugin::TerrainChunk,
         Option<&VoxelCollider>,
         Option<&Children>,
     )>,
-    boxes: Query<(&viber::terrain::voxel::VoxelChunk, &Mesh3d)>,
+    boxes: Query<(&bevy_ext_terrain_runtime::voxel::VoxelChunk, &Mesh3d)>,
     meshes: Res<Assets<Mesh>>,
     mut repairs: Local<u32>,
 ) {
@@ -1721,7 +1749,7 @@ pub fn stream_voxel_colliders(
 #[cfg(test)]
 mod terrain_collider_tests {
     use super::*;
-    use viber::terrain::mesh::ChunkMeshData;
+    use bevy_ext_terrain_runtime::mesh::ChunkMeshData;
 
     /// Dois triângulos formando um quadrado unitário a y=5, origin-relative.
     fn quad_mesh_data(y: f32) -> ChunkMeshData {
@@ -1842,7 +1870,7 @@ mod terrain_collider_tests {
 #[cfg(test)]
 mod shape_collider_tests {
     use super::*;
-    use viber::recipes::Shape;
+    use bevy_ext_scene::primitives::Shape;
 
     #[test]
     fn test_collider_for_cuboid_scales_each_axis() {

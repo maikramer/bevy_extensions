@@ -12,8 +12,8 @@
 //! re-exporta; o render procedural é o `bevy_ext_gradmesh` (lado do jogo).
 
 pub use viber::recipes::{
-    EntityKind, EntitySpec, MaterialSpec, ParsedWorld, Shape, StaticSpawnerSpec, TemplateLod,
-    TransformSpec, UiStyleSource,
+    EntityKind, EntitySpec, MaterialSpec, ParsedWorld, ParticleSpec, Shape, StaticSpawnerSpec,
+    TemplateLod, TransformSpec, UiStyleSource,
     DEFAULT_CLIFF_MARGIN, DEFAULT_LOD_MID, DEFAULT_LOD_NEAR, DEFAULT_NEAR_WATER_RADIUS,
     parse_world, sun_shadow_cascades, sun_shadow_distance,
 };

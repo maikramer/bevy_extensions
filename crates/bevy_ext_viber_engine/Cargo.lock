@@ -917,15 +917,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_ext_core"
+name = "bevy_ext_audio"
 version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_ext_core",
+ "bevy_kira_audio",
+]
+
+[[package]]
+name = "bevy_ext_core"
+version = "0.1.1"
 dependencies = [
  "bevy",
 ]
 
 [[package]]
 name = "bevy_ext_gltf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -934,8 +943,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_ext_save"
+name = "bevy_ext_physics"
 version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_ext_core",
+ "bevy_ext_scene",
+ "bevy_ext_terrain_runtime",
+ "bevy_rapier3d",
+]
+
+[[package]]
+name = "bevy_ext_save"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "bevy_ext_world",
@@ -953,12 +973,32 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_terrain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
  "bevy_voxel_terrain",
  "flate2",
+ "serde_json",
+]
+
+[[package]]
+name = "bevy_ext_terrain_runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "bevy_ext_core",
+ "bevy_ext_gltf",
+ "bevy_ext_terrain",
+ "bevy_ext_world",
+ "bevy_rapier3d",
+ "bevy_voxel_terrain",
+ "dirs",
+ "flate2",
+ "half",
+ "image",
+ "serde",
  "serde_json",
 ]
 
@@ -970,10 +1010,13 @@ dependencies = [
  "arboard",
  "base64 0.23.1",
  "bevy",
+ "bevy_ext_audio",
  "bevy_ext_core",
  "bevy_ext_gltf",
+ "bevy_ext_physics",
  "bevy_ext_save",
  "bevy_ext_scene",
+ "bevy_ext_terrain_runtime",
  "bevy_ext_world",
  "bevy_gradmesh",
  "bevy_kira_audio",
@@ -1004,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_world"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -1202,14 +1245,13 @@ dependencies = [
 
 [[package]]
 name = "bevy_gradmesh"
-version = "0.3.7"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd9503d85e4f09025d72a2f36c40a056f83faea65dd4769cfa803d30588f1849"
+checksum = "34a0ce233f49f30435ea543b6b56ecab12a50405ee1c3dceeb685d3b51579052"
 dependencies = [
  "bevy",
  "bevy_asset",
  "bevy_material",
- "bytemuck",
 ]
 
 [[package]]
@@ -2206,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_terrain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "transvoxel",

@@ -36,18 +36,13 @@ use crate::{
     a11y, ambient, animation, attachment, audio_space, camera, editor_camera, foliage, grass, hud,
     ik, impact, input_map, locale, luau, menus, meshopt, music, nav, netplay, particles, physics,
     physics_fx, player, postfx, profiler, prop_tint, ragdoll, recipes, render_lod, save, sky,
-    spawner, streaming, terrain, textures, time_fx, ui, worldsys, xml,
+    spawner, streaming, terrain, terrain_host, textures, time_fx, ui, worldsys, xml,
 };
 
-/// Para quê a App é montada.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
-pub enum RunMode {
-    /// `viber run`: o jogo.
-    #[default]
-    Game,
-    /// Modo de edição in-process: cena congelada.
-    Edit,
-}
+// Para quê a App é montada — o enum saiu para o `bevy_ext_core` (contrato
+// de partilha: o runtime de cena e o host têm de ver o MESMO resource). O
+// caminho `crate::app::RunMode` mantém-se.
+pub use bevy_engine_core::RunMode;
 
 /// De onde vêm os scripts de comportamento.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -376,8 +371,8 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     };
     let shader_entities = &main_world.as_ref().unwrap_or(&world).entities;
     let sky_config = sky::SkyConfig::from_world(shader_entities).with_env_override();
-    let water_config = terrain::water_material::WaterSurfaceConfig::from_world(shader_entities);
-    let layers_config = terrain::layer_material::TerrainChunkConfig::from_world(shader_entities);
+    let water_config = terrain_host::water_surface_config_from_world(shader_entities);
+    let layers_config = terrain_host::terrain_chunk_config_from_world(shader_entities);
     let shaders_dir = asset_root.join("shaders");
     let _ = std::fs::create_dir_all(&shaders_dir);
     for (name, contents) in [
@@ -758,6 +753,16 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     app.add_plugins(crate::ibl::SkyIblPlugin);
     app.add_plugins(terrain::TerrainPlugin);
     app.add_plugins(terrain::runtime::TerrainFeaturesPlugin);
+    // Ponte de coleção do terreno: o runtime de terreno extraído não conhece
+    // o IR do parse — no preload (antes do `HostSpawn` publicar o
+    // `PendingTerrain`) ele chama este hook para colecionar do `PendingWorld`.
+    app.insert_resource(terrain::runtime::TerrainCollect(Some(|world, out| {
+        let Some(pending) = world.get_resource::<recipes::spawn::PendingWorld>() else {
+            return;
+        };
+        out.base_dir = pending.base_dir.clone();
+        recipes::spawn::collect_terrain(&pending.world.entities, out);
+    })));
     // Sub-bosque instanciado (a relva que o `<Vegetation>` não consegue ser):
     // tiles de lâminas fundidas a 16 m à volta da câmara, vento no vertex
     // shader, paleta por bioma. `VIBER_GRASS=0` desliga; `VIBER_GRASS_DENSITY`

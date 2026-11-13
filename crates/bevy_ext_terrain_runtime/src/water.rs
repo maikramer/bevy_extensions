@@ -811,7 +811,7 @@ impl LakeShape {
     /// Com `seed`, os uniformes saem do SplitMix64 da engine
     /// ([`bevy_ext_core::rng::splitmix64`], topo 24 bits → f32 [0,1)): mesma seed,
     /// mesma forma, em qualquer canto do mundo.
-    pub(crate) fn from_authoring(at: Vec2, a: &LakeAuthoring) -> Self {
+    pub fn from_authoring(at: Vec2, a: &LakeAuthoring) -> Self {
         let h = |salt: f32| -> f32 {
             let s = at.x * 12.989_8_f32 + at.y * 78.233_f32;
             ((s * salt + salt * 91.7).sin() * 43_758.55_f32)

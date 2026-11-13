@@ -172,7 +172,9 @@ pub struct RoadSpec {
     /// Edge alpha fade (fraction of the half-width).
     pub edge_feather: f32,
     /// Junction flare annotations (network-internal, set by expansion).
-    pub(crate) flare: Option<Flare>,
+    /// `pub` porque o parser e o collect de features constroem o spec com
+    /// struct-update (`..road.clone()`), que exige todos os campos visíveis.
+    pub flare: Option<Flare>,
 }
 
 impl Default for RoadSpec {
