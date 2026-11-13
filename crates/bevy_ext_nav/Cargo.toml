@@ -1,0 +1,39 @@
+[package]
+name = "bevy_ext_nav"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Navmesh navigation for Bevy: moving tile bake, landmass agents and path queries"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "gamedev", "navmesh", "pathfinding", "ai"]
+categories = ["game-development"]
+
+[dependencies]
+# ECS/app/asset/log: o restante da stack bevy chega pelas features das
+# dependências abaixo (o resolver une as features de bevy_rerecast/landmass).
+bevy = { workspace = true, features = ["std", "bevy_asset", "bevy_log"] }
+# Contratos de locomoção (`AiLocomotion`), marcadores de gameplay
+# (`Hostile`/`EnemyCreature`/`VoxelCollider`/`RagdollBodyOf`), o corpo do
+# jogador (`Player`), o set do consumidor de locomoção e o schedule `SceneLoad`.
+bevy_ext_core = { workspace = true }
+# Recast portado para Rust + pathfinding com evitamento local. Sem o editor
+# nem o debug plugin: o `bevy_rerecast` default arrasta uma UI de editor que
+# esta crate não usa (mesma configuração do runtime que a consome).
+bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_mesh"] }
+bevy_landmass = "0.13"
+landmass_rerecast = "0.4"
+# Só os colliders 3D: o backend do navmesh lê os obstáculos estáticos
+# (trimeshes assados e AABBs) e o retile conta-os.
+bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"] }
+
+# NOTA(viber-exit): a dependência transitória direta do monólito `viber`
+# (`path = "../../../Viber"`) chegou a estar declarada para os tipos de
+# terreno/interop, mas é inviável: o lockfile recusa duas fontes para o mesmo
+# par nome+versão (`bevy_ext_core` &c. existem neste workspace E nas
+# path-deps do `viber`). A interop ficou em contratos: o terreno entra pelo
+# trait `NavGround` (este crate) e os tipos de IA/jogador por
+# `bevy_ext_core`. O monólito não precisa disto até re-exportar o crate; os
+# pontos que ele tem de preencher estão em README.md.

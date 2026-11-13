@@ -1,0 +1,73 @@
+[package]
+name = "bevy_ext_scene_runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Scene runtime for declarative Viber worlds: scene loader, world spawner, spawn gates and streaming rings"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "scenes", "gamedev", "portals", "streaming"]
+categories = ["game-development"]
+
+[dependencies]
+# ECS/reflect/math + os subsistemas que o runtime de cena toca (UI do fade,
+# GLTF pendente, cenas, luzes, meshes). A união de features com o resto do
+# grafo (o `viber` transitório liga o set completo) garante uma só build.
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_asset",
+    "bevy_scene",
+    "bevy_world_serialization",
+    "bevy_gltf",
+    "bevy_animation",
+    "bevy_render",
+    "bevy_pbr",
+    "bevy_light",
+    "bevy_mesh",
+    "bevy_ui",
+    "bevy_picking",
+] }
+# Contrato de primitivas (`Shape`/`MaterialSpec`/`PrimitivePart`), já
+# extraído. TRANSITÓRIO (TODO(viber-exit)): o path segue o MESMO que o do
+# `viber` (checkout irmão, ainda não commitado neste repo) — mesmo pacote,
+# portanto os tipos são idênticos aos que a engine usa. Quando o crate for
+# commitado aqui e o `viber` trocar para os members deste workspace, trocar
+# para `{ workspace = true }`.
+bevy_ext_scene = { version = "0.1.0", path = "../../../bevy_extensions/crates/bevy_ext_scene" }
+# Os restantes contratos extraídos (`Player`, `TeleportSettle`, `Knockback`,
+# `MenusOpen`, `ScriptToast`, `SfxEvent`, `AudioMixerSettings`, …) chegam
+# ATRAVÉS do `viber` (re-exports `viber::player::…`, `viber::menus::…`), que
+# é quem os usa — assim há UMA só cópia de cada pacote no grafo e os tipos
+# casam com os sistemas da engine. NÃO adicionar `bevy_ext_core` diretamente
+# enquanto o `viber` apontar para o checkout irmão: um segundo path para o
+# mesmo (nome, versão) colide no lockfile e cria tipos duplicados.
+# Física (o spawn monta corpos/colisores Rapier; o gate congela até haver chão).
+bevy_rapier3d = { version = "0.37", default-features = false, features = [
+    "dim3",
+    "async-collider",
+    "debug-render-3d",
+] }
+# Callbacks `on_spawned` do spawn de protótipos por script (mlua::Function).
+mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
+# O varrimento de cena pára os loops kira das entidades condenadas.
+bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
+anyhow.workspace = true
+serde.workspace = true
+
+# TODO(viber-exit): dependência TRANSITÓRIA ao monólito — o hub do runtime de
+# cena ainda consome da engine o parser do mundo (`recipes::parse_world`), os
+# specs do terreno, a física, o spawner de grupos, o host Luau, a UI/HUD, o
+# céu, o navmesh e o `bake::headless_app` dos testes. Cada módulo em baixo
+# lista o que usa; apagar a linha quando esse pedaço sair do `viber` para um
+# crate próprio.
+viber = { path = "../../../Viber" }
+
+[features]
+default = ["experimental_pbr_pcss"]
+# PCSS (soft shadows físicos): `soft_shadows_enabled`/`soft_shadow_size` no
+# spawn das luzes. Re-export da feature do bevy, como no `viber`.
+experimental_pbr_pcss = ["bevy/experimental_pbr_pcss"]
+
+[dev-dependencies]
+tempfile.workspace = true

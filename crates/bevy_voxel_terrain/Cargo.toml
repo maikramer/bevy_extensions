@@ -1,6 +1,12 @@
+# TRANSITÓRIO (TODO(viber-exit)): versão divergida da família (0.1.0) porque o
+# monólito `viber` ainda dep esta família do checkout irmão
+# `../bevy_extensions` à 0.1.0 — dois pacotes path com o mesmo (nome,
+# versão) colidem no lockfile do workspace. Voltar a
+# `version.workspace = true` quando o `viber` apontar para os members
+# deste workspace.
 [package]
 name = "bevy_voxel_terrain"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Voxel/SDF terrain for Bevy: CSG mods, caves, cliffs and Transvoxel LOD meshing"

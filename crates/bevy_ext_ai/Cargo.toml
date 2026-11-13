@@ -1,0 +1,18 @@
+[package]
+name = "bevy_ext_ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "AI service for Bevy games: senses, velocity-space locomotion, the simple creature FSM and vitals"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "ai", "npc", "locomotion", "game"]
+categories = ["game-development"]
+
+[dependencies]
+bevy = { workspace = true, features = ["std"] }
+bevy_ext_core = { workspace = true }
+# Line-of-sight das criaturas (`cast_ray` sobre os colliders da cena).
+bevy_rapier3d = { workspace = true }
