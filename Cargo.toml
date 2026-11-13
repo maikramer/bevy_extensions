@@ -4,6 +4,7 @@
 # compilar; os ficheiros ficam preservados no repo.
 members = [
     "crates/bevy_ext_core",
+    "crates/bevy_ext_luau",
     "crates/bevy_ext_gltf",
     "crates/bevy_ext_save",
     "crates/bevy_ext_terrain",
@@ -27,6 +28,7 @@ bevy = { version = "0.20.1", default-features = false }
 
 # Família lockstep + path local (o path é removido no `.crate` publicado).
 bevy_ext_core = { version = "0.1.0", path = "crates/bevy_ext_core" }
+bevy_ext_luau = { version = "0.1.0", path = "crates/bevy_ext_luau" }
 bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
 bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
 bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }

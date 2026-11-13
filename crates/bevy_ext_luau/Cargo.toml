@@ -1,0 +1,19 @@
+[package]
+name = "bevy_ext_luau"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Host de scripting do Vael sobre bevy_mod_scripting (Luau) com a tabela viber"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "scripting", "luau", "gamedev"]
+categories = ["game-development"]
+
+[dependencies]
+bevy = { workspace = true, features = ["std"] }
+bevy_ext_core = { workspace = true }
+bevy_mod_scripting = { version = "0.24", features = ["luau"] }
+log = "0.4"
+mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
+serde = { version = "1", features = ["derive"] }
