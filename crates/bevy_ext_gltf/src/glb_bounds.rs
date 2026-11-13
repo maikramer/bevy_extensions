@@ -49,6 +49,33 @@ pub fn read(path: &Path) -> Option<GlbBounds> {
     read_bytes(&bytes)
 }
 
+/// Lê só o cabeçalho e o chunk JSON do `.glb` (sem o BIN). É o caminho
+/// barato para previews de cena: o AABB vem dos accessors, por isso o chunk
+/// de geometria e as texturas nunca precisam de ser lidos do disco.
+pub fn read_json_chunk(path: &Path) -> Option<GlbBounds> {
+    use std::io::Read as _;
+
+    const HEADER_LEN: usize = 20;
+    /// Um chunk JSON maior que isto é quase de certeza um ficheiro corrompido;
+    /// recusar a alocação evita um OOM num preview.
+    const MAX_JSON_LEN: usize = 256 * 1024 * 1024;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0u8; HEADER_LEN];
+    file.read_exact(&mut header).ok()?;
+    if &header[0..4] != b"glTF" {
+        return None;
+    }
+    let json_len = u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as usize;
+    if json_len == 0 || json_len > MAX_JSON_LEN {
+        return None;
+    }
+    let mut bytes = vec![0u8; HEADER_LEN + json_len];
+    bytes[..HEADER_LEN].copy_from_slice(&header);
+    file.read_exact(&mut bytes[HEADER_LEN..]).ok()?;
+    read_bytes(&bytes)
+}
+
 /// Variante para bytes já em memória (testes e o audit, que lê o ficheiro
 /// uma vez por referência).
 pub fn read_bytes(bytes: &[u8]) -> Option<GlbBounds> {
@@ -94,7 +121,7 @@ fn scene_bounds(doc: &Value) -> Option<GlbBounds> {
         let Some(mesh) = meshes.get(mesh_index as usize) else {
             continue;
         };
-        let Some(affine) = node_world(index, nodes, &parent, &mut world) else {
+        let Some(affine) = node_world(index, nodes, &parent, &mut world, 0) else {
             continue;
         };
         let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) else {
@@ -143,13 +170,19 @@ fn scene_bounds(doc: &Value) -> Option<GlbBounds> {
 
 /// Transform mundo do nó, compondo a cadeia de pais. Guarda memo em `world`
 /// (um nó partilhado por dois pais não é legal em glTF, mas um ciclo
-/// acidental não pode pendurar o audit — a recursão para no memo/limite).
+/// acidental não pode pendurar o audit — o memo só é escrito DEPOIS de a
+/// recursão ao pai devolver, por isso não interrompe ciclos: quem corta é o
+/// limite `depth`, que excede o número de nós exactamente quando há ciclo).
 fn node_world(
     index: usize,
     nodes: &[Value],
     parent: &[Option<usize>],
     world: &mut Vec<Option<Affine3A>>,
+    depth: usize,
 ) -> Option<Affine3A> {
+    if depth > nodes.len() {
+        return None;
+    }
     if let Some(cached) = world.get(index).copied().flatten() {
         return Some(cached);
     }
@@ -160,7 +193,7 @@ fn node_world(
         if parent_index == index {
             return None;
         }
-        let parent_world = node_world(parent_index, nodes, parent, world)?;
+        let parent_world = node_world(parent_index, nodes, parent, world, depth + 1)?;
         result = parent_world * local;
     }
     if let Some(slot) = world.get_mut(index) {
@@ -286,6 +319,20 @@ mod tests {
         assert!((bounds.footprint_radius() - 2.0).abs() < 1e-5);
     }
 
+    /// Dois nós que são pais um do outro (`children` cruzados) são inválidos
+    /// per spec, mas o parser constrói o `parent[]` na mesma: sem o limite de
+    /// profundidade em `node_world` a recursão não parava (o memo só escreve
+    /// DEPOIS de o pai devolver) e o audit morria com stack overflow em vez
+    /// de devolver `None`.
+    #[test]
+    fn cyclic_children_return_none_instead_of_overflowing() {
+        let doc = r#"{"nodes":[{"mesh":0,"children":[1]},{"children":[0]}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"componentType":5126,"type":"VEC3","count":8,
+                "min":[-1,-1,-1],"max":[1,1,1]}]}"#;
+        assert!(read_bytes(&glb(doc)).is_none());
+    }
+
     /// i16 `normalized` é o caso do pool: o valor cru (32767) NÃO é metros.
     #[test]
     fn normalizes_quantized_positions() {
@@ -307,5 +354,41 @@ mod tests {
         assert!(read_bytes(b"nope").is_none());
         assert!(read_bytes(&glb("{}")).is_none());
         assert!(read_bytes(&glb(r#"{"nodes":[],"meshes":[],"accessors":[]}"#)).is_none());
+    }
+
+    #[test]
+    fn reads_only_the_json_chunk_from_disk() {
+        use std::io::Write as _;
+
+        let mut json = cube_doc("[-1,-1,-1]", "[1,1,1]", false).into_bytes();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let bin = vec![0xABu8; 64];
+        let total = 20 + json.len() + 8 + bin.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        out.extend_from_slice(&json);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E_4942u32.to_le_bytes()); // "BIN\0"
+        out.extend_from_slice(&bin);
+
+        let mut file = tempfile::NamedTempFile::new().expect("temp");
+        file.write_all(&out).expect("write");
+        let bounds = read_json_chunk(file.path()).expect("bounds");
+        assert!((bounds.footprint_radius() - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn json_chunk_read_rejects_truncated_files() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().expect("temp");
+        file.write_all(b"glTF\x02\x00").expect("write");
+        assert!(read_json_chunk(file.path()).is_none());
     }
 }
