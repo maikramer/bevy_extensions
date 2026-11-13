@@ -12,7 +12,6 @@ members = [
     "crates/bevy_ext_postfx",
     "crates/bevy_ext_luau",
     "crates/bevy_ext_nav",
-    "crates/bevy_ext_luau",
     "crates/bevy_ext_gltf",
     "crates/bevy_ext_save",
     "crates/bevy_ext_terrain",
@@ -20,20 +19,14 @@ members = [
     "crates/bevy_ext_world",
     "crates/bevy_voxel_terrain",
     "crates/bevy_ext_audio",
-    "crates/bevy_ext_nav",
     "crates/bevy_ext_ai",
-    "crates/bevy_ext_ui",
-    "crates/bevy_ext_postfx",
-    "crates/bevy_ext_terrain_runtime",
-    "crates/bevy_ext_elements",
-    "crates/bevy_ext_flora",
-    "crates/bevy_ext_gradmesh",
-    "crates/bevy_ext_scene",
 ]
 # Crates que ainda dependem do `viber` em path: compilam standalone (lock
-# próprio) até a onda de desacoplamento final.
+# próprio) até a onda de desacoplamento final. O monólito em transição
+# (`bevy_ext_viber_engine`) entra aqui para `cargo test`/`metadata` correrem
+# dentro da pasta dele (path-deps ao CelerAI).
 exclude = [
-    "crates/bevy_voxel_terrain_jackdaw",
+    "crates/bevy_ext_viber_engine",
     "crates/bevy_ext_scene_runtime",
     "crates/bevy_ext_physics",
     "crates/bevy_ext_engine",
