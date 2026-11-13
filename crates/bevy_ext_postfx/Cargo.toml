@@ -1,0 +1,32 @@
+[package]
+name = "bevy_ext_postfx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Camera post-processing for Bevy: the authored lens (exposure, bloom, SSAO, DOF, split-tone, aerial) with live gates and an adaptive quality scheduler"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["bevy", "post-processing", "rendering", "gamedev"]
+categories = ["game-development", "rendering"]
+
+[dependencies]
+# O runtime é a lente da câmara: precisa do pipeline de render completo
+# (fullscreen passes, prepasses, PBR effects). O contrato de cena
+# (`PostFxSettings`) continua a reflectir só com ECS/math.
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_anti_alias",   # CAS/FXAA/TAA (→ core_pipeline → render)
+    "bevy_asset",        # Assets<Shader>/<Image>/<CompensationCurve>
+    "bevy_curve",        # LinearSpline da curva de compensação nocturna
+    "bevy_image",        # Image/ImageSampler (textura FBM do volume)
+    "bevy_log",          # info!/warn!
+    "bevy_pbr",          # SSAO/ContactShadows/VolumetricFog/ShadowFiltering
+    "bevy_post_process", # bloom/dof/auto-exposure/effect stack/motion blur
+] }
+# Contratos partilhados: `Player` e `MenusOpen` (com o TypePath histórico
+# `viber::player`/`viber::menus` congelado lá).
+bevy_ext_core = { workspace = true }
+
+[dev-dependencies]
+# nada: os testes usam `bevy` ECS puro, sem stack de render.
