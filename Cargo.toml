@@ -6,12 +6,13 @@ members = [
     "crates/bevy_ext_core",
     "crates/bevy_ext_luau",
     "crates/bevy_ext_gltf",
+    "crates/bevy_ext_physics",
     "crates/bevy_ext_save",
     "crates/bevy_ext_terrain",
     "crates/bevy_ext_world",
     "crates/bevy_voxel_terrain",
 ]
-exclude = ["crates/bevy_voxel_terrain_jackdaw"]
+exclude = ["crates/bevy_voxel_terrain_jackdaw", "viber-wt"]
 resolver = "3"
 
 [workspace.package]
@@ -30,10 +31,18 @@ bevy = { version = "0.20.1", default-features = false }
 bevy_ext_core = { version = "0.1.0", path = "crates/bevy_ext_core" }
 bevy_ext_luau = { version = "0.1.0", path = "crates/bevy_ext_luau" }
 bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
+bevy_ext_physics = { version = "0.1.0", path = "crates/bevy_ext_physics" }
 bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
 bevy_ext_save = { version = "0.1.0", path = "crates/bevy_ext_save" }
 bevy_ext_terrain = { version = "0.1.0", path = "crates/bevy_ext_terrain" }
 bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
+
+# Física Rapier (mesma linha do Viber; as features unificam no grafo).
+bevy_rapier3d = { version = "0.37", default-features = false, features = [
+    "dim3",
+    "async-collider",
+    "debug-render-3d",
+] }
 
 # Jackdaw 0.20 line: the editor extension pins the same version as the Vael
 # editor so type paths and `.bsn` defaults agree.
@@ -55,3 +64,9 @@ dirs = "7"
 tempfile = "3"
 meshopt = "0.7"
 transvoxel = "2"
+
+# Paridade com o build da engine: o Viber compila o rerecast vendido (fork),
+# e o `bevy_ext_physics` dep o monólito transitório (`viber-wt/Viber`).
+# TODO(viber-exit): remover junto com a dep do monólito.
+[patch.crates-io]
+rerecast = { path = "viber-wt/Viber/vendor/rerecast" }
