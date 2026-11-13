@@ -1,7 +1,14 @@
 [workspace]
 # Pacotes da release 0.1.0. O plugin `bevy_voxel_terrain_jackdaw` é WIP
 # concorrente (API do Jackdaw ainda a fechar) e fica fora do workspace até
-# compilar; os ficheiros ficam preservados no repo.
+# compilar; os ficheiros ficam preservados no repo. O `bevy_ext_engine`
+# (grab-bag transitório dos sistemas pequenos do Viber) também fica fora:
+# depende do monólito `viber` em path e, enquanto o `viber` apontar a família
+# `bevy_ext_*` para o checkout irmão (`../bevy_extensions`), membro + viber
+# colidem no lockfile (duas fontes com o mesmo name+version). Os paths da
+# família lá dentro são OS MESMOS que os do `viber` — ver
+# crates/bevy_ext_engine/Cargo.toml (mesmo padrão do `bevy_ext_scene_runtime`
+# no exit/scene). Entra no workspace quando a dep do `viber` morrer.
 members = [
     "crates/bevy_ext_core",
     "crates/bevy_ext_luau",
@@ -11,7 +18,7 @@ members = [
     "crates/bevy_ext_world",
     "crates/bevy_voxel_terrain",
 ]
-exclude = ["crates/bevy_voxel_terrain_jackdaw"]
+exclude = ["crates/bevy_voxel_terrain_jackdaw", "crates/bevy_ext_engine"]
 resolver = "3"
 
 [workspace.package]
