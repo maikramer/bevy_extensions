@@ -50,6 +50,20 @@ pub struct ScriptHostState {
     /// Id do `BiomeRegion` atual; `None` fora de biomas/interiores
     /// (`viber.biome`).
     pub biome: Option<String>,
+    /// Entidades nomeadas deste frame para `viber.nearby`/`player_nearby`.
+    pub nearby: Vec<NearbyEnt>,
+}
+
+/// Uma entidade NOMEADA do snapshot de percepção (`viber.nearby` /
+/// `viber.player_nearby`). A integração publica a lista no
+/// `ScriptHostState::nearby` a cada frame; os `props` autorais ficam para
+/// essa integração.
+#[derive(Debug, Clone)]
+pub struct NearbyEnt {
+    /// Bits da entidade (o `id` das linhas Lua).
+    pub id: i64,
+    pub name: String,
+    pub pos: Vec3,
 }
 
 /// Snapshot de input do frame (`viber.input.*`): teclado e rato nos três
@@ -72,6 +86,7 @@ struct ScriptGlobals {
     scene_entry: Option<String>,
     biome: Option<String>,
     menu_open: bool,
+    nearby: Vec<NearbyEnt>,
     toasts: VecDeque<String>,
     input: InputSnapshot,
     /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
@@ -121,8 +136,13 @@ fn init_context(
         ScriptAttachment::StaticScript(_) => None,
     };
     context.set_app_data(ScriptEntity(entity));
-    install_viber_api_with(context, globals(), game::game_store())
-        .map_err(InteropError::external)
+    install_viber_api_with(
+        context,
+        globals(),
+        game::game_store(),
+        entity.map(|entity| entity.to_bits() as i64),
+    )
+    .map_err(InteropError::external)
 }
 
 /// Publica o estado do frame: os campos do `ScriptHostState` e o
@@ -138,6 +158,7 @@ fn publish_globals(
         globals.scene_entry.clone_from(&state.scene_entry);
         globals.biome.clone_from(&state.biome);
         globals.menu_open = menus.as_ref().is_some_and(|menus| menus.any());
+        globals.nearby.clone_from(&state.nearby);
     }
 }
 
@@ -191,13 +212,14 @@ fn push_command(
 /// Instala a tabela `viber` num contexto Lua. Público para o adaptador do
 /// Vael reutilizar a mesma API quando precisar de um contexto de REPL.
 pub fn install_viber_api(lua: &Lua) -> mlua::Result<()> {
-    install_viber_api_with(lua, globals(), game::game_store())
+    install_viber_api_with(lua, globals(), game::game_store(), None)
 }
 
 fn install_viber_api_with(
     lua: &Lua,
     globals: Arc<RwLock<ScriptGlobals>>,
     store: Arc<RwLock<game::GameStore>>,
+    self_bits: Option<i64>,
 ) -> mlua::Result<()> {
     let viber = lua.create_table()?;
 
@@ -432,13 +454,131 @@ fn install_viber_api_with(
         )?,
     )?;
 
+    // ── Interação e percepção ───────────────────────────────────────────
+
+    // viber.gesture(name) — gesto one-shot no rig da própria entidade
+    // (speed 1.0, sem lock; o `play_clip` é a forma generalizada).
+    let gesture_globals = globals.clone();
     viber.set(
-        "log",
-        lua.create_function(|_, message: String| {
-            log::info!("[lua] {message}");
+        "gesture",
+        lua.create_function(move |_, name: String| {
+            push_command(
+                &gesture_globals,
+                commands::ScriptCommand::Gesture {
+                    entity: None,
+                    name,
+                    speed: 1.0,
+                    lock: false,
+                },
+            );
             Ok(())
         })?,
     )?;
+
+    // viber.set_interaction(label, key [, range]) — valida tecla e alcance
+    // À FILA (erro de script, não silêncio). Default: o alcance BASE
+    // autorado; a escala global entra na integração.
+    let interaction_globals = globals.clone();
+    viber.set(
+        "set_interaction",
+        lua.create_function(
+            move |_, (label, key, range): (String, String, Option<f32>)| {
+                keys::key_code_from_str(&key).ok_or_else(|| {
+                    mlua::Error::runtime(format!(
+                        "viber.set_interaction: tecla desconhecida '{key}'"
+                    ))
+                })?;
+                let range = range.unwrap_or(commands::BASE_RANGE_M);
+                if !range.is_finite() || range < 0.0 {
+                    return Err(mlua::Error::runtime(
+                        "viber.set_interaction: range tem de ser finito e >= 0",
+                    ));
+                }
+                push_command(
+                    &interaction_globals,
+                    commands::ScriptCommand::SetInteraction {
+                        entity: None,
+                        label,
+                        key,
+                        range,
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+
+    // viber.interacted(key) -> bool — a tecla foi pressionada NESTE frame.
+    // PENDENTE na integração: o teste de foco (`InteractionFocus`, a
+    // entidade alvo mais próxima vence) e o gate de `ui_typing` do Viber.
+    let interacted_globals = globals.clone();
+    viber.set(
+        "interacted",
+        lua.create_function(move |_, key: String| {
+            let code = keys::key_code_from_str(&key)
+                .ok_or_else(|| mlua::Error::runtime(format!("tecla desconhecida '{key}'")))?;
+            Ok(interacted_globals
+                .read()
+                .map(|globals| globals.input.keys_pressed.contains(&code))
+                .unwrap_or(false))
+        })?,
+    )?;
+
+    // viber.nearby(raio [, limite]) / viber.player_nearby(raio [, limite])
+    // — entidades NOMEADAS do snapshot publicado, mais perto 1.º.
+    // DESVIO: sem `ctx.origin` por script, `nearby` também centra no HERÓI
+    // (no Viber centrava na entidade que corria o script); a própria
+    // entidade continua de fora do `nearby` (o id vem do attach).
+    for (name, exclude_self) in [("nearby", true), ("player_nearby", false)] {
+        let nearby_globals = globals.clone();
+        let self_bits = self_bits;
+        viber.set(
+            name,
+            lua.create_function(
+                move |lua, (radius, limit): (f32, Option<usize>)| {
+                    if !radius.is_finite() || radius <= 0.0 {
+                        return Err(mlua::Error::runtime(format!(
+                            "viber.{name}: raio tem de ser finito e > 0"
+                        )));
+                    }
+                    let Ok(globals) = nearby_globals.read() else {
+                        return Ok(lua.create_table()?);
+                    };
+                    // Sem herói não há centro: tabela vazia (o Viber
+                    // devolvia {} sem player também).
+                    let Some(center) = globals.player else {
+                        return Ok(lua.create_table()?);
+                    };
+                    // Filtra ANTES de ordenar: o snapshot pode ter milhares
+                    // de nomeadas por frame.
+                    let mut found: Vec<(f32, NearbyEnt)> = globals
+                        .nearby
+                        .iter()
+                        .filter(|entry| !(exclude_self && Some(entry.id) == self_bits))
+                        .filter_map(|entry| {
+                            let distance = entry.pos.distance(center);
+                            (distance <= radius).then_some((distance, entry.clone()))
+                        })
+                        .collect();
+                    drop(globals);
+                    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let cap = limit.unwrap_or(16).min(64);
+                    let out = lua.create_table()?;
+                    for (i, (distance, entry)) in found.into_iter().take(cap).enumerate() {
+                        let row = lua.create_table()?;
+                        row.raw_set("id", entry.id)?;
+                        row.raw_set("name", entry.name.as_str())?;
+                        row.raw_set("x", entry.pos.x)?;
+                        row.raw_set("y", entry.pos.y)?;
+                        row.raw_set("z", entry.pos.z)?;
+                        row.raw_set("distance", distance)?;
+                        out.raw_set(i + 1, row)?;
+                    }
+                    Ok(out)
+                },
+            )?,
+        )?;
+    }
 
     keys::install(lua, &viber, globals.clone())?;
 
@@ -470,7 +610,8 @@ mod tests {
         let lua = Lua::new();
         let globals = Arc::new(RwLock::new(ScriptGlobals::default()));
         let store = Arc::new(RwLock::new(game::GameStore::default()));
-        install_viber_api_with(&lua, globals.clone(), store.clone()).expect("instala viber");
+        install_viber_api_with(&lua, globals.clone(), store.clone(), None)
+            .expect("instala viber");
         (lua, globals, store)
     }
 
@@ -605,8 +746,8 @@ mod tests {
         let a = Lua::new();
         let b = Lua::new();
         let globals = Arc::new(RwLock::new(ScriptGlobals::default()));
-        install_viber_api_with(&a, globals.clone(), store.clone()).expect("vm a");
-        install_viber_api_with(&b, globals, store).expect("vm b");
+        install_viber_api_with(&a, globals.clone(), store.clone(), None).expect("vm a");
+        install_viber_api_with(&b, globals, store, None).expect("vm b");
 
         a.load("viber.game().ouro = 30").exec().expect("escreve");
         // O sync corre na chamada de `viber.game()` — sem ele o cache cru de
@@ -955,5 +1096,149 @@ mod tests {
         assert_eq!((seen.sfx, seen.feedback), (1, 1));
     }
 
+
+    #[test]
+    fn gesture_enfila_o_gesto_sem_velocidade() {
+        let (lua, globals, _store) = vm();
+        lua.load("viber.gesture('foldarms')").exec().expect("gesto");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::Gesture { entity, name, speed, lock } => {
+                assert_eq!(name, "foldarms");
+                assert_eq!((entity, speed, lock), (None, 1.0, false));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_interaction_valida_tecla_e_alcance_a_fila() {
+        let (lua, globals, _store) = vm();
+        lua.load("viber.set_interaction('Minerar', 'j')")
+            .exec()
+            .expect("interação");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::SetInteraction { entity, label, key, range } => {
+                assert_eq!((label.as_str(), key.as_str()), ("Minerar", "j"));
+                assert_eq!(range, commands::BASE_RANGE_M);
+                assert_eq!(entity, None);
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        // Range explícito entra; negativo/NaN e tecla lixa são erro.
+        lua.load("viber.set_interaction('Abrir', 'e', 6.0)")
+            .exec()
+            .expect("com range");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::SetInteraction { range, .. } => assert_eq!(range, 6.0),
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        let erro: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.set_interaction('X', 'tecla-falsa') end),
+                not pcall(function() viber.set_interaction('X', 'e', -1) end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erro.iter().all(|e| *e));
+    }
+
+    #[test]
+    fn interacted_le_a_tecla_pressionada_do_frame() {
+        let (lua, globals, _store) = vm();
+        globals
+            .write()
+            .expect("globals")
+            .input
+            .keys_pressed
+            .insert(KeyCode::KeyE);
+        let ok: bool = lua
+            .load("return viber.interacted('e') and not viber.interacted('j')")
+            .eval()
+            .expect("interacted");
+        assert!(ok);
+        let erro: bool = lua
+            .load("return not pcall(function() viber.interacted('meta-1') end)")
+            .eval()
+            .expect("erro");
+        assert!(erro);
+    }
+
+    #[test]
+    fn nearby_ordena_e_exclui_a_propria_entidade() {
+        let (lua, globals, _store) = vm();
+        {
+            let mut g = globals.write().expect("globals");
+            g.player = Some(Vec3::ZERO);
+            let self_bits = 42i64;
+            g.nearby = vec![
+                NearbyEnt { id: self_bits, name: "eu".into(), pos: Vec3::ZERO },
+                NearbyEnt { id: 7, name: "arbusto".into(), pos: Vec3::new(1.0, 0.0, 0.0) },
+                NearbyEnt { id: 9, name: "porta".into(), pos: Vec3::new(2.0, 0.0, 0.0) },
+                NearbyEnt { id: 11, name: "longe".into(), pos: Vec3::new(30.0, 0.0, 0.0) },
+            ];
+        }
+        // Instala com self = 42 para exercitar a exclusão.
+        let lua2 = Lua::new();
+        let g2 = Arc::new(RwLock::new(ScriptGlobals::default()));
+        let s2 = Arc::new(RwLock::new(game::GameStore::default()));
+        {
+            let mut shared = globals.read().expect("globals");
+            let mut g = g2.write().expect("globals");
+            g.player = shared.player;
+            g.nearby.clone_from(&shared.nearby);
+        }
+        install_viber_api_with(&lua2, g2.clone(), s2, Some(42)).expect("instala");
+
+        let (count, first_id, first_name, first_distance, second_id): (
+            usize,
+            i64,
+            String,
+            f32,
+            i64,
+        ) = lua2
+            .load(r#"
+              local a = viber.nearby(5.0)
+              return #a, a[1].id, a[1].name, a[1].distance, a[2].id
+            "#)
+            .eval()
+            .expect("nearby");
+        assert_eq!(count, 2, "exclui a própria e o fora do raio");
+        assert_eq!((first_id, first_name.as_str()), (7, "arbusto"));
+        let (_, second_distance): (i64, f32) = lua2
+            .load("local a = viber.nearby(5.0) return a[2].id, a[2].distance")
+            .eval()
+            .expect("segunda linha");
+        assert_eq!(second_id, 9);
+        assert!(first_distance < second_distance);
+
+        // player_nearby não exclui nada (não há "própria").
+        let count: usize = lua2
+            .load("return #viber.player_nearby(5.0)")
+            .eval()
+            .expect("player_nearby");
+        assert_eq!(count, 3);
+
+        // Limite capado e raio inválido é erro.
+        let capped: usize = lua2
+            .load("return #viber.nearby(5.0, 1)")
+            .eval()
+            .expect("limite");
+        assert_eq!(capped, 1);
+        let erro: bool = lua2
+            .load("return not pcall(function() viber.nearby(0) end)")
+            .eval()
+            .expect("raio");
+        assert!(erro);
+
+        // Sem herói: tabela vazia em ambos.
+        globals.write().expect("globals").player = None;
+        let empty: bool = lua
+            .load("return #viber.nearby(5.0) == 0 and #viber.player_nearby(5.0) == 0")
+            .eval()
+            .expect("sem herói");
+        assert!(empty);
+    }
 
 }

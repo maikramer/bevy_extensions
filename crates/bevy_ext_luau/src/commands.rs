@@ -52,7 +52,20 @@ pub enum ScriptCommand {
         radius: f32,
         color: Option<[f32; 3]>,
     },
+    /// Registra alvo de interação ("[J] Minerar") na entidade
+    /// (`viber.set_interaction`). `entity = None` — a integração resolve
+    /// para a entidade do script.
+    SetInteraction {
+        entity: Option<Entity>,
+        label: String,
+        key: String,
+        range: f32,
+    },
 }
+
+/// Alcance BASE autorado de interação (o default do `set_interaction`),
+/// igual ao `BASE_RANGE_M` do Viber.
+pub const BASE_RANGE_M: f32 = 3.5;
 
 /// Um [`ScriptCommand`] como mensagem Bevy: o adaptador do Vael regista um
 /// `MessageReader<ScriptCommandMessage>` e aplica o feedback (shake, FOV,
