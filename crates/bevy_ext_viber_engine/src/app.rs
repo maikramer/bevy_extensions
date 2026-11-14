@@ -799,7 +799,8 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
             .init_resource::<save::PendingSavePatches>()
             .add_systems(
                 bevy::app::Last,
-                save::apply_pending_save_patches.after(crate::scene_loader::drive_scene_loader),
+                save::apply_pending_save_patches::<crate::scene_loader::SceneLoader>
+                    .after(crate::scene_loader::drive_scene_loader),
             );
     } else {
         app.add_plugins(save::SavePlugin);

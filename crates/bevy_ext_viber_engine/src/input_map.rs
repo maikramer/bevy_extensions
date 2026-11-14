@@ -1,115 +1,20 @@
-//! Mapa de ações: teclado, gamepad e rebind gravado no save.
+//! Driver do mapa de ações: teclado, gamepad e rebind gravado no save.
 //!
-//! Os sistemas de jogo lêem [`ActionState`]. Sem o recurso (apps de teste que
-//! chamam o movimento à mão) o teclado antigo continua a valer.
-
-use std::collections::HashMap;
+//! Os CONTRATOS ([`Action`], [`Binding`], [`ActionMap`], [`ActionState`],
+//! TypePaths `viber::input_map` congelados) vivem no `bevy_ext_core` —
+//! reexportados aqui para `viber::input_map::…` continuar a resolver para O
+//! MESMO tipo (o netplay do `bevy_ext_engine` escreve o mesmo recurso).
+//!
+//! O PLUGIN cá fica: [`gather_actions`] respeita o foco de texto da UI
+//! declarativa (`UiFocusedInput`) e resolve teclas pelo parser do host
+//! Luau (`input_code_from_str`) — serviços do runtime que o core não pode
+//! ter. Sem o recurso (apps de teste que chamam o movimento à mão) o
+//! teclado antigo continua a valer.
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
-pub enum Action {
-    Jump,
-    Sprint,
-    Attack,
-    Interact,
-    Lock,
-    Menu,
-}
-
-impl Action {
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "jump" => Some(Self::Jump),
-            "sprint" => Some(Self::Sprint),
-            "attack" => Some(Self::Attack),
-            "interact" => Some(Self::Interact),
-            "lock" => Some(Self::Lock),
-            "menu" => Some(Self::Menu),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Jump => "jump",
-            Self::Sprint => "sprint",
-            Self::Attack => "attack",
-            Self::Interact => "interact",
-            Self::Lock => "lock",
-            Self::Menu => "menu",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Reflect)]
-pub struct Binding {
-    pub key: Option<String>,
-    pub pad: Option<String>,
-}
-
-#[derive(Resource, Clone, Debug, Reflect)]
-#[reflect(Resource)]
-pub struct ActionMap {
-    pub bindings: HashMap<Action, Binding>,
-}
-
-impl Default for ActionMap {
-    fn default() -> Self {
-        let mut bindings = HashMap::new();
-        let bind = |key: &str, pad: &str| Binding {
-            key: Some(key.into()),
-            pad: Some(pad.into()),
-        };
-        bindings.insert(Action::Jump, bind("space", "south"));
-        bindings.insert(Action::Sprint, bind("shift", "left_trigger"));
-        bindings.insert(Action::Attack, bind("j", "west"));
-        bindings.insert(Action::Interact, bind("e", "east"));
-        bindings.insert(Action::Lock, bind("z", "left_trigger2"));
-        bindings.insert(Action::Menu, bind("q", "start"));
-        Self { bindings }
-    }
-}
-
-impl ActionMap {
-    pub fn rebind_key(&mut self, action: Action, key: &str) {
-        self.bindings
-            .entry(action)
-            .or_insert(Binding {
-                key: None,
-                pad: None,
-            })
-            .key = Some(key.to_string());
-    }
-}
-
-#[derive(Resource, Debug, Default, Clone, Reflect)]
-#[reflect(Resource)]
-pub struct ActionState {
-    pub move_x: f32,
-    pub forward: f32,
-    pub jump_just: bool,
-    pub sprint: bool,
-    pub attack_just: bool,
-    pub interact_just: bool,
-    pub lock_just: bool,
-    pub menu_just: bool,
-}
-
-impl ActionState {
-    pub fn pressed(&self, action: Action) -> bool {
-        match action {
-            Action::Jump => self.jump_just,
-            Action::Sprint => self.sprint,
-            Action::Attack => self.attack_just,
-            Action::Interact => self.interact_just,
-            Action::Lock => self.lock_just,
-            Action::Menu => self.menu_just,
-        }
-    }
-}
+pub use bevy_engine_core::input_map::{Action, ActionMap, ActionState, Binding};
 
 fn key_of(name: &str) -> Option<KeyCode> {
     crate::luau::input_code_from_str(name).and_then(|code| match code {
@@ -224,26 +129,5 @@ impl Plugin for InputMapPlugin {
             // estado do frame ANTERIOR (ação 1 frame atrasada, conforme a
             // ordem que o scheduler escolhesse).
             .add_systems(PreUpdate, gather_actions.after(bevy::input::InputSystems));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rebind_replaces_only_the_key() {
-        let mut map = ActionMap::default();
-        map.rebind_key(Action::Jump, "f");
-        assert_eq!(map.bindings[&Action::Jump].key.as_deref(), Some("f"));
-        assert!(map.bindings[&Action::Jump].pad.is_some());
-    }
-
-    #[test]
-    fn action_names_roundtrip() {
-        for name in ["jump", "sprint", "attack", "interact", "lock", "menu"] {
-            let action = Action::parse(name).unwrap();
-            assert_eq!(action.as_str(), name);
-        }
     }
 }

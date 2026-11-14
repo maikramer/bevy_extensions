@@ -27,68 +27,15 @@ use crate::terrain::water::{LakeSpec, RiverSpec};
 
 /// Marker for `<OrbitCamera>`: keeps its offset from a named target.
 ///
-/// Target-less cameras in worlds with a `<PlayerGLTF>` are third-person
-/// cameras: [`crate::camera::third_person_camera`] drives them (decoupled
-/// follow, terrain collision), and [`crate::player::player_movement`] steers
-/// their yaw with A/D. Cameras with a `target` stay on the rigid follow.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct OrbitCamera {
-    pub target: Option<String>,
-    pub distance: f32,
-    pub height: f32,
-    /// `Some` only when the world set `pitch` explicitly; it overrides
-    /// `height` as the ring seed (see [`orbit_camera_follow`]).
-    pub pitch_deg: Option<f32>,
-    /// Live orbit pitch (degrees) — seeded from `pitch_deg` or from
-    /// `atan(height/distance)`.
-    pub pitch_state_deg: f32,
-    /// Steered orbit yaw (degrees) — A/D in [`crate::player::player_movement`].
-    pub yaw_deg: f32,
-    /// Degrees per pixel of mouse drag (parsed for XML parity; the runtime
-    /// is gamepad-style and never reads the mouse).
-    pub mouse_sensitivity: f32,
-    pub min_distance: f32,
-    pub max_distance: f32,
-    // --- third-person smoothing config (ThirdPersonCamera) ---
-    /// Position follow time constant in seconds (larger = more lag on
-    /// sprints).
-    pub follow_lag: f32,
-    /// Yaw follow time constant in seconds (larger = the camera turns
-    /// slower/later than the steering).
-    pub turn_lag: f32,
-    /// Minimum clearance above the terrain (0 disables camera collision).
-    pub min_terrain_distance: f32,
-    // --- third-person smoothing state ---
-    /// Smoothed follow point the camera orbits and looks at; decoupled from
-    /// the raw character transform so view jitter can't accumulate.
-    pub follow_point: Vec3,
-    /// Lagged yaw the camera actually orbits at; trails [`Self::yaw_deg`].
-    pub smooth_yaw_deg: f32,
-    /// Current (post-collision, micro-smoothed) camera position.
-    pub current_pos: Vec3,
-    /// Whether the smoothed state has been seeded onto the target.
-    pub initialized: bool,
-}
-
-impl OrbitCamera {
-    /// Height above the target the camera aims at (meters).
-    ///
-    /// `height` doubles as the pitch seed when the world gives no explicit
-    /// `pitch`; either way it describes how far above the target's origin the
-    /// framing sits, so it is the pivot too. Falls back to chest height for
-    /// worlds that set neither.
-    pub fn pivot_height(&self) -> f32 {
-        if self.height > 0.0 {
-            self.height
-        } else {
-            DEFAULT_ORBIT_PIVOT_HEIGHT
-        }
-    }
-}
+/// Movido ao `bevy_ext_engine::camera` (onda exit2/hubs; TypePath
+/// `viber::recipes::spawn` congelado lá) — reexportado aqui para
+/// `viber::recipes::spawn::OrbitCamera` continuar a resolver e para o
+/// spawn, o `player_movement` e a câmara (`camera_glue`) partilharem
+/// UM tipo.
+pub use bevy_ext_engine::camera::OrbitCamera;
 
 /// Look-at height used when a world sets no `height` (meters).
-pub const DEFAULT_ORBIT_PIVOT_HEIGHT: f32 = 1.2;
+pub use bevy_ext_engine::camera::DEFAULT_ORBIT_PIVOT_HEIGHT;
 
 /// Camera spawned automatically when the world has none: slow orbit at origin.
 #[derive(Debug, Component, Reflect)]
