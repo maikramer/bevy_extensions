@@ -917,6 +917,8 @@ name = "bevy_ext_core"
 version = "0.1.1"
 dependencies = [
  "bevy",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -983,6 +985,7 @@ name = "bevy_ext_save"
 version = "0.1.1"
 dependencies = [
  "bevy",
+ "bevy_ext_terrain_runtime",
  "bevy_ext_world",
  "dirs",
  "serde",
