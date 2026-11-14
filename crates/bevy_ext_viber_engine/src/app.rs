@@ -833,6 +833,7 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // FX de água: splash na entrada/saída e esteira de ondas de quem
     // caminha dentro do lago/rio (a lâmina é estática — o rasto tem de
     // viver no ECS, ver `terrain::water_fx`).
+    app.add_plugins(terrain::water_waves::WaterWavePlugin);
     app.add_plugins(terrain::water_fx::WaterFxPlugin);
     // Trauma da camera shake — o melee (e o dano recebido) somam aqui.
     app.init_resource::<camera::CameraShake>();

@@ -405,7 +405,9 @@ fn fragment(in: FullscreenVertexOutput) -> SsrOut {
     if (n_count >= 6) { water_d = min(water_d, abs(p_world.y - ssr_params.s5.x)); }
     if (n_count >= 7) { water_d = min(water_d, abs(p_world.y - ssr_params.s6.x)); }
     if (n_count >= 8) { water_d = min(water_d, abs(p_world.y - ssr_params.s7.x)); }
-    let water_m = 1.0 - smoothstep(ssr_params.band * 0.6, ssr_params.band * 1.4, water_d);
+    // A água em 2 passes não escreve prepass de profundidade; Fresnel/IBL em
+    // `water.wesl` cobrem a superfície, preservando `ground_m` para chuva/poças.
+    let water_m = 0.0 * (water_d + ssr_params.band);
 
     // 2) chão molhado SUAVE — chuva × força × "para cima" (rua molhada,
     //    não paredes); sem cortes, tudo smoothstep.

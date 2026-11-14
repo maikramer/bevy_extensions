@@ -562,12 +562,188 @@ impl CliffMask {
                 }
             }
         }
+        self.rebuild_dilated();
+    }
+
+    fn rebuild_dilated(&mut self) {
+        let (width, depth) = (self.width, self.depth);
         self.bits = self.core.clone();
         for i in 0..self.bits.len() {
             self.bits[i] |= self.talus[i];
         }
         for _ in 0..CLIFF_MASK_MARGIN_TEXELS {
             dilate_once(&mut self.bits, width, depth);
+        }
+    }
+
+    /// Marca bocas, contrafortes e adros de cascalho das cavernas (`<Cave>` e
+    /// campos `<RockFeatures>` semeados) na máscara de penhasco — sem isto as
+    /// paredes 3D das grutas herdam `region = 0` e esticam a UV 2D do chão em
+    /// riscas verticais pela rocha acima.
+    pub fn add_authored_caves(&mut self, caves: &[bevy_voxel_terrain::CaveSpec]) {
+        if self.width < 2 || self.depth < 2 || self.world_size <= 0.0 {
+            return;
+        }
+        let (width, depth) = (self.width, self.depth);
+        let texel = self.texel_size();
+        if texel <= 0.0 {
+            return;
+        }
+        let half = self.world_size * 0.5;
+        let step_x = self.world_size / (width - 1) as f32;
+        let step_z = self.world_size / (depth - 1) as f32;
+        let clampx = |v: f32| v.clamp(0.0, (width - 1) as f32) as usize;
+        let clampz = |v: f32| v.clamp(0.0, (depth - 1) as f32) as usize;
+        let mut any = false;
+        for cave in caves {
+            if !cave.open_ends || cave.path.len() < 2 {
+                continue;
+            }
+            let has_mound = cave.mound_height > 0.0 && cave.mound_height.is_finite();
+            let r_mound = if !has_mound {
+                0.0
+            } else if cave.mound_radius > 0.0 && cave.mound_radius.is_finite() {
+                cave.mound_radius
+            } else {
+                cave.radius_max() * 4.5
+            };
+            for (end, from) in [(0usize, 1usize), (cave.path.len() - 1, cave.path.len() - 2)] {
+                let mouth = cave.path[end];
+                let inward = (cave.path[from] - mouth).normalize_or_zero();
+                if inward == Vec2::ZERO {
+                    continue;
+                }
+                let lateral = Vec2::new(-inward.y, inward.x);
+                let r = cave.radius_at(if end == 0 { 0.0 } else { 1.0 }).max(1.0);
+                let reach = if has_mound {
+                    r_mound * 1.45 + texel * 4.0
+                } else {
+                    r * 3.2 + texel * 3.0
+                };
+                let center = mouth + inward * (reach * 0.35);
+                let x0 = clampx(((center.x - reach) + half) / step_x);
+                let x1 = clampx((((center.x + reach) + half) / step_x).ceil());
+                let z0 = clampz(((center.y - reach) + half) / step_z);
+                let z1 = clampz((((center.y + reach) + half) / step_z).ceil());
+                any = true;
+                for z in z0..=z1 {
+                    for x in x0..=x1 {
+                        let p = Vec2::new(x as f32 * step_x - half, z as f32 * step_z - half);
+                        let rel = p - mouth;
+                        let along = rel.dot(inward);
+                        let lat = rel.dot(lateral).abs();
+                        let dist = rel.length();
+                        let on_walkway =
+                            along >= -r * 0.9 && along <= r * 1.15 && lat < r * 0.74;
+                        if on_walkway {
+                            set_bit(&mut self.talus, width, x, z);
+                            continue;
+                        }
+                        if has_mound {
+                            let in_main = dist <= r_mound * 1.04 && along >= -r * 0.45;
+                            let wing_d = ((along - r_mound * 0.28) / (r_mound * 0.72)).powi(2)
+                                + ((lat - r_mound * 0.68) / (r_mound * 0.72)).powi(2);
+                            let in_wing = wing_d <= 1.02 && along >= -r * 0.35;
+                            let in_rim = dist <= r * 1.75 && along >= -r * 0.45;
+                            if in_main || in_wing || in_rim {
+                                set_bit(&mut self.core, width, x, z);
+                                set_bit(&mut self.authored, width, x, z);
+                                let frac = (1.0 - (along / r_mound.max(1.0)).clamp(0.0, 1.0)) * 0.72;
+                                self.wall[z * width + x] = (frac * 255.0).round() as u8;
+                            } else {
+                                let in_skirt = (dist <= r_mound * 1.24 && along >= -r * 1.1)
+                                    || (wing_d <= 1.32 && along >= -r * 0.8)
+                                    || (along >= -r * 2.2 && along < r * 0.3 && lat <= r * 1.85);
+                                if in_skirt {
+                                    set_bit(&mut self.talus, width, x, z);
+                                }
+                            }
+                        } else {
+                            let in_flanks =
+                                along >= -r * 0.25 && along <= r * 2.5 && lat <= r * 2.15;
+                            let in_apron =
+                                along >= -r * 1.9 && along < r * 0.85 && lat <= r * 1.75;
+                            if in_flanks && (lat >= r * 0.76 || along >= r * 0.9) {
+                                set_bit(&mut self.core, width, x, z);
+                                set_bit(&mut self.authored, width, x, z);
+                                self.wall[z * width + x] = 160;
+                            } else if in_apron || in_flanks {
+                                set_bit(&mut self.talus, width, x, z);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if any {
+            self.rebuild_dilated();
+        }
+    }
+
+    /// Marca os pilares e o adro dos arcos (`<Arch>` e `<RockFeatures>`), para
+    /// o shader triplanar e a saia de cascalho nos pés cobrirem a rocha 3D.
+    pub fn add_authored_arches(
+        &mut self,
+        arches: &[bevy_voxel_terrain::ArchSpec],
+        grid: &BrushGrid,
+    ) {
+        if self.width < 2 || self.depth < 2 || self.world_size <= 0.0 {
+            return;
+        }
+        let (width, depth) = (self.width, self.depth);
+        let texel = self.texel_size();
+        if texel <= 0.0 {
+            return;
+        }
+        let half = self.world_size * 0.5;
+        let step_x = self.world_size / (width - 1) as f32;
+        let step_z = self.world_size / (depth - 1) as f32;
+        let clampx = |v: f32| v.clamp(0.0, (width - 1) as f32) as usize;
+        let clampz = |v: f32| v.clamp(0.0, (depth - 1) as f32) as usize;
+        let mut any = false;
+        for arch in arches {
+            for fp in arch.footprints(grid) {
+                let half_x = fp.span * 0.5 + fp.thickness + 0.8;
+                let half_z = fp.depth * 0.5 + 0.8;
+                let reach = (half_x * half_x + half_z * half_z).sqrt() + 2.8 + texel * 2.0;
+                let x0 = clampx(((fp.at.x - reach) + half) / step_x);
+                let x1 = clampx((((fp.at.x + reach) + half) / step_x).ceil());
+                let z0 = clampz(((fp.at.y - reach) + half) / step_z);
+                let z1 = clampz((((fp.at.y + reach) + half) / step_z).ceil());
+                let (s, c) = fp.yaw.sin_cos();
+                any = true;
+                for z in z0..=z1 {
+                    for x in x0..=x1 {
+                        let p = Vec2::new(x as f32 * step_x - half, z as f32 * step_z - half);
+                        let rel = p - fp.at;
+                        let lx = (c * rel.x - s * rel.y).abs();
+                        let lz = (s * rel.x + c * rel.y).abs();
+                        if lx > half_x + 2.4 || lz > half_z + 2.4 {
+                            continue;
+                        }
+                        if lx <= half_x && lz <= half_z {
+                            if lx >= fp.span * 0.45 {
+                                set_bit(&mut self.core, width, x, z);
+                                set_bit(&mut self.authored, width, x, z);
+                                let edge = ((lx - fp.span * 0.45) / fp.thickness.max(0.5))
+                                    .clamp(0.0, 1.0);
+                                self.wall[z * width + x] =
+                                    ((0.35 + edge * 0.45) * 255.0).round() as u8;
+                            } else {
+                                // Debaixo do vão central: marca `talus` para a máscara
+                                // dilatada dar `region = 1` ao arco lá em cima sem
+                                // apagar a areia/trilha do chão por baixo.
+                                set_bit(&mut self.talus, width, x, z);
+                            }
+                        } else {
+                            set_bit(&mut self.talus, width, x, z);
+                        }
+                    }
+                }
+            }
+        }
+        if any {
+            self.rebuild_dilated();
         }
     }
 

@@ -670,7 +670,7 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
         .clamp(1, 32)
         .min(rows.max(1));
     let band = rows.div_ceil(threads);
-    let bake_band = |band_z0: usize, band_rows: usize| -> Vec<[u8; LAYER_COUNT]> {
+    let bake_band = |band_z0: usize, band_rows: usize| -> Vec<([u8; LAYER_COUNT], [u8; 2])> {
         let mut ctx = TexelCtx {
             params: inputs.params,
             shore,
@@ -687,7 +687,7 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
                 let x = origin.x + (tx as f32 + 0.5) * texel;
                 let y = grid.sample(x, z);
                 let normal = grid.sample_normal(x, z, epsilon);
-                let mut w = weights_at(x, z, y, normal.y, grid.max_height(), &mut ctx);
+                let (mut w, aux) = weights_and_aux_at(x, z, y, normal.y, grid.max_height(), &mut ctx);
                 if let Some((slot, weight)) = inputs.paint.and_then(|paint| paint.sample(x, z))
                     && slot < LAYER_COUNT
                 {
@@ -698,12 +698,15 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
                 }
                 // 251 keeps every channel (and the shader's renormalized sum)
                 // inside u8 with rounding headroom.
-                out.push(w.map(|v| (v * 251.0).round().clamp(0.0, 251.0) as u8));
+                out.push((
+                    w.map(|v| (v * 251.0).round().clamp(0.0, 251.0) as u8),
+                    aux.map(|v| (v * 251.0).round().clamp(0.0, 251.0) as u8),
+                ));
             }
         }
         out
     };
-    let bands: Vec<(usize, Vec<[u8; LAYER_COUNT]>)> = std::thread::scope(|scope| {
+    let bands: Vec<(usize, Vec<([u8; LAYER_COUNT], [u8; 2])>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
             .filter_map(|i| {
                 let start = z0 as usize + i * band;
@@ -717,7 +720,7 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
             .collect()
     });
     for (start, texels) in bands {
-        for (k, bytes) in texels.into_iter().enumerate() {
+        for (k, (bytes, aux)) in texels.into_iter().enumerate() {
             let tz = start + k / width;
             let tx = x0 as usize + k % width;
             let i = (tz * size + tx) * 4;
@@ -725,6 +728,9 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
                 let (plane, channel) = SLOT_PACKING[slot];
                 map.planes[plane][i + channel] = byte;
             }
+            // Unused plane 3 G/B carry shoreline capillary wetness & bank erosion micro-mask.
+            map.planes[3][i + 1] = aux[0];
+            map.planes[3][i + 2] = aux[1];
         }
     }
 }
@@ -810,8 +816,8 @@ const NOISE_BED: f32 = 6.0; // manchas de seixo no leito (m)
 const BED_DEPTH_START: f32 = 0.35;
 const BED_DEPTH_FULL: f32 = 0.9;
 
-/// Blend weights for one texel. The output sums to exactly 1 (grass closes
-/// the remainder), so the shader never sees a hole in the surface.
+/// Blend weights for one texel plus shoreline auxiliary shader channels
+/// `(wet_capillary, bank_erosion)`. The 13 layer weights sum to 1.
 pub fn weights_at(
     x: f32,
     z: f32,
@@ -820,6 +826,17 @@ pub fn weights_at(
     max_height: f32,
     ctx: &mut TexelCtx,
 ) -> [f32; LAYER_COUNT] {
+    weights_and_aux_at(x, z, y, normal_y, max_height, ctx).0
+}
+
+fn weights_and_aux_at(
+    x: f32,
+    z: f32,
+    y: f32,
+    normal_y: f32,
+    max_height: f32,
+    ctx: &mut TexelCtx,
+) -> ([f32; LAYER_COUNT], [f32; 2]) {
     let p = ctx.params;
     // Altitude não escolhe camada. `y` continua a servir a margem e o leito.
     let _ = max_height;
@@ -840,21 +857,46 @@ pub fn weights_at(
     let n_dirt_region = value_noise(x / NOISE_DIRT_REGION, z / NOISE_DIRT_REGION, p.seed, 5);
     let n_forest_region = value_noise(x / NOISE_FOREST_REGION, z / NOISE_FOREST_REGION, p.seed, 6);
 
-    // ── Shore: sand on lake/river floors, fading out across the shore band.
-    let (sand_mask, mud_band, shallow, bed_floor) = shore_weights(x, z, y, ctx);
+    // ── Shore: sand/shingle on gentle flats, eroded earth/gravel on cutbanks.
+    let shore = shore_weights(x, z, y, ctx);
+    let sand_mask = shore.sand;
+    let mud_band = shore.mud;
+    let shallow = shore.shallow;
+    let bed_floor = shore.bed;
+    // Slope factor along the shore band: flat sandy bars keep clean sand;
+    // cutbanks & steep bluffs shed sand into raw soil, scree gravel & stone.
+    let bank_steep = smoothstep(0.06, 0.22, slope);
+    let wet_aux = (shore.wet_rim * (1.0 - 0.55 * bank_steep)).clamp(0.0, 1.0);
+    let erosion_aux = (shore.erosion_mask * (0.28 + 0.72 * bank_steep)).clamp(0.0, 1.0);
 
     // ── Cliffs take budget from the biome floor. Snow is not an override:
     //    `snow_peak` is only whatever the paint grid writes afterwards.
     //
     // As arestas seguem o bioma: nos picos a rocha nasce mais cedo.
+    let n_hill_rib = fbm(x, z, 11.0, p.seed, 19);
+    let n_hill_fine = fbm(x, z, 3.8, p.seed, 23);
+    // Modula o ângulo efetivo da encosta em nervuras e grotas de 4–11 m para
+    // quebrar cintos de pedra horizontais, preservando chão plano (slope=0) e
+    // paredões verticais (slope≥0.85).
+    let rib_delta = (n_hill_rib - 0.48) * 0.20 + (n_hill_fine - 0.5) * 0.10;
+    let slope_activity = smoothstep(0.06, 0.24, slope);
+    let neg_suppress = 1.0 - smoothstep(0.68, 0.84, slope);
+    let slope_shift = if rib_delta < 0.0 {
+        rib_delta * slope_activity * neg_suppress
+    } else {
+        rib_delta * slope_activity
+    };
+    let slope_rock = (slope + slope_shift).clamp(0.0, 1.0);
     let rock0 = (0.30 + climate.rock_bias).clamp(0.05, 0.9);
-    let stone = smoothstep(rock0, rock0 + 0.22, slope);
+    let bank_stone = sand_mask * smoothstep(0.16, 0.34, slope_rock) * 0.52;
+    let stone = (smoothstep(rock0, rock0 + 0.22, slope_rock) + bank_stone).min(1.0);
     let budget = 1.0 - stone;
     // O leito profundo entra em MANCHAS de noise — um tapete uniforme lê-se
     // como anel pintado; as manchas alternam seixo ↔ areia/cascalho como um
     // fundo de rio real. A franja húmida em seco ganha seixos salpicados
     // (as "pedras incrustadas" da margem), dithered pelo mesmo grão da lama.
     let n_bed = fbm(x, z, NOISE_BED, p.seed, 7);
+    let n_scree = fbm(x, z, 5.5, p.seed, 11);
     let bed_patch = smoothstep(0.38, 0.62, n_bed);
     // (1−stone): numa margem íngreme submersa a rocha ganha — seixos não
     // assentam em parede, e budget = 1−stone−bed tem de ficar ≥ 0.
@@ -867,43 +909,55 @@ pub fn weights_at(
     // puxa a divisão sand↔desert_sand para o lado seco. O leito não segue o
     // deserto — um rio no deserto tem pedras na mesma.
     let desert = smoothstep(0.40, 0.52, n_sand).max(climate.aridity * 0.75);
-    let sand = sand_mask * (1.0 - desert) * (1.0 - bed_total);
+    let sand_eroded_divert = bank_steep * (1.0 - 0.38 * climate.aridity);
+    let dry_sand = sand_mask * (1.0 - 0.84 * sand_eroded_divert);
+    let bank_gravel = sand_mask * bank_steep * (0.44 + 0.34 * n_scree);
+    let bank_dirt = sand_mask * bank_steep * (1.0 - climate.aridity) * (0.44 - 0.22 * n_scree);
+    let sand = dry_sand * (1.0 - desert) * (1.0 - bed_total);
     // Duna NUNCA submersa: o noise de 90 m punha desert_sand (o rosado) no
     // FUNDO dos lagos — o leito é seixo/areia de rio, não deserto. O
     // comentário acima já prometia isto para o leito; o termo de noise
     // violava-o em clima húmido.
-    let desert_w = sand_mask * desert * (1.0 - bed_floor.min(1.0));
+    let desert_w = dry_sand * desert * (1.0 - bed_floor.min(1.0));
     // Mud: shallow water + the wet fringe right above the waterline,
     // dithered so it reads as damp patches instead of a painted ring.
-    let mud = (shallow * 0.5 + mud_band * 0.45) * (0.5 + 0.5 * n_mud) * (1.0 - stone);
+    let mud = (shallow * 0.5 + mud_band * 0.45)
+        * (0.5 + 0.5 * n_mud)
+        * (1.0 - stone)
+        * (1.0 - 0.35 * bank_steep);
 
-    // ── Mid layers: gravel shoulder under the cliffs, forest patches and
-    //    dirt patches on gentle ground.
-    //
-    // A banda de cascalho arrancava a 0.16 (≈33°) e cobria metade do mundo
-    // assim que o terreno deixou de ser uma planície: agora é um ombro
-    // estreito, colado ao sopé da rocha. (r7: o ombro antigo
-    // [rock0−0.11, rock0−0.01] apanhava TODA a meia-encosta dos morros
-    // proceduralmente ondulados e lia-se como manchas cinzentas — o cascalho
-    // é o colar DEBAIXO da pedra, não a encosta toda.) Largura ao vivo:
-    // `tuning.gravel_shoulder`.
+    // ── Mid layers: scree shoulder under cliffs & slope ribs, eroded hill
+    //    subsoil/loam collars, forest patches and dirt patches.
     let tuning = &ctx.params.tuning;
-    let gravel = smoothstep(rock0 - tuning.gravel_shoulder, rock0 - 0.005, slope) * (1.0 - stone);
+    let scree_reach = tuning.gravel_shoulder + 0.07 + 0.08 * n_hill_fine;
+    let slope_gravel = smoothstep(rock0 - scree_reach, rock0 + 0.03, slope_rock)
+        * smoothstep(0.04, 0.14, slope)
+        * (0.65 + 0.35 * n_hill_fine)
+        * (1.0 - stone);
+    let gravel = (slope_gravel + bank_gravel * (1.0 - stone)).min(1.0);
+    let hill_erode = smoothstep(0.14, 0.42, slope_rock) * (1.0 - sand_mask) * (1.0 - stone);
+    let slope_dirt = hill_erode * smoothstep(0.38, 0.72, n_hill_rib) * 0.42;
+    let slope_forest = hill_erode
+        * smoothstep(0.45, 0.78, 1.0 - n_hill_rib)
+        * (1.0 - climate.aridity)
+        * 0.28;
     let patch = climate.patchiness * tuning.patchiness;
-    // Manchas mais RARAS (limiares subidos em r7): a 0.57–0.66 o fbm abria
-    // borriões escuros em toda a colina; a faixa estreita deixa só os
-    // núcleos das manchas e as bordas dissolve-em-relva.
-    let forest = smoothstep(0.60, 0.70, n_forest)
+    let forest = ((smoothstep(0.60, 0.70, n_forest)
         * smoothstep(0.55, 0.67, n_forest_region)
-        * smoothstep(0.38, 0.28, slope)
+        * smoothstep(0.44, 0.26, slope)
         * (1.0 - sand_mask)
         * patch
-        * tuning.forest_density;
-    let dirt = smoothstep(0.62, 0.72, n_dirt)
+        * tuning.forest_density)
+        + slope_forest)
+        .min(1.0);
+    let dirt = ((smoothstep(0.62, 0.72, n_dirt)
         * smoothstep(0.58, 0.68, n_dirt_region)
         * (1.0 - sand_mask)
         * patch
-        * tuning.dirt_density;
+        * tuning.dirt_density)
+        + bank_dirt * (1.0 - stone)
+        + slope_dirt)
+        .min(1.0);
 
     // ── Worn road shoulders (skipped underwater/over sand: road ribbons
     //    cross rivers on bridges only, but a drowned trail must not bleach
@@ -915,10 +969,6 @@ pub fn weights_at(
     let dirt_road = road_fringe * (1.0 - sand_mask);
 
     // ── Normalize everything that shares `budget`, grass closes the rest.
-    // O leito (seixo+cascalho) também consome orçamento — é um override
-    // shore-like, à frente das manchas. Clamp defensivo: overrides podem
-    // somar mais que 1 (franja de lama sobre neve residual) — sem o clamp
-    // `scale` ficava negativo e invertia o `rest`.
     let budget = (budget - bed_total).max(0.0);
     let mut rest = [sand, desert_w, mud, gravel, forest, dirt, trail, dirt_road];
     let used: f32 = rest.iter().sum();
@@ -932,14 +982,7 @@ pub fn weights_at(
     }
     let rest_sum: f32 = rest.iter().sum();
 
-    // ── O resto do orçamento fecha com a paleta do BIOMA (era sempre
-    //    relva). É isto que faz o deserto ler-se areia e o pântano lodo
-    //    sem depender dos props plantados por cima.
     let ground = (budget - rest_sum).max(0.0);
-    // Dentro da paleta, o par relva/vale_grass ainda se reparte pelo ruído
-    // de região — senão o vale inteiro fica de um verde só. `vale_soft`
-    // (ao vivo) alarga a banda: 0 = regiões contrastadas de hoje, 1 = os
-    // dois verdes fundidos (as "manchas" desaparecem).
     let vale_band = 0.06 + tuning.vale_soft.clamp(0.0, 1.0) * 0.94;
     let vale = smoothstep(0.5 - vale_band * 0.5, 0.5 + vale_band * 0.5, n_region);
     let mut out = [0.0; LAYER_COUNT];
@@ -952,9 +995,6 @@ pub fn weights_at(
     }
     out[SLOT_GRASS] = ground * g_grass * (1.0 - vale);
     out[SLOT_VALE_GRASS] = ground * g_grass * vale;
-    // `+=`: os overrides e as manchas SOMAM-SE à paleta do bioma (que já
-    // pode ter posto peso em cascalho, rocha, areia ou lodo). Com `=` a
-    // paleta dos picos e do deserto era apagada pelas manchas.
     out[SLOT_DIRT] += rest[5];
     out[SLOT_DIRT_TRAIL] += rest[6];
     out[SLOT_FOREST_FLOOR] += rest[4];
@@ -965,63 +1005,88 @@ pub fn weights_at(
     out[SLOT_SWAMP_MUD] += rest[2];
     out[SLOT_DIRT_ROAD] += rest[7];
     out[SLOT_RIVERBED] += bed_pebbles;
-    // ── Cliff regions (region-filtered mask): dentro do CORE a banda é um
-    //    bloco de pedra sólida — o peso por declive sozinho dava remendos
-    //    que fragmentavam a parede de perto. O anel dilatado esbate a
-    //    relva/neve vizinhas para a massa ler-se contínua. O TALUS autoral
-    //    (cone de detritos no pé) pinta cascalho sujo de pedra — nunca
-    //    relva/neve por cima do apron.
     if let Some(mask) = ctx.cliff {
-        let p = Vec2::new(x, z);
-        if mask.is_core_at(p) {
+        let pos = Vec2::new(x, z);
+        if mask.is_core_at(pos) {
             for slot in out.iter_mut() {
                 *slot = 0.0;
             }
             out[SLOT_MOUNTAIN_STONE] = 1.0;
-            return out;
+            return (out, [0.0, 0.0]);
         }
-        if mask.is_talus_at(p) {
+        let f = mask.factor(pos);
+        if mask.is_talus_at(pos) {
+            let n_talus = fbm(x, z, 4.5, p.seed, 29);
+            let talus_mix =
+                ((0.68 + 0.24 * n_talus) * (0.55 + 0.45 * f)).clamp(0.45, 0.94)
+                    * (1.0 - road_band * 0.85);
+            let scree_sand = (climate.aridity * 0.34 * (1.0 - f * 0.35)).clamp(0.0, 0.34);
+            let scree_rock = ((0.18 + 0.16 * n_talus).min(0.34) * (1.0 - scree_sand * 0.5)).max(0.12);
+            let scree_dirt =
+                (0.18 * (1.0 - n_talus) * (1.0 - climate.aridity * 0.75)).max(0.0);
+            let scree_gravel = (1.0 - scree_sand - scree_rock - scree_dirt).max(0.30);
+            let keep = 1.0 - talus_mix;
             for slot in out.iter_mut() {
-                *slot = 0.0;
+                *slot *= keep;
             }
-            out[SLOT_GRAVEL] = 0.82;
-            out[SLOT_MOUNTAIN_STONE] = 0.18;
-            return out;
+            out[SLOT_GRAVEL] += talus_mix * scree_gravel;
+            out[SLOT_MOUNTAIN_STONE] += talus_mix * scree_rock;
+            out[SLOT_DIRT] += talus_mix * scree_dirt;
+            out[SLOT_DESERT_SAND] += talus_mix * scree_sand;
+            return (out, [wet_aux * 0.5, erosion_aux.max(0.45 * talus_mix)]);
         }
-        let f = mask.factor(p);
         if f > 0.0 {
-            out[SLOT_MOUNTAIN_STONE] = (out[SLOT_MOUNTAIN_STONE] + f * 1.5).min(1.2);
-            let fade = 1.0 - f * 0.7;
+            let n_edge = fbm(x, z, 6.0, p.seed, 31);
+            let f_soft = (f * (0.55 + 0.45 * n_edge) * (1.0 - road_band * 0.85)).clamp(0.0, 1.0);
+            let veg_drop = out[SLOT_GRASS] * f_soft * 0.48
+                + out[SLOT_VALE_GRASS] * f_soft * 0.48
+                + out[SLOT_SNOW_PEAK] * f_soft * 0.48;
+            let fade = 1.0 - f_soft * 0.48;
             out[SLOT_GRASS] *= fade;
             out[SLOT_VALE_GRASS] *= fade;
             out[SLOT_SNOW_PEAK] *= fade;
+            let desert_share = climate.aridity * 0.16;
+            let dirt_share = (0.26 * (1.0 - climate.aridity * 0.65)).max(0.08);
+            let gravel_share = (0.22 * (1.0 - climate.aridity * 0.4)).max(0.12);
+            let stone_share = (1.0 - dirt_share - gravel_share - desert_share).max(0.42);
+            let collar = veg_drop.max(f_soft * 0.28);
+            out[SLOT_MOUNTAIN_STONE] = (out[SLOT_MOUNTAIN_STONE] + collar * stone_share).min(1.2);
+            out[SLOT_GRAVEL] += collar * gravel_share;
+            out[SLOT_DIRT] += collar * dirt_share;
+            out[SLOT_DESERT_SAND] += collar * desert_share;
+            return (out, [wet_aux, erosion_aux.max(0.28 * f_soft)]);
         }
     }
-    out
+    (out, [wet_aux, erosion_aux])
 }
 
-/// `(sand mask, wet-fringe mud, shallow-water band, deep-bed mask)` at a
-/// texel.
-///
-/// `sand` is 1 on flooded ground and fades to 0 across `shore_width` meters
-/// outside the waterline; `mud` hugs the waterline on dry land; `shallow` is
-/// the flooded strip right at the shore; `bed` is the deep floor where
-/// pebbles take over from sand.
-fn shore_weights(x: f32, z: f32, y: f32, ctx: &mut TexelCtx) -> (f32, f32, f32, f32) {
+struct ShoreSample {
+    sand: f32,
+    mud: f32,
+    shallow: f32,
+    bed: f32,
+    wet_rim: f32,
+    erosion_mask: f32,
+}
+
+/// Shore and bed masks plus capillary-wetness and bank-erosion intensities at a texel.
+fn shore_weights(x: f32, z: f32, y: f32, ctx: &mut TexelCtx) -> ShoreSample {
     let p = Vec2::new(x, z);
     let mut sand = 0.0f32;
     let mut mud = 0.0f32;
     let mut shallow = 0.0f32;
     let mut bed = 0.0f32;
+    let mut wet_rim = 0.0f32;
+    let mut erosion_mask = 0.0f32;
     for (bounds, body) in ctx.water_boxes {
         if !bounds.contains(p) {
             continue;
         }
         let d_edge = body.distance_to_waterline(p);
-        if d_edge > ctx.shore {
+        if d_edge > ctx.shore * 1.25 {
             continue;
         }
-        let Some(surf) = body.blend_surface_y(p, ctx.shore) else {
+        let Some(surf) = body.blend_surface_y(p, ctx.shore * 1.25) else {
             continue;
         };
         let depth = surf - y; // > 0 → flooded
@@ -1031,14 +1096,29 @@ fn shore_weights(x: f32, z: f32, y: f32, ctx: &mut TexelCtx) -> (f32, f32, f32, 
             sand = sand.max(1.0);
             shallow = shallow.max(smoothstep(0.6, 0.05, depth));
             bed = bed.max(smoothstep(BED_DEPTH_START, BED_DEPTH_FULL, depth));
+            wet_rim = wet_rim.max(smoothstep(2.4, 0.0, depth).max(0.45));
+            erosion_mask = erosion_mask.max(0.35 * smoothstep(1.2, 0.0, depth));
         } else {
-            // Shore band: sand fades out, mud hugs the waterline.
-            let t = smootherstep01((d_edge / ctx.shore).clamp(0.0, 1.0));
-            sand = sand.max(1.0 - t);
-            mud = mud.max(1.0 - smoothstep(0.0, ctx.shore * 0.7, d_edge));
+            let h_above = -depth;
+            if d_edge <= ctx.shore {
+                let t = smootherstep01((d_edge / ctx.shore).clamp(0.0, 1.0));
+                sand = sand.max(1.0 - t);
+                mud = mud.max(1.0 - smoothstep(0.0, ctx.shore * 0.7, d_edge));
+            }
+            let v_wet = 1.0 - smoothstep(0.0, 0.95, h_above);
+            let h_wet = 1.0 - smoothstep(0.0, ctx.shore.clamp(1.2, 5.5), d_edge);
+            wet_rim = wet_rim.max(v_wet * h_wet.sqrt());
+            erosion_mask = erosion_mask.max(1.0 - smoothstep(0.0, ctx.shore * 1.25, d_edge));
         }
     }
-    (sand, mud, shallow, bed)
+    ShoreSample {
+        sand,
+        mud,
+        shallow,
+        bed,
+        wet_rim,
+        erosion_mask,
+    }
 }
 
 /// Signed distance to the nearest road ribbon that actually touches the
@@ -1813,5 +1893,41 @@ mod tests {
         assert!(load_cache(&path, 43).is_none(), "outra chave = cache velha");
         std::fs::write(&path, b"lixo").unwrap();
         assert!(load_cache(&path, 42).is_none(), "corrompida = ignorada");
+    }
+
+    #[test]
+    fn steep_shore_bank_exposes_earth_and_gravel_and_packs_aux_channels() {
+        let world = flat_world();
+        let lake = &world.water[0];
+        let boxes_w: Vec<(Bounds, &WaterBody)> = vec![(water_bounds(lake, 4.0), lake)];
+        let boxes_r: Vec<(Bounds, &RoadPath)> = Vec::new();
+        let mut ctx = TexelCtx {
+            params: &params(),
+            shore: 4.0,
+            water_boxes: &boxes_w,
+            road_boxes: &boxes_r,
+            cliff: None,
+        };
+        let mut p_shore = lake.at + Vec2::new(lake.radius, 0.0);
+        for d in 0..30 {
+            let cand = lake.at + Vec2::new(lake.radius + d as f32 * 0.25, 0.0);
+            if lake.distance_to_waterline(cand) > 0.2 && lake.distance_to_waterline(cand) < 1.2 {
+                p_shore = cand;
+                break;
+            }
+        }
+        let (flat_w, flat_aux) =
+            weights_and_aux_at(p_shore.x, p_shore.y, lake.water_y + 0.15, 1.0, 50.0, &mut ctx);
+        let (steep_w, steep_aux) =
+            weights_and_aux_at(p_shore.x, p_shore.y, lake.water_y + 0.25, 0.72, 50.0, &mut ctx);
+        assert!(
+            steep_w[SLOT_DIRT] + steep_w[SLOT_GRAVEL] + steep_w[SLOT_MOUNTAIN_STONE]
+                > flat_w[SLOT_DIRT] + flat_w[SLOT_GRAVEL] + flat_w[SLOT_MOUNTAIN_STONE] + 0.15,
+            "steep shore bank must expose soil/gravel/stone: steep={steep_w:?} vs flat={flat_w:?}"
+        );
+        assert!(
+            flat_aux[0] > 0.2 && steep_aux[1] > flat_aux[1],
+            "aux channels encode capillary wet ({flat_aux:?}) and bank erosion ({steep_aux:?})"
+        );
     }
 }

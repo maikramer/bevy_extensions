@@ -103,6 +103,86 @@ fn river_phase(path: &[Vec2]) -> f32 {
     (s.sin() * 43_758.55).fract() * std::f32::consts::TAU
 }
 
+/// Deterministic multi-octave signed FBM (`[-1, 1]`) for bank scallops,
+/// slumps, and shoreline irregularity across a characteristic length scale.
+pub fn bank_erosion_fbm(p: Vec2, base_meters: f32) -> f32 {
+    let mut q = p / base_meters.max(0.25);
+    let mut amp = 0.56f32;
+    let mut sum = 0.0f32;
+    let mut norm = 0.0f32;
+    for _ in 0..3 {
+        sum += (wave_value_noise(q) * 2.0 - 1.0) * amp;
+        norm += amp;
+        let x = 0.80 * q.x - 0.60 * q.y;
+        let y = 0.60 * q.x + 0.80 * q.y;
+        q = Vec2::new(x, y) * 2.13 + Vec2::new(17.3, 9.1);
+        amp *= 0.52;
+    }
+    if norm > 0.0 {
+        (sum / norm).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Narrow drainage rill factor (`[0, 1]`) oriented transversely down banks to
+/// carve natural stormwater micro-gullies into steep slopes.
+pub fn bank_erosion_rill(p: Vec2, along_dir: Vec2, spacing_meters: f32) -> f32 {
+    let tangent = along_dir.normalize_or_zero();
+    let perp = Vec2::new(-tangent.y, tangent.x);
+    let u = p.dot(tangent) / spacing_meters.max(0.5);
+    let v = p.dot(perp) / (spacing_meters.max(0.5) * 3.2);
+    let n = wave_value_noise(Vec2::new(u, v) + Vec2::new(31.7, -14.2)) * 2.0 - 1.0;
+    let detail = wave_value_noise(Vec2::new(u * 2.7, v * 2.3) - Vec2::new(7.1, 22.9)) * 2.0 - 1.0;
+    let ridge = (1.0 - (n * 0.78 + detail * 0.22).abs()).clamp(0.0, 1.0);
+    ridge.powf(3.0)
+}
+
+/// Computes signed smoothed meander curvature (`[-1, 1]`, positive when turning
+/// left in XZ) at each river station so cutbanks and point bars form naturally.
+pub fn station_curvatures(stations: &[Vec2]) -> Vec<f32> {
+    let n = stations.len();
+    if n < 3 {
+        return vec![0.0; n];
+    }
+    let mut raw = vec![0.0f32; n];
+    for i in 0..n {
+        let a = stations[i.saturating_sub(2)];
+        let b = stations[i];
+        let c = stations[(i + 2).min(n - 1)];
+        let d1 = (b - a).normalize_or_zero();
+        let d2 = (c - b).normalize_or_zero();
+        if d1.length_squared() > 0.5 && d2.length_squared() > 0.5 {
+            let cross = d1.x * d2.y - d1.y * d2.x;
+            let span = (b.distance(a) + c.distance(b)).max(1.0);
+            raw[i] = (cross / span * 26.0).clamp(-1.0, 1.0);
+        }
+    }
+    box_smooth(&mut raw, 3);
+    raw
+}
+
+/// Signed meander bend bias (`[-1, 1]`) for point `p` relative to `hit`:
+/// `+1.0` = outer cutbank, `-1.0` = inner point bar.
+pub fn river_outer_bias(
+    stations: &[Vec2],
+    curvatures: &[f32],
+    hit: &PathHit,
+    p: Vec2,
+) -> f32 {
+    if stations.len() < 2 || curvatures.len() != stations.len() {
+        return 0.0;
+    }
+    let seg = hit.segment.min(stations.len().saturating_sub(2));
+    let dir = (stations[seg + 1] - stations[seg]).normalize_or_zero();
+    let perp = Vec2::new(-dir.y, dir.x);
+    let side = (p - hit.point).dot(perp);
+    let d = hit.point.distance(p).max(0.25);
+    let side_sign = (side / d).clamp(-1.0, 1.0);
+    let k = station_lerp(curvatures, hit);
+    (-k * side_sign).clamp(-1.0, 1.0)
+}
+
 // ── Espelho CPU do campo de ondas (buoyancy estilo bevy_water) ─────────────
 //
 // O pacote bevy_water expõe `get_wave_point` — a MESMA função de onda da GPU
@@ -773,6 +853,115 @@ impl WaterBody {
             }
         }
     }
+
+    /// Spatial hydrodynamic sample at world XZ `p` (`None` outside the water mirror
+    /// or over dry emerges inside `bed_y`).
+    pub fn sample_domain(
+        &self,
+        p: Vec2,
+        bed_y: Option<f32>,
+        default_depth: f32,
+    ) -> Option<WaterDomainSample> {
+        match self.kind {
+            WaterKind::Lake => {
+                let delta = p - self.at;
+                let contour = self.contour_at_delta(delta) * self.mirror_reach;
+                let radial_dist = delta.length();
+                if radial_dist > contour {
+                    return None;
+                }
+                if let Some(by) = bed_y {
+                    if by >= self.water_y - 0.01 {
+                        return None;
+                    }
+                }
+                let rim_t = (1.0 - (radial_dist / contour.max(0.1)).powi(2)).clamp(0.05, 1.0);
+                let depth = bed_y
+                    .map(|by| (self.water_y - by).clamp(0.02, 40.0))
+                    .unwrap_or_else(|| (default_depth.max(0.4) * rim_t).max(0.05));
+                Some(WaterDomainSample {
+                    surface_y: self.water_y,
+                    depth,
+                    flow: Vec2::ZERO,
+                    plunge: 0.0,
+                })
+            }
+            WaterKind::River => {
+                if self.hull > 0.0 && (p - self.at).length_squared() > self.hull.powi(2) {
+                    return None;
+                }
+                let hit = nearest_on_path(&self.stations, p)?;
+                let hw = self.half_width_lerp(&hit);
+                let dist = hit.point.distance(p);
+                if dist > hw {
+                    return None;
+                }
+                let surf_y = if self.surface_y.is_empty() {
+                    self.water_y
+                } else {
+                    station_lerp(&self.surface_y, &hit)
+                };
+                if let Some(by) = bed_y {
+                    if by >= surf_y + 0.08 {
+                        return None;
+                    }
+                }
+                let channel_depth = if self.depths.is_empty() {
+                    default_depth
+                } else {
+                    station_lerp(&self.depths, &hit)
+                };
+                let bank_u = (dist / hw.max(0.1)).clamp(0.0, 1.0);
+                let analytic_depth = (channel_depth * (1.0 - 0.65 * bank_u * bank_u)).max(0.05);
+                let depth = bed_y
+                    .map(|by| (surf_y - by).max(analytic_depth * 0.35).clamp(0.02, 40.0))
+                    .unwrap_or(analytic_depth);
+
+                let n = self.stations.len();
+                let seg_a = hit.segment.min(n.saturating_sub(2));
+                let seg_b = (seg_a + 1).min(n.saturating_sub(1));
+                let tangent = self.stations[seg_b] - self.stations[seg_a];
+                let seg_len = tangent.length().max(0.05);
+                let dir = tangent / seg_len;
+                let slope = if self.surface_y.len() > seg_b {
+                    ((self.surface_y[seg_a] - self.surface_y[seg_b]) / seg_len).max(0.0)
+                } else {
+                    0.0
+                };
+                let speed = (1.15_f32 + slope * 14.0).clamp(0.9, 3.8);
+                let profile = 0.45 + 0.55 * (1.0 - bank_u * bank_u);
+                let flow = dir * (speed * profile);
+
+                let mut plunge = 0.0_f32;
+                for c in &self.cascades {
+                    if let Some(&base_pos) = self.stations.get(c.base) {
+                        let pr = (self.half_width_at(c.base) * 1.45).max(2.5);
+                        let pd = p.distance(base_pos);
+                        if pd < pr {
+                            let fall_scale = (c.drop / 4.0).clamp(0.35, 1.0);
+                            plunge = plunge.max((1.0 - pd / pr) * fall_scale);
+                        }
+                    }
+                }
+
+                Some(WaterDomainSample {
+                    surface_y: surf_y,
+                    depth,
+                    flow,
+                    plunge,
+                })
+            }
+        }
+    }
+}
+
+/// Hydrodynamic water domain sample returned by [`WaterBody::sample_domain`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WaterDomainSample {
+    pub surface_y: f32,
+    pub depth: f32,
+    pub flow: Vec2,
+    pub plunge: f32,
 }
 
 /// Personalidade orgânica de um lago: alongamento dirigido + harmónicos
@@ -952,16 +1141,45 @@ pub fn carve_lake(grid: &mut BrushGrid, spec: &LakeSpec, index: usize) -> Option
     // fundos (1.28·1.16 > 1.25).
     let carve_r = spec.radius * CARVE_MARGIN.max(CONTOUR_PEAK * mirror_reach);
 
-    // Bowl floor: C1 at the contour rim (`(1 − t²)^1.5` has zero derivative).
+    // Bowl floor: C1 at the contour rim (`(1 − t²)^1.5` has zero derivative),
+    // with natural shallow-bar / eroded-cove imperfections outside the center.
+    let waterline_reach_f = mirror_reach;
+    let erode_lake = !spec.bank.is_voxel();
     let bowl = |p: Vec2| -> f32 {
         let d = p.distance(spec.at);
         let theta = (p.y - spec.at.y).atan2(p.x - spec.at.x);
-        let r = shape.contour(spec.radius, theta) * CARVE_MARGIN;
+        let base_c = shape.contour(spec.radius, theta);
+        let r = base_c * CARVE_MARGIN;
+        let waterline_r = base_c * waterline_reach_f;
+        let edge_n = if erode_lake {
+            bank_erosion_fbm(p, (spec.radius * 0.28).clamp(3.0, 8.5))
+        } else {
+            0.0
+        };
         if d >= r {
-            return water_y + spec.water_offset;
+            if !erode_lake {
+                return water_y + spec.water_offset;
+            }
+            // Eroded micro-gullies & slumped bench steps along lakeside bluffs.
+            let radial = (p - spec.at).normalize_or_zero();
+            let tangent = Vec2::new(-radial.y, radial.x);
+            let rill = bank_erosion_rill(p, tangent, (spec.radius * 0.22).clamp(2.8, 6.0));
+            return water_y + spec.water_offset + edge_n * 0.22 - rill * 0.28;
         }
         let t = d / r;
-        (water_y + spec.water_offset) - spec.depth * (1.0 - t * t).max(0.0).powf(1.5)
+        let mut floor_y =
+            (water_y + spec.water_offset) - spec.depth * (1.0 - t * t).max(0.0).powf(1.5);
+        if erode_lake {
+            // Subtle shoaling/scour near perimeter while keeping deep center intact
+            // (`t < 0.35` stays 0) and submerged floor safely under `water_y`.
+            let cove_fade = smoothstep01(((t - 0.35) / 0.55).clamp(0.0, 1.0));
+            let bed_mod = edge_n * spec.depth * 0.14 * cove_fade;
+            floor_y += bed_mod;
+            if d < waterline_r * 0.96 {
+                floor_y = floor_y.min(water_y - 0.08);
+            }
+        }
+        floor_y
     };
 
     // Shore band, per rim ray. The contour used to be a hard 0/1 mask, so a
@@ -1027,14 +1245,26 @@ pub fn carve_lake(grid: &mut BrushGrid, spec: &LakeSpec, index: usize) -> Option
             return if d < contour * reach { 1.0 } else { 0.0 };
         }
         let r = contour * CARVE_MARGIN;
-        if d < r {
+        let band = shore_at(theta);
+        let d_eff = if erode_lake && d > contour * waterline_reach_f {
+            let dry_fade = smoothstep01(((d - contour * waterline_reach_f) / 1.5).clamp(0.0, 1.0));
+            let outer_fade = 1.0 - smoothstep01(((d - r) / band.max(1e-4)).clamp(0.0, 1.0));
+            let scallop = bank_erosion_fbm(p, (spec.radius * 0.25).clamp(2.8, 7.0))
+                * band.min(3.5)
+                * 0.26
+                * dry_fade
+                * outer_fade;
+            (d + scallop).max(contour * waterline_reach_f)
+        } else {
+            d
+        };
+        if d_eff < r {
             return 1.0;
         }
-        let band = shore_at(theta);
-        if d >= r + band {
+        if d_eff >= r + band {
             return 0.0;
         }
-        let t = (d - r) / band.max(1e-4);
+        let t = (d_eff - r) / band.max(1e-4);
         1.0 - style.progress(t)
     };
     let mut target = bowl;
@@ -1407,6 +1637,8 @@ pub fn carve_river_with_falls(
     // VOXEL (gorge/overhang) ficam SEM rampa: o sólido natural fica de pé e
     // a parede é cortada por mods (`voxel/riverbank.rs`).
     let style = spec.bank;
+    let erode = !style.is_voxel();
+    let curvatures = station_curvatures(&stations);
     let feathers: Vec<f32> = if style.is_voxel() {
         vec![0.0; stations.len()]
     } else {
@@ -1425,41 +1657,92 @@ pub fn carve_river_with_falls(
     let extent = half + bank + feather_max + texel * 2.0;
     let owner = format!("river:{index}");
 
-    // Bank + channel profile at a point: the pass-2 design surface. The bank
-    // band rises to `surf + bank_height` (capped against the axis height so
-    // deep valleys stay cascades), the channel bowls under the surface.
-    // Profundidade e meia-largura vêm das estações (pools/cascatas).
+    let reaches: Vec<f32> = depths
+        .iter()
+        .map(|&d| waterline_reach(d, spec.water_offset).clamp(0.4, 1.0))
+        .collect();
+
+    // Computes organic scalloped lateral distance past `half_local`, staying
+    // >= half_local so the underwater seam never splits open.
+    let warped_bank_dist = |p: Vec2, d: f32, half_local: f32| -> f32 {
+        if !erode || d <= half_local {
+            return d;
+        }
+        let fade_in = smoothstep01(((d - half_local) / 1.4).clamp(0.0, 1.0));
+        let fade_out =
+            1.0 - smoothstep01(((d - half_local - bank * 0.85) / (bank + 1.5)).clamp(0.0, 1.0));
+        let scallop = bank_erosion_fbm(p, (half_local * 1.15).clamp(4.0, 11.0))
+            * bank.min(4.0)
+            * 0.24
+            * fade_in
+            * fade_out;
+        (d + scallop).max(half_local + 1e-3)
+    };
+
+    // Bank + channel profile at a point: the pass-2 design surface.
     let channel_profile = {
         let stations = &stations;
         let surface = &surface;
         let axis = &axis;
         let depths = &depths;
         let halfs = &halfs;
+        let curvatures = &curvatures;
         move |p: Vec2| -> f32 {
             let hit = nearest_on_path(stations, p).expect("stations >= 2");
             let d = hit.point.distance(p);
-            // Interpolated along the path: reading `surface[seg]` directly
-            // steps by a whole station at every segment boundary, and the
-            // lower-only pass then cuts that step into a vertical fin.
             let surf = station_lerp(surface, &hit);
             let axis_h = station_lerp(axis, &hit);
             let depth = station_lerp(depths, &hit);
             let half_local = station_lerp(halfs, &hit).max(texel * 0.5);
+            let outer = if erode {
+                river_outer_bias(stations, curvatures, &hit, p)
+            } else {
+                0.0
+            };
             if d <= half_local {
                 let t = d / half_local;
-                surf - depth.max(MIN_CHANNEL_DEPTH) * (1.0 - t * t).max(0.0).powf(1.5)
+                let bed_exp = if erode {
+                    (1.5 - 0.35 * outer).clamp(1.12, 1.92)
+                } else {
+                    1.5
+                };
+                let edge_mod = if erode {
+                    1.0 + 0.22 * outer * smoothstep01(t)
+                        + 0.08 * bank_erosion_fbm(p, 5.5) * (1.0 - t * t)
+                } else {
+                    1.0
+                };
+                let eff_depth = (depth * edge_mod).max(MIN_CHANNEL_DEPTH);
+                surf - eff_depth * (1.0 - t * t).max(0.0).powf(bed_exp)
             } else {
-                let band = ((d - half_local) / bank.max(1e-4)).clamp(0.0, 1.0);
-                let raised = surf + bank_height * smoothstep01(1.0 - band);
+                let d_eff = warped_bank_dist(p, d, half_local);
+                let band_span = if erode {
+                    bank * (1.0 - 0.25 * outer.max(0.0) + 0.35 * (-outer).max(0.0))
+                } else {
+                    bank
+                };
+                let band = ((d_eff - half_local) / band_span.max(1e-4)).clamp(0.0, 1.0);
+                let asym_height = if erode {
+                    bank_height * (1.0 + 0.24 * outer.max(0.0) - 0.42 * (-outer).max(0.0))
+                } else {
+                    bank_height
+                };
+                let mut raised = surf + asym_height * smoothstep01(1.0 - band);
+                if erode {
+                    let seg = hit.segment.min(stations.len().saturating_sub(2));
+                    let flow_dir = (stations[seg + 1] - stations[seg]).normalize_or_zero();
+                    let micro_n = bank_erosion_fbm(p, (bank * 0.95).clamp(2.5, 6.5));
+                    let rill = bank_erosion_rill(p, flow_dir, (bank * 0.65).clamp(2.0, 4.5));
+                    let relief_fade =
+                        smoothstep01((band / 0.22).clamp(0.0, 1.0)) * (1.0 - band * 0.35);
+                    raised += relief_fade * (micro_n * 0.24 * bank_height - rill * 0.30 * bank_height);
+                }
                 raised.min(axis_h + MAX_BANK_RAISE)
             }
         }
     };
 
     // Pass 1 — banks (raise): fills the near bank band up to the profile.
-    // Estilos voxel saltam: a margem mantém o terreno natural (o mod é que
-    // corta a parede) — levantar bancos aqui punha terra SOLTA onde a
-    // parede tem de ser rocha.
     if !style.is_voxel() {
         grid.begin_stroke(&format!("{owner}:banks"));
         let mut bank_weight = |p: Vec2| {
@@ -1470,10 +1753,11 @@ pub fn carve_river_with_falls(
             if d <= half_local || d > half_local + bank + feather {
                 return 0.0;
             }
-            let band = ((d - half_local) / bank.max(1e-4)).clamp(0.0, 1.0);
+            let d_eff = warped_bank_dist(p, d, half_local);
+            let band = ((d_eff - half_local) / bank.max(1e-4)).clamp(0.0, 1.0);
             let mut w = smoothstep01(1.0 - band);
-            if d > half_local + bank {
-                w *= 1.0 - smoothstep01((d - half_local - bank) / feather);
+            if d_eff > half_local + bank {
+                w *= 1.0 - smoothstep01((d_eff - half_local - bank) / feather.max(1e-4));
             }
             w
         };
@@ -1500,8 +1784,12 @@ pub fn carve_river_with_falls(
         if d > half_local + bank + feather {
             return 0.0;
         }
-        if d > half_local + bank {
-            let t = (d - half_local - bank) / feather.max(1e-4);
+        let d_eff = warped_bank_dist(p, d, half_local);
+        if d_eff > half_local + bank + feather {
+            return 0.0;
+        }
+        if d_eff > half_local + bank {
+            let t = (d_eff - half_local - bank) / feather.max(1e-4);
             return 1.0 - style.progress(t);
         }
         1.0
@@ -1536,10 +1824,7 @@ pub fn carve_river_with_falls(
     // a lâmina cortava a margem; os poços e o caldeirão abrem na mesma
     // proporção. `depths` fica no registry para consumidores e testes
     // partilharem a métrica.
-    let reaches: Vec<f32> = depths
-        .iter()
-        .map(|&d| waterline_reach(d, spec.water_offset).clamp(0.4, 1.0))
-        .collect();
+    // (Computed above so channel/bank helpers can share it cleanly.)
     // Casco O(1) das queries (`WaterBody::hull`): distância máxima das
     // estações ao centroide + a maior meia-largura EFETIVA.
     let body_at = centroid(&stations);
@@ -1941,6 +2226,355 @@ pub fn river_water_mesh(spec: &RiverSpec, body: &WaterBody) -> ChunkMeshData {
         }
     }
     mesh
+}
+
+/// High-density water mesh carrying downstream flow velocity `(vx, vz)` in `uv_b`.
+#[derive(Debug, Clone, Default)]
+pub struct WaterMeshData {
+    pub mesh: ChunkMeshData,
+    /// Downstream surface velocity `(vx, vz)` in m/s (`(0, 0)` on lakes).
+    pub uv_b: Vec<[f32; 2]>,
+}
+
+/// Builds a high-density tessellated lake mesh (~0.45 m radial rings and ~0.55 m
+/// perimeter spacing) so Gerstner swells, Kelvin wakes, and circular wave rings
+/// deform geometrically without diamond faceting.
+pub fn lake_water_mesh_dense(spec: &LakeSpec, water_y: f32, grid: &BrushGrid) -> WaterMeshData {
+    let shape = LakeShape::from_authoring(spec.at, &spec.shape);
+    let reach = lake_mirror_reach(spec.depth, spec.water_offset);
+    if reach <= 0.0 {
+        return WaterMeshData::default();
+    }
+    let outer_r = (spec.radius * reach).max(0.5);
+    let ring_count = (outer_r / 0.45).round().clamp(16.0, 96.0) as usize;
+    let seg_count =
+        ((std::f32::consts::TAU * outer_r) / 0.55).round().clamp(72.0, 256.0) as usize;
+
+    let mut data = WaterMeshData::default();
+    let island_mask = |p: Vec2| -> f32 {
+        let mut a = 1.0f32;
+        for island in &spec.islands {
+            let d = p.distance(island.at);
+            let t = ((d - island.radius * 0.75) / (island.radius * 0.25 + 0.8)).clamp(0.0, 1.0);
+            a *= smoothstep01(t);
+        }
+        a
+    };
+    let push = |out: &mut WaterMeshData, p: Vec2, mask: f32| {
+        let depth = (water_y - grid.sample(p.x, p.y)).clamp(0.02, 40.0);
+        out.mesh.positions.push([p.x, water_y, p.y]);
+        out.mesh.normals.push([0.0, 1.0, 0.0]);
+        out.mesh.uvs.push([spec.opacity, depth]);
+        out.mesh
+            .colors
+            .push([spec.color[0], spec.color[1], spec.color[2], mask]);
+        out.uv_b.push([0.0, 0.0]);
+    };
+
+    push(&mut data, spec.at, island_mask(spec.at));
+    // Geometric outer skirt only feathers the outermost ~1.8 m band so true
+    // per-pixel `prepass_depth` defines the shoreline inside the water mirror.
+    let edge_band = (1.8 / outer_r).clamp(0.05, WATER_EDGE_FADE);
+    for ring in 0..ring_count {
+        let radial = (ring + 1) as f32 / ring_count as f32;
+        let skirt =
+            1.0 - smoothstep01(((radial - (1.0 - edge_band)) / edge_band).clamp(0.0, 1.0));
+        for i in 0..seg_count {
+            let theta = i as f32 / seg_count as f32 * std::f32::consts::TAU;
+            let r = shape.contour(spec.radius, theta) * reach * radial;
+            let p = spec.at + Vec2::new(theta.cos(), theta.sin()) * r;
+            push(&mut data, p, skirt * island_mask(p));
+        }
+    }
+
+    let seg = seg_count as u32;
+    let inner0 = 1u32;
+    for i in 0..seg {
+        let a = inner0 + i;
+        let b = inner0 + (i + 1) % seg;
+        data.mesh.indices.extend_from_slice(&[0, b, a]);
+    }
+    for ring in 0..(ring_count as u32 - 1) {
+        let a0 = inner0 + ring * seg;
+        let b0 = inner0 + (ring + 1) * seg;
+        for i in 0..seg {
+            let a = a0 + i;
+            let b = a0 + (i + 1) % seg;
+            let c = b0 + i;
+            let d = b0 + (i + 1) % seg;
+            data.mesh.indices.extend_from_slice(&[a, b, c, b, d, c]);
+        }
+    }
+    data
+}
+
+/// Builds a high-density tessellated river ribbon (~0.60 m longitudinal step, 15
+/// cross-channel vertices with bank-sheared velocity in `uv_b`) plus curved
+/// parabolic waterfall sheets across cascades.
+pub fn river_water_mesh_dense(spec: &RiverSpec, body: &WaterBody) -> WaterMeshData {
+    let mut data = WaterMeshData::default();
+    let n = body.stations.len();
+    if n < 2 {
+        return data;
+    }
+    const CROSS_VERTS: usize = 19;
+    let murk = spec.opacity;
+    let mask_at = |v: f32| -> f32 {
+        let u = (v - 0.5).abs() * 2.0;
+        1.0 - smoothstep01(((u - 0.86) / 0.14).clamp(0.0, 1.0))
+    };
+
+    let cascade_at = |seg: usize| -> Option<&CascadeInfo> {
+        body.cascades.iter().find(|c| seg >= c.lip && seg < c.base)
+    };
+
+    // Emit contiguous non-cascade river reaches resampled at ~0.60 m longitudinal step.
+    let mut reach_start: Option<usize> = None;
+    for i in 0..=n {
+        let is_seg_cascade = i + 1 < n && cascade_at(i).is_some();
+        let continue_reach = i < n && !is_seg_cascade;
+        if continue_reach {
+            if reach_start.is_none() {
+                reach_start = Some(i);
+            }
+            continue;
+        }
+        // If `i` entered a cascade at `i`, the upstream reach ends AT station `i` (the lip).
+        let end_station = if i < n && is_seg_cascade { i } else { n - 1 };
+        if let Some(start) = reach_start.take() {
+            if end_station > start {
+                emit_dense_river_reach(
+                    &mut data,
+                    spec,
+                    body,
+                    start..=end_station,
+                    CROSS_VERTS,
+                    murk,
+                    mask_at,
+                );
+            }
+        }
+        // Wait until after the cascade ends to start the next reach at `c.base`.
+        if i + 1 < n && is_seg_cascade {
+            reach_start = None;
+        }
+    }
+
+    // Emit one smooth curved parabolic sheet per cascade `[c.lip .. c.base]`.
+    for c in &body.cascades {
+        if c.lip >= n || c.base >= n || c.base <= c.lip {
+            continue;
+        }
+        emit_curved_waterfall_sheet(&mut data, spec, body, c, CROSS_VERTS);
+    }
+
+    data
+}
+
+fn catmull_rom_vec2(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    0.5 * ((2.0 * p1)
+        + (-p0 + p2) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+}
+
+fn emit_dense_river_reach(
+    data: &mut WaterMeshData,
+    spec: &RiverSpec,
+    body: &WaterBody,
+    range: std::ops::RangeInclusive<usize>,
+    cross_verts: usize,
+    murk: f32,
+    mask_at: impl Fn(f32) -> f32,
+) {
+    let s0 = *range.start();
+    let s1 = *range.end();
+    if s1 <= s0 {
+        return;
+    }
+    struct Sample {
+        pos: Vec2,
+        y: f32,
+        half: f32,
+        depth: f32,
+        slope: f32,
+    }
+    let mut samples: Vec<Sample> = Vec::new();
+    for i in s0..s1 {
+        let a = body.stations[i];
+        let b = body.stations[i + 1];
+        let p0 = body.stations[i.saturating_sub(1).max(s0)];
+        let p3 = body.stations[(i + 2).min(s1)];
+        let seg_len = a.distance(b).max(0.05);
+        let substeps = ((seg_len / 0.60).ceil() as usize).clamp(1, 72);
+        let ya = body.surface_y.get(i).copied().unwrap_or(body.water_y);
+        let yb = body.surface_y.get(i + 1).copied().unwrap_or(body.water_y);
+        let slope = ((ya - yb) / seg_len).max(0.0);
+        let ha = body.half_width_at(i);
+        let hb = body.half_width_at(i + 1);
+        let da = body.depth_at(i, spec.depth);
+        let db = body.depth_at(i + 1, spec.depth);
+        let k_end = if i + 1 == s1 { substeps + 1 } else { substeps };
+        for k in 0..k_end {
+            let t = k as f32 / substeps as f32;
+            let lin = a.lerp(b, t);
+            let spline = catmull_rom_vec2(p0, a, b, p3, t);
+            // Gentle 35% spline blend rounds kinks while staying safely inside the carved bed.
+            let pos = lin.lerp(spline, 0.35);
+            samples.push(Sample {
+                pos,
+                y: ya + (yb - ya) * t,
+                half: ha + (hb - ha) * t,
+                depth: da + (db - da) * t,
+                slope,
+            });
+        }
+    }
+
+    let base_vertex = data.mesh.positions.len() as u32;
+    let m = samples.len();
+    for (idx, s) in samples.iter().enumerate() {
+        let prev = samples[idx.saturating_sub(1)].pos;
+        let next = samples[(idx + 1).min(m - 1)].pos;
+        let dir = (next - prev).normalize_or_zero();
+        let perp = Vec2::new(-dir.y, dir.x);
+        let speed = (1.15 + s.slope * 14.0).clamp(0.9, 3.8);
+        for c in 0..cross_verts {
+            let v = c as f32 / (cross_verts - 1) as f32;
+            let lateral = v * 2.0 - 1.0;
+            let p = s.pos + perp * (s.half * lateral);
+            let edge_profile = (1.0 - lateral * lateral).clamp(0.0, 1.0);
+            let bank_profile = 0.45 + 0.55 * edge_profile;
+            // Taper baked depth toward the bank margins so shoreline vertex locking
+            // matches actual bathymetry instead of keeping centerline channel depth.
+            let channel_depth = (s.depth * edge_profile * edge_profile).max(0.02);
+            data.mesh.positions.push([p.x, s.y, p.y]);
+            data.mesh.normals.push([0.0, 1.0, 0.0]);
+            data.mesh.uvs.push([murk, channel_depth]);
+            data.mesh
+                .colors
+                .push([spec.color[0], spec.color[1], spec.color[2], mask_at(v)]);
+            data.uv_b
+                .push([dir.x * speed * bank_profile, dir.y * speed * bank_profile]);
+        }
+    }
+
+    let per = cross_verts as u32;
+    for idx in 0..(m as u32 - 1) {
+        let row = base_vertex + idx * per;
+        for c in 0..(per - 1) {
+            let a = row + c;
+            let b = a + 1;
+            let c_idx = a + per;
+            let d = c_idx + 1;
+            data.mesh
+                .indices
+                .extend_from_slice(&[a, b, c_idx, b, d, c_idx]);
+        }
+    }
+}
+
+fn emit_curved_waterfall_sheet(
+    data: &mut WaterMeshData,
+    spec: &RiverSpec,
+    body: &WaterBody,
+    c: &CascadeInfo,
+    cross_verts: usize,
+) {
+    let st0 = body.stations[c.lip];
+    let st1 = body.stations[c.base];
+    let fallback_dir = body
+        .stations
+        .get(c.lip + 1)
+        .map(|s| (*s - st0).normalize_or_zero())
+        .filter(|d| d.length_squared() > 1e-4)
+        .unwrap_or(Vec2::X);
+    let raw_span = st1 - st0;
+    let span_len = raw_span.length();
+    let dir = if span_len > 1e-3 {
+        raw_span / span_len
+    } else {
+        fallback_dir
+    };
+    let perp = Vec2::new(-dir.y, dir.x);
+
+    let top_y = c.top_y;
+    let bot_y = c.bot_y;
+    let drop = (top_y - bot_y).max(0.25);
+    let drop_rows = ((drop / 0.55).ceil() as usize).clamp(8, 28);
+
+    let lip_half = body.half_width_at(c.lip);
+    let base_half = body.half_width_at(c.base);
+    let curtain_flare = if c.waterfall { WATERFALL_CURTAIN } else { 1.08 };
+    let face_depth = body.depth_at(c.base, spec.depth);
+    let lean = if c.wall {
+        1.2
+    } else {
+        (span_len * 0.35).min(1.4)
+    };
+
+    let arc_pos = |t: f32| -> (Vec2, f32, f32) {
+        // Ballistic advance: jets forward off the brow before gravity bends it down.
+        let adv = 1.0 - (1.0 - t).powf(1.45);
+        let bow = 4.0 * t * (1.0 - t) * lean * 0.35;
+        let center = st0 + dir * (span_len * adv + bow);
+        let y = top_y - drop * (0.08 * t + 0.92 * t * t);
+        let half = (lip_half + (base_half - lip_half) * t)
+            * (1.0 + (curtain_flare - 1.0) * smoothstep01(t));
+        (center, y, half)
+    };
+
+    let base_vertex = data.mesh.positions.len() as u32;
+    for r in 0..=drop_rows {
+        let t = r as f32 / drop_rows as f32;
+        let t_prev = (t - 0.02).max(0.0);
+        let t_next = (t + 0.02).min(1.0);
+        let (p_prev, y_prev, _) = arc_pos(t_prev);
+        let (p_next, y_next, _) = arc_pos(t_next);
+        let (center, y, half) = arc_pos(t);
+
+        let tang = bevy::math::Vec3::new(
+            p_next.x - p_prev.x,
+            y_next - y_prev,
+            p_next.y - p_prev.y,
+        )
+        .normalize_or_zero();
+        let across = bevy::math::Vec3::new(perp.x, 0.0, perp.y);
+        // Outward face normal (pointing downstream & slightly upward over the brow).
+        let normal = across
+            .cross(tang)
+            .normalize_or(bevy::math::Vec3::new(dir.x, 0.25, dir.y).normalize());
+        let flow_speed = 4.2 + 3.2 * t;
+        for col in 0..cross_verts {
+            let v = col as f32 / (cross_verts - 1) as f32;
+            let lateral = v * 2.0 - 1.0;
+            let p = center + perp * (half * lateral);
+            data.mesh.positions.push([p.x, y, p.y]);
+            data.mesh.normals.push([normal.x, normal.y, normal.z]);
+            data.mesh.uvs.push([spec.opacity, face_depth]);
+            data.mesh
+                .colors
+                .push([spec.color[0], spec.color[1], spec.color[2], 1.0]);
+            data.uv_b.push([dir.x * flow_speed, dir.y * flow_speed]);
+        }
+    }
+
+    let per = cross_verts as u32;
+    for r in 0..drop_rows as u32 {
+        let row = base_vertex + r * per;
+        for col in 0..(per - 1) {
+            let a = row + col;
+            let b = a + 1;
+            let c_idx = a + per;
+            let d = c_idx + 1;
+            // Winding matching outward downstream normal `across × tang`
+            data.mesh
+                .indices
+                .extend_from_slice(&[a, b, c_idx, b, d, c_idx]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3478,6 +4112,103 @@ mod tests {
             (h - (sines + fbm_term)).abs() < 1e-5,
             "CPU mirror = shader: {h} vs {} (o peso do FBM divergiu)",
             sines + fbm_term
+        );
+    }
+
+    #[test]
+    fn test_dense_lake_and_river_meshes_and_domain_sample() {
+        let mut grid = test_grid();
+        let lake_spec = LakeSpec {
+            at: Vec2::new(48.0, 48.0),
+            radius: 14.0,
+            depth: 2.5,
+            water_offset: 0.4,
+            ..Default::default()
+        };
+        let lake_body = carve_lake(&mut grid, &lake_spec, 0).expect("lake carved");
+        let dense_lake = lake_water_mesh_dense(&lake_spec, lake_body.water_y, &grid);
+        assert_eq!(dense_lake.mesh.positions.len(), dense_lake.uv_b.len());
+        assert!(
+            dense_lake.mesh.positions.len() > 2000,
+            "expected high-density lake tessellation, got {} verts",
+            dense_lake.mesh.positions.len()
+        );
+        assert!(dense_lake.uv_b.iter().all(|&uv| uv == [0.0, 0.0]));
+
+        let lake_sample = lake_body
+            .sample_domain(
+                Vec2::new(48.0, 48.0),
+                Some(grid.sample(48.0, 48.0)),
+                lake_spec.depth,
+            )
+            .expect("center inside lake");
+        assert!(lake_sample.depth > 1.5);
+        assert_eq!(lake_sample.flow, Vec2::ZERO);
+
+        let river_spec = RiverSpec {
+            path: vec![
+                Vec2::new(16.0, 20.0),
+                Vec2::new(48.0, 20.0),
+                Vec2::new(80.0, 26.0),
+            ],
+            width: 8.0,
+            depth: 1.4,
+            ..Default::default()
+        };
+        let mut rgrid = test_grid();
+        let river_body = carve_river(&mut rgrid, &river_spec, 1, &[]).expect("river carved");
+        let dense_river = river_water_mesh_dense(&river_spec, &river_body);
+        assert_eq!(dense_river.mesh.positions.len(), dense_river.uv_b.len());
+        assert!(
+            dense_river.mesh.positions.len()
+                > river_water_mesh(&river_spec, &river_body).positions.len() * 4,
+            "expected dense river mesh to far exceed coarse station ribbon"
+        );
+        assert!(
+            dense_river.uv_b.iter().any(|uv| uv[0].hypot(uv[1]) > 0.5),
+            "river mesh uv_b should encode downstream velocity"
+        );
+        let mid = river_body.stations[river_body.stations.len() / 2];
+        let river_sample = river_body
+            .sample_domain(mid, Some(rgrid.sample(mid.x, mid.y)), river_spec.depth)
+            .expect("midstation inside river");
+        assert!(river_sample.flow.length() > 0.5);
+    }
+
+    #[test]
+    fn test_meander_carves_asymmetric_cutbank_and_point_bar() {
+        let mut grid = flat_grid();
+        let spec = RiverSpec {
+            path: vec![
+                Vec2::new(8.0, 20.0),
+                Vec2::new(48.0, 48.0),
+                Vec2::new(88.0, 20.0),
+            ],
+            width: 8.0,
+            depth: 2.0,
+            water_offset: 0.4,
+            bank_width: 4.0,
+            bank_height: 1.0,
+            ..river_spec()
+        };
+        let body = carve_river(&mut grid, &spec, 0, &[]).expect("bend river");
+        let apex = body.stations[body.stations.len() / 2];
+        let hit = nearest_on_path(&body.stations, apex).expect("hit");
+        let curv = station_curvatures(&body.stations);
+        // Apex turns right in XZ (`d1=(+,+)` -> `d2=(+,-)`, cross < 0), so
+        // outer bend is +Z and inner bend is -Z relative to apex.
+        let outer_bank_pt = apex + Vec2::new(0.0, 5.2);
+        let inner_bar_pt = apex + Vec2::new(0.0, -5.2);
+        assert!(river_outer_bias(&body.stations, &curv, &hit, outer_bank_pt) > 0.2);
+        assert!(river_outer_bias(&body.stations, &curv, &hit, inner_bar_pt) < -0.2);
+        let outer_bed_pt = apex + Vec2::new(0.0, 2.2);
+        let inner_bed_pt = apex + Vec2::new(0.0, -2.2);
+        assert!(
+            grid.sample(outer_bed_pt.x, outer_bed_pt.y)
+                < grid.sample(inner_bed_pt.x, inner_bed_pt.y),
+            "outer thalweg must cut deeper than inner point bar: outer={} vs inner={}",
+            grid.sample(outer_bed_pt.x, outer_bed_pt.y),
+            grid.sample(inner_bed_pt.x, inner_bed_pt.y)
         );
     }
 }

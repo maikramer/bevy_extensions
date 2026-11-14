@@ -320,36 +320,26 @@ fn fragment(
     let macro_n = vnoise(world.xz / 170.0) * 0.6 + vnoise(world.xz / 55.0) * 0.4;
     albedo *= mix(MACRO_LOW, MACRO_HIGH, macro_n);
     let n_detail = normalize(select(ng, n_world, dot(n_world, n_world) > 1e-8));
+    // Capture floor biome greenness/warmth before rock overwrite so moss follows
+    // lush biomes and arid canyon cliffs warm toward weathered sandstone.
+    let biome_green = clamp((albedo.g - albedo.r * 0.96) * 8.0, 0.0, 1.0);
+    let floor_warmth = clamp((albedo.r - albedo.b) * 3.0, 0.0, 1.0) * (1.0 - biome_green);
 
-    // ── Cliff walls: triplanar 2-fetch + estratos ─────────────────────────
-    //
-    // A projeção top-down do splat estica-se nas paredes ("plastilina").
-    // Faces mais íngremes que o cliff-angle (`params.walls_a.x`; ≥ 1 desliga o
-    // caminho, const-folded) trocam o blend splat pela ROCK layer do chunk
-    // (a mountain_stone quando o chunk a carregou), com bandas de estratos
-    // em world.y a fazerem a parede ler como rocha sedimentar.
-    var wall_n = vec3<f32>(0.0, 1.0, 0.0);
+    // Precompute screen-space UVs/derivatives in uniform control flow for triplanar walls.
+    let uv_zy = vec2<f32>(world.z, world.y);
+    let uv_xy = vec2<f32>(world.x, world.y);
+    let dzy_x = dpdx(uv_zy);
+    let dzy_y = dpdy(uv_zy);
+    let dxy_x = dpdx(uv_xy);
+    let dxy_y = dpdy(uv_xy);
+
+    // ── Cliff walls, overhangs & cave mouths: 3-axis triplanar PBR + warped strata ─
+    var wall_n = n_detail;
     var tri_mix = 0.0;
     if (params.walls_a.x < 1.0) {
-        // O declive vem da normal INTERPOLADA, não das derivadas de ecrã.
-        // `cross(dpdx(world), dpdy(world))` é a normal do TRIÂNGULO: constante
-        // dentro dele e descontínua na aresta, por isso o gate saltava de
-        // triângulo para triângulo e a encosta enchia-se de manchas de pedra
-        // com bordas poligonais retas (o "faixas/manchas nas montanhas"). A
-        // normal do vértice vem de `HeightField::sample_normal` com um épsilon
-        // constante em todo o terreno: é suave entre triângulos E estável
-        // entre LODs, portanto o mesmo pixel não muda de rocha para relva
-        // quando o chunk troca de nível.
-        let geom_n = normal;
-        let slope = 1.0 - abs(geom_n.y);
-        // Gate DUPLA: declive × fator de região — o
-        // alpha das vertex colors transporta a máscara de cliff FILTRADA
-        // (componentes conexos com área/queda/extent mínimos, cozida no
-        // mesh builder). Um declive espúrio isolado tem fator 0 e nunca
-        // ganha pedra; a borda de região faz blend suave. O canal R
-        // transporta o WALL SPACE da máscara (0 = brow, 1 = pé, 0.5
-        // neutro): meteorização, AO de contacto e a distribuição de
-        // escorrimentos/musgo leem-se dele.
+        let geom_n = normalize(normal);
+        let slope = clamp(1.0 - abs(geom_n.y), 0.0, 1.0);
+        let overhang = smoothstep(-0.02, -0.35, geom_n.y);
         var region = 1.0;
         var wall = 0.5;
         @if(VERTEX_COLORS)
@@ -357,47 +347,107 @@ fn fragment(
             region = clamp(in.color.a, 0.0, 1.0);
             wall = clamp(in.color.r, 0.0, 1.0);
         }
-        let tri = smoothstep(params.walls_a.x, params.walls_a.x + params.walls_a.y, slope) * region;
+        let brow_n = (vnoise(world.xz * 0.32) - 0.5) * 0.16
+            + (vnoise(vec2<f32>(world.x + world.z, world.y) * 0.75) - 0.5) * 0.08;
+        let slope_sheer = clamp(slope + brow_n, 0.0, 1.0);
+        let sheer = smoothstep(0.32, 0.52, slope_sheer);
+        let slope_n = clamp(slope + brow_n * max(region, sheer), 0.0, 1.0);
+        let region_tri = smoothstep(params.walls_a.x, params.walls_a.x + params.walls_a.y, slope_n) * region;
+        let tri = clamp(max(region_tri, max(overhang, sheer)), 0.0, 1.0);
+        // Darken bright top-down scree/stone floor collars where they butt into cliff walls.
+        let scree_bridge = 1.0 - 0.26 * region * smoothstep(0.14, 0.36, slope) * smoothstep(0.30, 0.85, wall);
+        albedo *= scree_bridge;
         if (tri > 0.001) {
             let rock = u32(params.world.w);
             if (rock < LAYERS) {
-                // Só mistura a normal de parede quando o chunk TEM rock —
-                // sem ela o bump ficava (0,1,0) e a parede lia iluminada
-                // como chão plano (flat/estourada).
                 tri_mix = tri;
-                let uv_zy = vec2<f32>(world.z, world.y);
-                let uv_xy = vec2<f32>(world.x, world.y);
-                let dzy_x = dpdx(uv_zy);
-                let dzy_y = dpdy(uv_zy);
-                let dxy_x = dpdx(uv_xy);
-                let dxy_y = dpdy(uv_xy);
-                let use_xy = abs(geom_n.x) < abs(geom_n.z);
-                let side = select(uv_zy, uv_xy, use_xy);
-                let sd = select(dzy_x, dxy_x, use_xy);
-                let sy = select(dzy_y, dxy_y, use_xy);
                 let t = params.tiles[rock].x;
-                let rock_tex = layer_albedo(slot, rock, side / t, sd / t, sy / t);
-                // Detail normal do LUMINANCE (fallback sem bindings novas):
-                // 2 fetches extra na MESMA textura — o gradiente de
-                // luminância é o relevo da rocha. Some ao brilho à
-                // distância (flat_mix) para não cintilar longe.
-                let luma = vec3<f32>(0.299, 0.587, 0.114);
-                let bump = 1.1 * (1.0 - flat_mix);
-                if (bump > 0.01) {
-                    let e = 0.35 / t;
-                    let c0 = dot(rock_tex, luma);
-                    let cu = dot(layer_albedo(slot, rock, side / t + vec2<f32>(e, 0.0), sd / t, sy / t), luma);
-                    let cv = dot(layer_albedo(slot, rock, side / t + vec2<f32>(0.0, e), sd / t, sy / t), luma);
-                    let u_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), use_xy);
-                    wall_n = normalize(geom_n
-                        - (u_axis * (cu - c0) + vec3<f32>(0.0, 1.0, 0.0) * (cv - c0)) * bump);
+                let an = abs(geom_n);
+                let aw = pow(an, vec3<f32>(4.0));
+                let tw = aw / max(aw.x + aw.y + aw.z, 1e-4);
+
+                let u_zy = uv_zy / t;
+                let u_xy = uv_xy / t;
+                let u_xz = world.xz / t;
+                let dzy_dx = dzy_x / t;
+                let dzy_dy = dzy_y / t;
+                let dxy_dx = dxy_x / t;
+                let dxy_dy = dxy_y / t;
+                let dxz_dx = wdx / t;
+                let dxz_dy = wdy / t;
+
+                let detail = 1.0 - flat_mix;
+                var rock_tex = params.flats[rock].rgb;
+                var rock_ao = 1.0;
+                var rock_rough = params.roughs[rock].x;
+                var n_tri_pert = vec3<f32>(0.0);
+
+                if (flat_mix < FLAT_SKIP) {
+                    var c_sum = vec3<f32>(0.0);
+                    var ao_sum = 0.0;
+                    var r_sum = 0.0;
+                    if (tw.x > 0.02) {
+                        var cz = layer_albedo(slot, rock, u_zy, dzy_dx, dzy_dy);
+                        if (tile_mix > 0.01) {
+                            let c2 = layer_albedo(slot, rock, anti_tile(u_zy) + vec2<f32>(0.29, 0.17), anti_tile(dzy_dx), anti_tile(dzy_dy));
+                            cz = mix(cz, c2, tile_mix * 0.75);
+                        }
+                        c_sum += cz * tw.x;
+                        ao_sum += map_sample(slot, B_AO + 2u * rock, u_zy, dzy_dx, dzy_dy).r * tw.x;
+                        if (params.roughs[rock].y > 0.0) {
+                            let rm = map_sample(slot, B_ROUGH + 2u * rock, u_zy, dzy_dx, dzy_dy).r;
+                            let rinv = select(rm, 1.0 - rm, params.roughs[rock].z > 0.5);
+                            r_sum += mix(params.roughs[rock].x, rinv, params.roughs[rock].y) * tw.x;
+                        } else {
+                            r_sum += params.roughs[rock].x * tw.x;
+                        }
+                        let nm = map_sample(slot, B_NORMAL + 2u * rock, u_zy, dzy_dx, dzy_dy).rgb * 2.0 - 1.0;
+                        n_tri_pert += vec3<f32>(0.0, -nm.y, nm.x) * tw.x;
+                    }
+                    if (tw.z > 0.02) {
+                        var cx = layer_albedo(slot, rock, u_xy, dxy_dx, dxy_dy);
+                        if (tile_mix > 0.01) {
+                            let c2 = layer_albedo(slot, rock, anti_tile(u_xy) + vec2<f32>(0.41, 0.23), anti_tile(dxy_dx), anti_tile(dxy_dy));
+                            cx = mix(cx, c2, tile_mix * 0.75);
+                        }
+                        c_sum += cx * tw.z;
+                        ao_sum += map_sample(slot, B_AO + 2u * rock, u_xy, dxy_dx, dxy_dy).r * tw.z;
+                        if (params.roughs[rock].y > 0.0) {
+                            let rm = map_sample(slot, B_ROUGH + 2u * rock, u_xy, dxy_dx, dxy_dy).r;
+                            let rinv = select(rm, 1.0 - rm, params.roughs[rock].z > 0.5);
+                            r_sum += mix(params.roughs[rock].x, rinv, params.roughs[rock].y) * tw.z;
+                        } else {
+                            r_sum += params.roughs[rock].x * tw.z;
+                        }
+                        let nm = map_sample(slot, B_NORMAL + 2u * rock, u_xy, dxy_dx, dxy_dy).rgb * 2.0 - 1.0;
+                        n_tri_pert += vec3<f32>(nm.x, -nm.y, 0.0) * tw.z;
+                    }
+                    if (tw.y > 0.02) {
+                        let cy = layer_albedo(slot, rock, u_xz, dxz_dx, dxz_dy);
+                        c_sum += cy * tw.y;
+                        ao_sum += map_sample(slot, B_AO + 2u * rock, u_xz, dxz_dx, dxz_dy).r * tw.y;
+                        if (params.roughs[rock].y > 0.0) {
+                            let rm = map_sample(slot, B_ROUGH + 2u * rock, u_xz, dxz_dx, dxz_dy).r;
+                            let rinv = select(rm, 1.0 - rm, params.roughs[rock].z > 0.5);
+                            r_sum += mix(params.roughs[rock].x, rinv, params.roughs[rock].y) * tw.y;
+                        } else {
+                            r_sum += params.roughs[rock].x * tw.y;
+                        }
+                        let nm = map_sample(slot, B_NORMAL + 2u * rock, u_xz, dxz_dx, dxz_dy).rgb * 2.0 - 1.0;
+                        n_tri_pert += vec3<f32>(nm.x, 0.0, -nm.y) * tw.y;
+                    }
+                    rock_tex = c_sum;
+                    rock_ao = mix(1.0, ao_sum, 0.75);
+                    rock_rough = r_sum;
                 }
-                let band = world.y / params.walls_a.z;
+
+                // Geological dip + fold warp (no ruler-flat horizontal strata stripes)
+                let dip = world.x * 0.045 - world.z * 0.032;
+                let fold = (vnoise(world.xz * 0.055) - 0.5) * 2.6 + (vnoise(world.xz * 0.19) - 0.5) * 0.9;
+                let y_warp = world.y + dip + fold;
+                let band = y_warp / params.walls_a.z;
                 let band_id = floor(band);
                 let hue = fract(sin(band_id * vec3<f32>(12.9898, 78.233, 37.719)) * 43758.5453);
-                // Estratos cromáticos: cada banda puxa para um tom próprio
-                // (quente ↔ frio) e 1 em 4 bandas é um banco DURO — mais
-                // claro, o estrato resistente que sai à frente na erosão.
                 let warm = vec3<f32>(
                     1.0 - params.walls_a.w,
                     1.0 - params.walls_a.w * 0.75,
@@ -411,55 +461,90 @@ fn fragment(
                 let band_tint = mix(warm, cool, hue);
                 let band_mod = band_id - floor(band_id * 0.25) * 4.0;
                 let hard = step(band_mod, 0.5) * 0.14;
-                let line = smoothstep(0.82, 1.0, fract(band)) * params.walls_a.w * 0.8;
-                // ── Fade dos detalhes SUB-PIXEL ────────────────────────────
-                // Estratos (4 m), escorrimentos (~4 m) e o bump de luminância
-                // são detalhe de PERTO. A 300 m uma banda de 4 m ocupa ~1 px:
-                // o passo `floor(world.y / 4)` deixa de ser rocha sedimentar e
-                // vira aliasing — riscas horizontais claras/escuras a
-                // atravessar a montanha inteira (o "faixas nas montanhas"). O
-                // mesmo `flat_mix` que já achata a textura por distância
-                // desliga-os: perto nada muda, longe fica a cor plana da
-                // camada. Sem isto nenhum mipmap ajuda — a banda é aritmética
-                // no fragmento, não um texel.
-                let detail = 1.0 - flat_mix;
-                // params.walls_b.x: a parede le PEDRA ESCURA mesmo sob
-                // paletas claras — os tints por slot existem para o chao a
-                // pleno sol (mountain_stone clareia 1.35x); o rochedo
-                // devolve o texel a ~45% (o escuro do basalto da referencia).
+                let band_f = fract(band);
+                let line = smoothstep(0.84, 0.99, band_f) * params.walls_a.w * 0.85;
+                let fine_band = y_warp / (params.walls_a.z * 0.37);
+                let seam = smoothstep(0.84, 0.99, fract(fine_band)) * params.walls_a.w * 0.40;
+                // Vertical joint fissures breaking horizontal bedding planes
+                let joint_u = (world.x * 0.7 + world.z * 0.7) * 0.36
+                    + vnoise(vec2<f32>(world.x - world.z, world.y * 0.35) * 0.38) * 1.4;
+                let joint_d = abs(fract(joint_u) - 0.5) * 2.0;
+                let fissure = (1.0 - smoothstep(0.0, 0.085, joint_d))
+                    * (0.45 + 0.55 * vnoise(vec2<f32>(world.y * 0.4, world.x * 0.3)));
+
+                // Tangent-projected triplanar normal + bedding shelf bevel + detail fade
+                let strata_lip = (smoothstep(0.76, 0.92, band_f) - smoothstep(0.92, 1.0, band_f) * 1.6) * 0.28;
+                let lip_pert = vec3<f32>(0.0, strata_lip, 0.0);
+                let n_raw_pert = n_tri_pert * 1.30 + lip_pert;
+                let n_tan = n_raw_pert - geom_n * dot(n_raw_pert, geom_n);
+                wall_n = normalize(geom_n + n_tan * detail);
+
                 var rock_col = rock_tex * params.tints[rock].rgb * params.walls_b.x
+                    * mix(vec3<f32>(1.0), vec3<f32>(1.24, 1.05, 0.80), floor_warmth * 0.55)
+                    * rock_ao
                     * mix(vec3<f32>(1.0), band_tint, detail)
-                    * (1.0 - line * detail)
+                    * (1.0 - (line + seam) * detail)
+                    * (1.0 - fissure * 0.26 * detail)
                     * (1.0 + hard * detail);
-                // Meteorização vertical (wall space): o brow seca ao sol,
-                // o pé ganha poeira de detrito; AO de contacto onde a
-                // parede encosta no chão; escorrimentos — faixas verticais
-                // de água (noise esticado em Y), mais fortes na metade
-                // inferior onde a humidade escorre.
+                // Brow sun exposure, cave/overhang bounce AO, talus contact AO & damp streaks
                 let weather = mix(1.06, 0.88, wall);
                 let toe_ao = 1.0 - 0.38 * smoothstep(0.82, 0.98, wall);
+                let ceiling_ao = 1.0 - 0.44 * overhang;
                 let su = vec2<f32>((world.x + world.z) * 0.22, world.y * 0.06);
                 let streak_n = vnoise(su) * 0.65 + vnoise(su * 2.7) * 0.35;
                 let streak = 1.0
-                    - params.walls_b.y * detail * smoothstep(0.48, 0.88, streak_n) * mix(0.55, 1.0, wall);
-                rock_col = rock_col * weather * toe_ao * streak;
-                rock_col = mix(rock_col, params.flats[rock].rgb, flat_mix);
+                    - params.walls_b.y * detail * smoothstep(0.48, 0.88, streak_n)
+                    * mix(0.55, 1.0, max(wall, overhang));
+                rock_col = rock_col * weather * toe_ao * ceiling_ao * streak;
+                rock_col = mix(rock_col, params.flats[rock].rgb * (1.0 - 0.25 * overhang), flat_mix);
                 albedo = mix(albedo, rock_col, tri);
-                rough = mix(rough, params.roughs[rock].x, tri);
+                let wall_rough = clamp(mix(rock_rough, 0.54, overhang * 0.45) - fissure * 0.05, 0.24, 0.98);
+                rough = mix(rough, wall_rough, tri);
             }
         }
-        // Musgo procedural: manchas húmidas nos OMBROS e flancos médios da
-        // região de cliff (declive médio — nem o plano da relva, nem a face
-        // nua), mais denso perto do pé onde a humidade se acumula. O gate
-        // pela `region` impede musgo em colinas longe de qualquer parede.
-        // Também desvanece com a distância: as manchas têm ~6 m e ao longe
-        // viravam salpicos verdes de 1 px na encosta.
+        // Humic/moss collar along lush cliff shoulders & damp ledges; skipped on dry dunes.
         let moss_n = vnoise(world.xz * 0.17) * 0.6 + vnoise(world.xz * 0.51) * 0.4;
-        let moss_band = smoothstep(0.10, 0.20, slope) * (1.0 - smoothstep(0.50, 0.78, slope));
-        let moss = params.walls_b.z * region * moss_band * (1.0 - flat_mix)
-            * smoothstep(0.50, 0.78, moss_n)
+        let moss_band = smoothstep(0.10, 0.20, slope) * (1.0 - smoothstep(0.50, 0.78, slope))
+            * smoothstep(-0.05, 0.20, geom_n.y);
+        let moss = params.walls_b.z * region * biome_green * moss_band * (1.0 - flat_mix)
+            * smoothstep(0.48, 0.78, moss_n)
             * mix(0.55, 1.25, wall);
-        albedo = mix(albedo, vec3<f32>(0.17, 0.24, 0.08), clamp(moss, 0.0, 0.85));
+        albedo = mix(albedo, vec3<f32>(0.16, 0.23, 0.08), clamp(moss, 0.0, 0.82));
+    }
+
+    // ── Margem erodida & humidade capilar (splat3.g = wet_rim, splat3.b = erosion) ─
+    let detail_k = 1.0 - flat_mix;
+    let wet_rim_map = p3.g;
+    let bank_erode_map = p3.b;
+    var shore_n_offset = vec3<f32>(0.0);
+    var capillary_wet = 0.0;
+    if (detail_k > 0.01 && (wet_rim_map > 0.004 || bank_erode_map > 0.004)) {
+        // Organic shingle / damp soil micro-grain that breaks up 1 m splat edges.
+        let g_coarse = vnoise(world.xz * 2.1);
+        let g_fine = vnoise(world.xz * 6.9);
+        let g_micro = vnoise(world.xz * 15.7);
+        let shingle = g_coarse * 0.45 + g_fine * 0.35 + g_micro * 0.20;
+        let tide_break = g_coarse * 0.65 + g_fine * 0.35;
+
+        if (bank_erode_map > 0.004) {
+            let erode_k = bank_erode_map * detail_k;
+            let grain_tint = mix(0.76, 1.08, smoothstep(0.22, 0.78, shingle));
+            albedo *= mix(1.0, grain_tint, erode_k * 0.72);
+            rough = clamp(rough + (shingle - 0.45) * 0.14 * erode_k, 0.08, 1.0);
+            let gx_e = vnoise((world.xz + vec2<f32>(0.18, 0.0)) * 6.9)
+                - vnoise((world.xz - vec2<f32>(0.18, 0.0)) * 6.9);
+            let gz_e = vnoise((world.xz + vec2<f32>(0.0, 0.18)) * 6.9)
+                - vnoise((world.xz - vec2<f32>(0.0, 0.18)) * 6.9);
+            shore_n_offset = vec3<f32>(-gx_e, 0.0, -gz_e) * (0.42 * erode_k);
+        }
+
+        if (wet_rim_map > 0.004) {
+            capillary_wet = smoothstep(0.10, 0.90, wet_rim_map * (0.72 + 0.56 * tide_break))
+                * detail_k;
+            albedo *= mix(vec3<f32>(1.0), vec3<f32>(0.48, 0.47, 0.46), capillary_wet * 0.85);
+            let wet_rough = mix(0.13, 0.30, smoothstep(0.45, 0.85, g_fine));
+            rough = mix(rough, wet_rough, capillary_wet * 0.88);
+        }
     }
 
     // ── Chuva: chão molhado (r3) ────────────────────────────────────────────
@@ -468,9 +553,10 @@ fn fragment(
     // CHÃO plano (a rocha das paredes já é rugosa ao natural); o specular do
     // sol/IBL faz o resto.
     let wet = clamp(params.walls_b.w, 0.0, 1.0) * (1.0 - clamp(tri_mix, 0.0, 1.0) * 0.7);
-    if (wet > 0.001) {
-        albedo *= mix(1.0, 0.88, wet);
-        rough = mix(rough, 0.16, wet);
+    let rain_extra = max(wet - capillary_wet, 0.0);
+    if (rain_extra > 0.001) {
+        albedo *= mix(1.0, 0.88, rain_extra);
+        rough = mix(rough, 0.16, rain_extra);
     }
 
     // ── Aerial perspective (r2) ────────────────────────────────────────────
@@ -493,7 +579,7 @@ fn fragment(
     // e aquece o chão (sun_drive + daycycle_drive) e o tint compunha-se
     // duas vezes. `sun_dir`/`day_tint` continuam no uniform por compatibilidade
     // de layout (e para o `viber.debug.ground{...}`) mas já não são lidos.
-    let n = normalize(mix(n_detail, wall_n, clamp(tri_mix, 0.0, 1.0)));
+    let n = normalize(mix(normalize(n_detail + shore_n_offset), wall_n, clamp(tri_mix, 0.0, 1.0)));
 
     var pbr_input = pbr_input_new();
     pbr_input.flags = mesh[in.instance_index].flags;

@@ -1,27 +1,26 @@
-//! Animated water material — a WGSL [`MaterialExtension`] on top of
-//! [`StandardMaterial`] (`ExtendedMaterial`) for the lake/river mirrors built
-//! by [`super::water`].
+//! Animated volumetric water material — a two-pass [`MaterialExtension`] over
+//! [`StandardMaterial`] (`ExtendedMaterial`) paired with [`super::water_waves`].
 //!
-//! Same architecture as [`crate::sky`] (read the ARCHITECTURE NOTE there): the
-//! Bevy 0.19 slot-1 storage promotion never re-uploads custom material
-//! uniforms, so the per-world config (day clock for the glint, `<Weather>`
-//! wind for the wave field) is injected as **consts** — `viber run` rewrites
-//! the CONFIG block of `shaders/water.wesl` before the renderer loads it — and
-//! per-frame values come from the engine's `Globals` binding.
+//! Pass 1 (`AlphaMode::Multiply`, `depth_bias = 0.0`, `pass_params.x = 0.0`):
+//! multiplies the underwater scene by wavelength-dependent Beer-Lambert
+//! transmittance `(exp(-sigma * optical_path) * (1 - F) * (1 - foam))`
+//! modulated by shallow sunlit Voronoi/interference caustics on the real
+//! riverbed/submerged rocks/player boots from `prepass_depth`.
 //!
-//! The base `StandardMaterial` still carries the static surface properties
-//! (vertex colors: body color + shore fade alpha; `AlphaMode::Blend`;
-//! reflectance), while the extension fragment adds the life: wave normals,
-//! Fresnel alpha (see-through from above, mirror at grazing angles), a sky
-//! tint at grazing angles and a sun/moon glint as emissive. Lighting, shadows
-//! and fog remain the stock PBR path.
+//! Pass 2 (`AlphaMode::Add`, `depth_bias = 0.05`, `pass_params.x = 1.0`):
+//! adds volumetric subsurface scattering, backlit wave crest SSS, organic
+//! cellular triple-source foam, GGX sky/IBL/sun/moon/campfire reflections, and
+//! exact fog-compensated horizon blend.
 
 use bevy::asset::Asset;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, StandardMaterial};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
-use bevy::render::render_resource::AsBindGroup;
+use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+
+use super::water_waves::WaterWaveWorld;
+use crate::worldsys::{AtmosphereState, WeatherState};
 
 /// Template WGSL da água (defaults; `viber run` reescreve o bloco CONFIG com
 /// os valores do mundo antes de o renderer o carregar).
@@ -30,19 +29,77 @@ pub const WATER_WGSL: &str = include_str!("water.wesl");
 const CONFIG_BEGIN: &str = "// === WORLD CONFIG";
 const CONFIG_END: &str = "// === END WORLD CONFIG ===";
 
-/// Water surface = `StandardMaterial` + the animated-water extension.
+/// Water surface = `StandardMaterial` + the volumetric animated-water extension.
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExtension>;
 
-/// Extension sem bindings — tudo chega por consts especializadas no WGSL e
-/// pelo binding `Globals` da engine (mesma razão do [`crate::sky`]).
-#[derive(Debug, Clone, Asset, TypePath, AsBindGroup)]
-pub struct WaterExtension {}
+/// Live world-synced GPU uniforms for volumetric & interactive water.
+#[derive(Debug, Clone, Copy, ShaderType)]
+pub struct WaterUniforms {
+    /// `(origin_x, origin_z, world_size_m, texel_m)` of interactive wave window.
+    pub wave_window: Vec4,
+    /// `(sun_dir.x, sun_dir.y, sun_dir.z, day_factor)` pointing toward active light.
+    pub sun_dir_day: Vec4,
+    /// `(sun_tint.r, sun_tint.g, sun_tint.b, glint_strength)`.
+    pub sun_color_glint: Vec4,
+    /// `(zenith.r, zenith.g, zenith.b, rain_intensity)`.
+    pub sky_zenith_rain: Vec4,
+    /// `(horizon.r, horizon.g, horizon.b, elapsed_time)`.
+    pub sky_horizon_time: Vec4,
+    /// `(wind_x, wind_z, wind_strength, wave_amp)`.
+    pub wind_params: Vec4,
+    /// `(pass_mode [0=absorb, 1=add], caustic_gain, scatter_gain, depth_fade_max)`.
+    pub pass_params: Vec4,
+}
+
+impl Default for WaterUniforms {
+    fn default() -> Self {
+        Self::surface_default()
+    }
+}
+
+impl WaterUniforms {
+    /// Uniform defaults configured for Pass 1 (`AlphaMode::Multiply` absorption).
+    pub fn absorb_default() -> Self {
+        Self {
+            pass_params: Vec4::new(0.0, 1.15, 1.0, 55.0),
+            ..Self::surface_default()
+        }
+    }
+
+    /// Uniform defaults configured for Pass 2 (`AlphaMode::Add` surface & scatter).
+    pub fn surface_default() -> Self {
+        Self {
+            wave_window: Vec4::new(0.0, 0.0, 0.0, 0.25),
+            sun_dir_day: Vec4::new(0.35, 0.72, 0.59, 1.0),
+            sun_color_glint: Vec4::new(1.0, 0.95, 0.86, 1.0),
+            sky_zenith_rain: Vec4::new(0.085, 0.255, 0.62, 0.0),
+            sky_horizon_time: Vec4::new(0.60, 0.755, 0.90, 0.0),
+            wind_params: Vec4::new(0.7, 0.25, 1.5, 1.0),
+            pass_params: Vec4::new(1.0, 1.15, 1.0, 55.0),
+        }
+    }
+}
+
+/// Optional resource holding per-world authored wave config for runtime uniform sync.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct WaterConfigResource(pub WaterSurfaceConfig);
+
+/// Water material extension binding dynamic world uniforms, the GPU interactive
+/// wave field (`wave_tex`), and the waterbed domain map (`domain_tex`).
+#[derive(Debug, Clone, Default, Asset, TypePath, AsBindGroup)]
+pub struct WaterExtension {
+    #[uniform(100)]
+    pub params: WaterUniforms,
+    #[texture(101)]
+    #[sampler(102)]
+    pub wave_tex: Handle<Image>,
+    #[texture(103)]
+    #[sampler(104)]
+    pub domain_tex: Handle<Image>,
+}
 
 impl MaterialExtension for WaterExtension {
     fn vertex_shader() -> ShaderRef {
-        // O Bevy 0.19 usa o vertex da extensão NO LUGAR do base
-        // (extended_material.rs) — o water.wesl replica o mesh.wesl inteiro
-        // e acrescenta o deslocamento de onda (estilo bevy_water).
         "shaders/water.wesl".into()
     }
 
@@ -50,12 +107,117 @@ impl MaterialExtension for WaterExtension {
         "shaders/water.wesl".into()
     }
 
-    /// A água fica FORA do OIT (bevy 0.20): o blend dela já é analítico
-    /// (coluna de água assada por vértice + Fresnel) e o `ExtendedMaterial`
-    /// delega `enable_oit` na EXTENSÃO — false aqui põe-na fora mesmo com
-    /// `VIBER_OIT=1` na câmara (1.ª iteração: só partículas).
+    /// Water stays OUT of the depth prepass so `prepass_depth` reads the true
+    /// riverbed, submerged rocks, bridge pilings, and wading characters underneath.
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    /// Translucent water does not cast hard opaque depth shadows onto the riverbed.
+    fn enable_shadows() -> bool {
+        false
+    }
+
     fn enable_oit() -> bool {
         false
+    }
+}
+
+/// Synchronizes live sky/sun/wind/rain/time and GPU wave-window uniforms into
+/// every active [`WaterMaterial`] each frame without shader regeneration.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_water_materials(
+    materials: Option<ResMut<Assets<WaterMaterial>>>,
+    waves: Option<Res<WaterWaveWorld>>,
+    atmo: Option<Res<AtmosphereState>>,
+    weather: Option<Res<WeatherState>>,
+    time: Option<Res<Time>>,
+    cfg: Option<Res<WaterConfigResource>>,
+    lights: Query<(&GlobalTransform, &DirectionalLight)>,
+) {
+    let Some(mut materials) = materials else {
+        return;
+    };
+    if materials.is_empty() {
+        return;
+    }
+
+    let elapsed = time.as_ref().map_or(0.0, |t| t.elapsed_secs());
+    let base_cfg = cfg.as_ref().map(|c| &c.0);
+    let wave_amp = base_cfg.map_or(1.0, |c| c.wave_amp);
+
+    let (wind_x, wind_z, wind_strength, rain) = if let Some(w) = weather.as_ref() {
+        (w.wind[0], w.wind[1], w.wind_strength, w.rain.clamp(0.0, 1.0))
+    } else if let Some(c) = base_cfg {
+        (c.wind[0], c.wind[1], c.wind_strength, 0.0)
+    } else {
+        (0.7, 0.25, 1.5, 0.0)
+    };
+
+    let (sun_dir, day, glint_color, glint_strength, zenith, horizon) =
+        if let Some(a) = atmo.as_ref() {
+            let active_dir = if a.day >= 0.35 {
+                a.sun_dir.normalize_or(Vec3::Y)
+            } else {
+                a.moon_dir.normalize_or(Vec3::Y)
+            };
+            let color = Vec3::from_array(a.sun_tint);
+            let strength = (0.25 + 0.75 * a.day) * (1.0 - 0.65 * rain);
+            (
+                active_dir,
+                a.day,
+                color,
+                strength,
+                Vec3::from_array(a.zenith),
+                Vec3::from_array(a.horizon),
+            )
+        } else if let Some((tf, dl)) = lights.iter().next() {
+            let dir: Vec3 = tf.back().into();
+            let c = dl.color.to_linear();
+            let day_est = (dir.y * 3.0).clamp(0.0, 1.0);
+            (
+                dir.normalize_or(Vec3::Y),
+                day_est,
+                Vec3::new(c.red, c.green, c.blue),
+                (0.3 + 0.7 * day_est) * (1.0 - 0.65 * rain),
+                Vec3::new(0.085, 0.255, 0.62),
+                Vec3::new(0.60, 0.755, 0.90),
+            )
+        } else {
+            (
+                Vec3::new(0.35, 0.72, 0.59).normalize(),
+                1.0,
+                Vec3::new(1.0, 0.95, 0.86),
+                1.0 - 0.65 * rain,
+                Vec3::new(0.085, 0.255, 0.62),
+                Vec3::new(0.60, 0.755, 0.90),
+            )
+        };
+
+    let wave_window = waves.as_ref().map_or(Vec4::ZERO, |w| {
+        if w.active_water {
+            w.window_vec4()
+        } else {
+            Vec4::ZERO
+        }
+    });
+
+    for (_id, mat) in materials.iter_mut() {
+        let p = &mut mat.extension.params;
+        p.wave_window = wave_window;
+        p.sun_dir_day = sun_dir.extend(day);
+        p.sun_color_glint = glint_color.extend(glint_strength);
+        p.sky_zenith_rain = zenith.extend(rain);
+        p.sky_horizon_time = horizon.extend(elapsed);
+        p.wind_params = Vec4::new(wind_x, wind_z, wind_strength, wave_amp);
+        if let Some(w) = waves.as_ref() {
+            if mat.extension.wave_tex != w.wave_tex {
+                mat.extension.wave_tex = w.wave_tex.clone();
+            }
+            if mat.extension.domain_tex != w.domain_tex {
+                mat.extension.domain_tex = w.domain_tex.clone();
+            }
+        }
     }
 }
 
@@ -196,14 +358,9 @@ fn walk_entities(specs: &[crate::recipes::EntitySpec], config: &mut WaterSurface
                 config.wind = *wind;
                 config.wind_strength = *wind_strength;
             }
-            // `ripple` do lago com o maior valor do mundo — é o multiplier
-            // de amplitude das ondas (`CFG_WAVE_AMP`).
             crate::recipes::EntityKind::Lake { spec } => {
                 config.wave_amp = config.wave_amp.max(spec.ripple.clamp(0.2, 2.0));
             }
-            // `<Sky sun-elevation/sun-azimuth>`: sem `<DayCycle>` o domo usa
-            // estes valores, mas a água ficava com os defaults 17°/205° e o
-            // brilho especular apontava para um sol que não está no céu.
             crate::recipes::EntityKind::HudElement { tag, attrs } if tag == "sky" => {
                 let f = |key: &str| {
                     attrs
@@ -258,17 +415,12 @@ mod tests {
         assert!(shader.contains("const CFG_DRIVE: f32 = 1;"));
         assert!(shader.contains("const CFG_CLOCK_START: f32 = 1140;"));
         assert!(shader.contains("const CFG_WIND_STRENGTH: f32 = 2.5;"));
-        // O corpo do shader sobrevive à substituição.
         assert!(shader.contains("fn fragment"));
         assert!(shader.contains("wave_normal"));
+        assert!(shader.contains("prepass_depth"));
         assert_eq!(shader.matches(CONFIG_END).count(), 1);
     }
 
-    /// O template compilado não pode levar overlays de debug. Um split de
-    /// diagnóstico esquecido no WGSL passa despercebido em `cargo test` e em
-    /// `cargo clippy` — só aparece na janela do jogo, e como o shader gerado
-    /// só é reescrito no ARRANQUE, uma instância já aberta continua a
-    /// mostrá-lo mesmo depois do fix. Esta guarda é o que trava isso.
     #[test]
     fn test_shader_template_has_no_debug_overlay() {
         for marker in ["DEBUG SPLIT", "DEBUG OVERLAY", "viewport.z / 3.0"] {
@@ -277,19 +429,78 @@ mod tests {
                 "overlay de debug (`{marker}`) esquecido em water.wesl"
             );
         }
-        // O caminho normal termina no PBR, não num write directo de cor.
         assert!(WATER_WGSL.contains("out.color = main_pass_post_lighting_processing"));
-        // O vertex com deslocamento de onda (estilo bevy_water) TEM de
-        // existir — sem ele a extensão devolvia o vertex base e as cristas
-        // perdiam o parallax em silêncio.
         assert!(
             WATER_WGSL.contains("fn vertex(vertex_no_morph: Vertex) -> VertexOutput")
                 && WATER_WGSL.contains("VERTEX_WAVE_GAIN"),
             "vertex shader da água com deslocamento de onda ausente"
         );
+        assert!(!WaterExtension::enable_prepass());
+        assert!(!WaterExtension::enable_shadows());
+        assert!(!WaterExtension::enable_oit());
     }
 
-    /// `from_world` lê `<DayCycle>` e `<Weather>` (incl. filhos).
+    #[test]
+    fn test_sync_water_materials_preserves_pass_mode_and_updates_env() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(Assets::<WaterMaterial>::default());
+        app.insert_resource(AtmosphereState {
+            sun_dir: Vec3::new(0.0, 0.6, 0.8),
+            day: 0.9,
+            zenith: [0.1, 0.3, 0.7],
+            horizon: [0.5, 0.7, 0.9],
+            sun_tint: [1.0, 0.9, 0.8],
+            ..Default::default()
+        });
+        app.insert_resource(WeatherState {
+            wind: [0.6, -0.8],
+            wind_strength: 2.2,
+            clouds: 0.2,
+            rain: 0.45,
+            cycle: false,
+        });
+        app.add_systems(Update, sync_water_materials);
+
+        let (absorb_h, surface_h) = {
+            let mut mats = app.world_mut().resource_mut::<Assets<WaterMaterial>>();
+            let a = mats.add(WaterMaterial {
+                base: StandardMaterial {
+                    alpha_mode: bevy::material::AlphaMode::Multiply,
+                    depth_bias: 0.0,
+                    ..Default::default()
+                },
+                extension: WaterExtension {
+                    params: WaterUniforms::absorb_default(),
+                    ..Default::default()
+                },
+            });
+            let s = mats.add(WaterMaterial {
+                base: StandardMaterial {
+                    alpha_mode: bevy::material::AlphaMode::Add,
+                    depth_bias: 0.05,
+                    ..Default::default()
+                },
+                extension: WaterExtension {
+                    params: WaterUniforms::surface_default(),
+                    ..Default::default()
+                },
+            });
+            (a, s)
+        };
+
+        app.update();
+
+        let mats = app.world().resource::<Assets<WaterMaterial>>();
+        let absorb = mats.get(&absorb_h).unwrap();
+        let surface = mats.get(&surface_h).unwrap();
+        assert_eq!(absorb.extension.params.pass_params.x, 0.0);
+        assert_eq!(surface.extension.params.pass_params.x, 1.0);
+        assert!((surface.extension.params.sky_zenith_rain.w - 0.45).abs() < 1e-4);
+        assert!((surface.extension.params.wind_params.z - 2.2).abs() < 1e-4);
+        assert!((surface.extension.params.sun_dir_day.w - 0.9).abs() < 1e-4);
+    }
+
     #[test]
     fn test_water_config_from_world() {
         let world = vec![
@@ -329,7 +540,6 @@ mod tests {
         assert_eq!(config.min_elev, 8.0);
         assert_eq!(config.wind, [1.0, 0.0]);
         assert_eq!(config.wind_strength, 3.0);
-        // Defaults preservados na ausência de <Weather>/<DayCycle>.
         let bare = WaterSurfaceConfig::from_world(&[spec(EntityKind::Group)]);
         assert!(!bare.drive);
         assert_eq!(bare.wind_strength, 1.5);

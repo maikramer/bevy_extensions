@@ -55,6 +55,7 @@ pub mod voxel;
 pub mod water;
 pub mod water_fx;
 pub mod water_material;
+pub mod water_waves;
 
 pub use brush::{BrushGrid, BrushMode};
 pub use cliffs::{CliffMask, CliffProfile, CliffSide, CliffSpec, sharpen_terrain};
@@ -78,3 +79,4 @@ pub use voxel::{
 pub use water::{LakeSpec, RiverSpec, WaterBody, WaterKind};
 pub use water_fx::WaterFxPlugin;
 pub use water_material::{WaterExtension, WaterMaterial, WaterSurfaceConfig};
+pub use water_waves::{WaterKinematics, WaterWavePlugin, WaterWaveWorld, WaveImpulseRequest};
