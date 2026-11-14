@@ -24,5 +24,7 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+bevy_ext_terrain_runtime = { workspace = true }
+
 [dev-dependencies]
 tempfile.workspace = true

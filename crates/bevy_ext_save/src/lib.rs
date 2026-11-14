@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
+use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
 use bevy_ext_world::DeltaPatch;
 use serde::{Deserialize, Serialize};
 
@@ -389,6 +390,72 @@ pub fn load_from_disk(path: &Path) -> Result<SaveGame, String> {
     Ok(game)
 }
 
+// ── ponte de save/load em runtime ────────────────────────────────────────
+//
+// O pedido e os recortes pendentes viveram no monólito (`save.rs`); cá fica
+// a definição — o monólito re-exporta para `viber::save::…` continuar a
+// resolver e o host Luau (`viber.save()`/`viber.load()`) continua a escrever
+// O MESMO recurso.
+
+/// Pedido de save/load vindo de SCRIPT (`viber.save()` / `viber.load()`) —
+/// o host de scripts não pode chamar o sistema de save de dentro do Luau, e
+/// o host sem ficheiro `world_kv` não teria como persistir num mundo sem o
+/// plugin de opções. Consumido (e limpo) pelo sistema de opções do runtime.
+#[derive(Debug, Default, Resource, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::save"]
+pub struct SaveRequest {
+    pub save: bool,
+    pub load: bool,
+    /// `None` = save legado; `0` = autosave; `1..` = slot manual.
+    pub slot: Option<u32>,
+}
+
+/// Recortes de terreno de um save à espera do `TerrainRuntime` certo.
+///
+/// Importar logo no load punha-os no runtime da cena VELHA: num load que
+/// troca de cena, a troca substitui o `TerrainRuntime` e os recortes
+/// perdiam-se — ou caíam no terreno PEQUENO da cena errada (o menu tem o seu
+/// próprio campo). Ficam pendentes; [`apply_pending_save_patches`] importa-os
+/// no primeiro runtime vivo fora de uma troca (na mesma cena: no fim do
+/// próprio frame do load).
+#[derive(Debug, Default, Resource, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::save"]
+pub struct PendingSavePatches(pub Vec<DeltaPatch>);
+
+/// Um loader de cena que pode estar a meio de uma troca (o `busy()` do
+/// `SceneLoader`). Contrato SEM tipo: o save não conhece o loader — quem
+/// regista [`apply_pending_save_patches`] concreta o `S` e implementa isto
+/// sobre o tipo dele.
+pub trait SceneSwitchBusy {
+    fn busy(&self) -> bool;
+}
+
+/// Consome [`PendingSavePatches`] assim que haja terreno vivo e nenhuma troca
+/// em curso (`import_patches` sobe a revisão — o mesher volta a cozer as
+/// colunas tocadas, valha importar cedo ou tarde).
+///
+/// Genérico sobre o loader de cena ([`SceneSwitchBusy`]): regista com o tipo
+/// concreto do runtime (`apply_pending_save_patches::<SceneLoader>`).
+pub fn apply_pending_save_patches<S: Resource + SceneSwitchBusy>(
+    mut pending: ResMut<PendingSavePatches>,
+    mut runtime: Option<ResMut<TerrainRuntime>>,
+    loader: Option<Res<S>>,
+) {
+    if pending.0.is_empty() {
+        return;
+    }
+    let Some(runtime) = runtime.as_deref_mut() else {
+        return; // sala sem terreno: espera pela volta ao campo principal
+    };
+    if loader.as_deref().is_some_and(SceneSwitchBusy::busy) {
+        return;
+    }
+    std::sync::Arc::make_mut(&mut runtime.deltas).import_patches(&pending.0);
+    pending.0.clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +620,155 @@ mod tests {
         assert_eq!(rows[4].slot, 4);
         assert!(rows[4].exists);
         assert_eq!(rows[4].scene.as_deref(), Some("main"));
+    }
+
+    /// Os recortes de terreno de um load ESPERAM por terreno vivo: importá-los
+    /// no runtime da cena velha perdia-os na troca (ou caía no campo pequeno
+    /// da cena errada). Sem `TerrainRuntime` fica pendente; com um, importa e
+    /// limpa.
+    #[test]
+    fn pending_save_patches_wait_for_a_live_terrain() {
+        use bevy::ecs::system::RunSystemOnce as _;
+
+        #[derive(Resource, Default)]
+        struct IdleLoader;
+        impl SceneSwitchBusy for IdleLoader {
+            fn busy(&self) -> bool {
+                false
+            }
+        }
+
+        fn small_runtime() -> TerrainRuntime {
+            let spec = bevy_ext_terrain_runtime::spec::TerrainSpec {
+                world_size: 128.0,
+                max_height: 40.0,
+                seed: 5,
+                ..bevy_ext_terrain_runtime::spec::TerrainSpec::default()
+            };
+            let map = bevy_ext_terrain_runtime::HeightMapU16::procedural(
+                &spec,
+                spec.resolution.max(1) as usize,
+            );
+            let grid = bevy_ext_terrain_runtime::BrushGrid::from_height_map(
+                &map,
+                spec.world_size,
+                spec.max_height,
+                spec.height_smoothing,
+            )
+            .expect("grid builds");
+            TerrainRuntime {
+                spec,
+                grid: std::sync::Arc::new(grid),
+                water: vec![],
+                roads: vec![],
+                pads: vec![],
+                voxel: std::sync::Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+                deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::DeltaGrid::default()),
+                paint: std::sync::Arc::new(bevy_ext_terrain_runtime::PaintGrid::default()),
+                splat_tuning: Default::default(),
+            }
+        }
+
+        let mut app = App::new();
+        app.init_resource::<PendingSavePatches>();
+        app.world_mut().resource_mut::<PendingSavePatches>().0.push(
+            DeltaPatch {
+                min: [0.0, 0.0],
+                step: [1.0, 1.0],
+                cols: 2,
+                rows: 2,
+                data: vec![1.0, 2.0, 3.0, 4.0],
+            },
+        );
+        // Sem terreno vivo (interior/menu à espera): fica pendente.
+        app.world_mut()
+            .run_system_once(apply_pending_save_patches::<IdleLoader>)
+            .unwrap();
+        assert_eq!(
+            app.world().resource::<PendingSavePatches>().0.len(),
+            1,
+            "sem terreno os recortes esperam"
+        );
+        // Terreno vivo: importa e limpa o pendente.
+        app.insert_resource(small_runtime());
+        app.world_mut()
+            .run_system_once(apply_pending_save_patches::<IdleLoader>)
+            .unwrap();
+        assert!(app.world().resource::<PendingSavePatches>().0.is_empty());
+        let runtime = app.world().resource::<TerrainRuntime>();
+        assert_eq!(
+            runtime.deltas.export_patches().len(),
+            1,
+            "o recorte entrou no runtime vivo"
+        );
+    }
+
+    /// Loader OCUPADO (troca de cena a meio): o import espera — os recortes
+    /// iam cair no runtime que a troca substitui.
+    #[test]
+    fn pending_save_patches_wait_for_a_busy_scene_loader() {
+        use bevy::ecs::system::RunSystemOnce as _;
+
+        #[derive(Resource, Default)]
+        struct BusyLoader;
+        impl SceneSwitchBusy for BusyLoader {
+            fn busy(&self) -> bool {
+                true
+            }
+        }
+
+        let mut app = App::new();
+        app.init_resource::<PendingSavePatches>();
+        app.init_resource::<BusyLoader>();
+        app.insert_resource(small_runtime_of());
+        app.world_mut().resource_mut::<PendingSavePatches>().0.push(
+            DeltaPatch {
+                min: [0.0, 0.0],
+                step: [1.0, 1.0],
+                cols: 1,
+                rows: 1,
+                data: vec![5.0],
+            },
+        );
+        app.world_mut()
+            .run_system_once(apply_pending_save_patches::<BusyLoader>)
+            .unwrap();
+        assert_eq!(
+            app.world().resource::<PendingSavePatches>().0.len(),
+            1,
+            "com a troca em curso os recortes esperam"
+        );
+    }
+
+    // Igual a `small_runtime` mas fora do bloco do outro teste.
+    fn small_runtime_of() -> TerrainRuntime {
+        let spec = bevy_ext_terrain_runtime::spec::TerrainSpec {
+            world_size: 64.0,
+            max_height: 20.0,
+            seed: 7,
+            ..bevy_ext_terrain_runtime::spec::TerrainSpec::default()
+        };
+        let map = bevy_ext_terrain_runtime::HeightMapU16::procedural(
+            &spec,
+            spec.resolution.max(1) as usize,
+        );
+        let grid = bevy_ext_terrain_runtime::BrushGrid::from_height_map(
+            &map,
+            spec.world_size,
+            spec.max_height,
+            spec.height_smoothing,
+        )
+        .expect("grid builds");
+        TerrainRuntime {
+            spec,
+            grid: std::sync::Arc::new(grid),
+            water: vec![],
+            roads: vec![],
+            pads: vec![],
+            voxel: std::sync::Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::PaintGrid::default()),
+            splat_tuning: Default::default(),
+        }
     }
 }
