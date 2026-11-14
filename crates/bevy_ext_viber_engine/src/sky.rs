@@ -653,7 +653,7 @@ pub fn sky_material_drive(
 /// silêncio — o domo ficava para trás e o rim aparecia no topo do frame).
 pub fn sky_follow_camera(
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<bevy::camera::Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     mut domes: Query<&mut Transform, With<SkyDome>>,
 ) {
     // `iter().next()` e não `single()`: ≥2 câmaras 3d falhavam o `single()`

@@ -158,17 +158,46 @@ pub fn editor_camera_inactive(state: Option<Res<EditorCamState>>) -> bool {
     state.is_none_or(|state| !state.active)
 }
 
+/// Query element accepted by [`active_camera_eye`]: keeps `Camera` and
+/// `RenderTarget` optional so headless `MinimalPlugins` tests spawning bare
+/// `Camera3d` work identically while real renders skip inactive or offscreen
+/// `Camera3d` entities (such as `bevy_flora` impostor bake cameras).
+pub type EyeCameraQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static GlobalTransform,
+        Option<&'static Camera>,
+        Option<&'static bevy::camera::RenderTarget>,
+    ),
+    With<Camera3d>,
+>;
+
+/// Returns `true` when the camera entity represents an active window view
+/// rather than an offscreen bake/thumbnail target (`RenderTarget::Image`) or
+/// suppressed gameplay camera (`is_active == false`).
+pub fn is_window_camera(
+    cam: Option<&Camera>,
+    target: Option<&bevy::camera::RenderTarget>,
+) -> bool {
+    let active = cam.is_none_or(|c| c.is_active);
+    let window = target.is_none_or(|t| matches!(t, bevy::camera::RenderTarget::Window(_)));
+    active && window
+}
+
 /// O olho activo do momento: a câmara de editor quando existe (modo free),
-/// senão a primeira `Camera3d` (a do jogo). Quem segue "a câmara" — domo do
-/// céu (`sky_follow_camera`), culling/LOD (`render_lod`), relva (`grass`) —
-/// TEM de usar isto: com `--camera free` há DUAS `Camera3d` no mundo (a de
-/// jogo inactiva) e `iter().next()` devolve uma arbitrária — o domo ficava
-/// preso ao herói e o LOD cullava as árvores vistas da câmara de editor.
+/// senão a primeira `Camera3d` activa em janela (a do jogo, ignorando
+/// câmaras offscreen como o bake de impostores da flora).
 pub fn active_camera_eye<'w>(
     editor: &'w Query<&GlobalTransform, With<EditorCamera>>,
-    cameras: &'w Query<&GlobalTransform, With<Camera3d>>,
+    cameras: &'w EyeCameraQuery<'w, '_>,
 ) -> Option<&'w GlobalTransform> {
-    editor.iter().next().or_else(|| cameras.iter().next())
+    editor.iter().next().or_else(|| {
+        cameras
+            .iter()
+            .find(|(_, cam, target)| is_window_camera(*cam, *target))
+            .map(|(tf, _, _)| tf)
+    })
 }
 
 /// Câmara livre de editor, ligada por `viber run --camera free`. Aditivo por
@@ -494,5 +523,38 @@ mod tests {
         let forward = transform.forward();
         let to_target = (expected_target - expected_eye).normalize();
         assert!(forward.dot(to_target) > 0.999, "não está a olhar ao alvo");
+    }
+
+    #[test]
+    fn test_active_camera_eye_skips_offscreen_render_targets() {
+        let mut app = App::new();
+        app.add_plugins(bevy::app::TaskPoolPlugin::default())
+            .add_plugins(bevy::time::TimePlugin)
+            .add_plugins(bevy::transform::TransformPlugin);
+        // Offscreen camera (e.g. flora impostor bake at z = 30098) spawned first
+        // with RenderTarget::Image must be ignored in favour of window camera.
+        app.world_mut().spawn((
+            Camera3d::default(),
+            bevy::camera::RenderTarget::Image(Handle::default().into()),
+            Transform::from_xyz(0.0, 22.0, 30098.0),
+        ));
+        app.world_mut().spawn((
+            Camera3d::default(),
+            bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Primary),
+            Transform::from_xyz(12.0, 45.0, -8.0),
+        ));
+        #[derive(Resource, Default)]
+        struct Seen(Option<Vec3>);
+        app.init_resource::<Seen>();
+        app.add_systems(
+            bevy::app::Update,
+            |editor: Query<&GlobalTransform, With<EditorCamera>>,
+             cams: EyeCameraQuery,
+             mut seen: ResMut<Seen>| {
+                seen.0 = active_camera_eye(&editor, &cams).map(GlobalTransform::translation);
+            },
+        );
+        app.update();
+        assert_eq!(app.world().resource::<Seen>().0, Some(Vec3::new(12.0, 45.0, -8.0)));
     }
 }

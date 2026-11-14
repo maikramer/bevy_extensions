@@ -614,7 +614,7 @@ fn stream_grass_tiles(
     cliffs: Option<Res<crate::terrain::cliffs::CliffMask>>,
     exclusions: Option<Res<crate::spawner::SpawnExclusions>>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GrassMaterial>>,
     mut starve: Local<StarveDiag>,

@@ -522,7 +522,7 @@ fn light_budget_system(
     // câmara do editor pelo mapa.
     time: Res<Time<bevy::time::Real>>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     lights: Query<(Entity, &GlobalTransform), (With<PointLight>, Without<Camera3d>)>,
     shadow_lights: Query<(Entity, &GlobalTransform), (With<PointLight>, With<AuthoredShadowLight>)>,
     mut visibilities: Query<&mut Visibility, With<PointLight>>,
@@ -761,7 +761,7 @@ fn sfx_player_system(
     mut events: MessageReader<SfxEvent>,
     handles: Option<Res<SfxHandles>>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    listeners: Query<&GlobalTransform, With<Camera3d>>,
+    listeners: crate::editor_camera::EyeCameraQuery,
     mixer: Option<Res<crate::music::AudioMixerSettings>>,
     sfx: Option<Res<bevy_kira_audio::AudioChannel<crate::music::SfxBus>>>,
     mut rng: Local<u32>,

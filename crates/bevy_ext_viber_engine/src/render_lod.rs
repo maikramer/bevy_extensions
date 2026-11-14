@@ -384,7 +384,7 @@ fn retag_no_shadow_on_ready(
 /// (para o mais barato) e volta pronta quando a câmara chega perto.
 fn update_mesh_lod(
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     // `Option`: apps mínimas de teste não montam o TimePlugin; sem tempo,
     // não há throttle (o comportamento antigo).
     time: Option<Res<Time>>,

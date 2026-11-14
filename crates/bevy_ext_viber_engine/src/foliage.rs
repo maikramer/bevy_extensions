@@ -134,7 +134,7 @@ fn tile_center(key: IVec2) -> Vec2 {
 
 pub fn batch_tiles(
     mut commands: Commands,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: crate::editor_camera::EyeCameraQuery,
     editor_camera: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     foliage: Query<(Entity, &GlobalTransform, &SimpleFoliage, &Visibility)>,

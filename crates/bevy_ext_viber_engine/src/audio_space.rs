@@ -55,7 +55,11 @@ impl Plugin for AudioSpacePlugin {
 fn ensure_listener(
     mut commands: Commands,
     cameras: Query<
-        Entity,
+        (
+            Entity,
+            Option<&Camera>,
+            Option<&bevy::camera::RenderTarget>,
+        ),
         (
             With<Camera3d>,
             Without<bevy_kira_audio::SpatialAudioReceiver>,
@@ -66,7 +70,10 @@ fn ensure_listener(
     if existing.iter().next().is_some() {
         return;
     }
-    if let Some(camera) = cameras.iter().next() {
+    if let Some((camera, _, _)) = cameras
+        .iter()
+        .find(|(_, cam, target)| crate::editor_camera::is_window_camera(*cam, *target))
+    {
         commands
             .entity(camera)
             .insert(bevy_kira_audio::SpatialAudioReceiver);

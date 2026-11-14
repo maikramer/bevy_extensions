@@ -286,7 +286,7 @@ fn update_voxel_columns(
     runtime: Option<Res<TerrainRuntime>>,
     published: Option<Res<TerrainChunkMaterials>>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     players: Query<&GlobalTransform, With<crate::player::Player>>,
     mut columns: Query<(Entity, &mut TerrainChunk, Option<&mut ColumnBuild>)>,
     boxes: Query<(), With<super::voxel::VoxelChunk>>,

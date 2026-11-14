@@ -665,7 +665,7 @@ pub fn script_sound_loops(
     ambience_channel: Option<Res<AudioChannel<AmbienceBus>>>,
     mut instances: ResMut<Assets<AudioInstance>>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    listeners: Query<&GlobalTransform, With<Camera3d>>,
+    listeners: crate::editor_camera::EyeCameraQuery,
 ) {
     let (Some(channel), Some(config)) = (channel, config) else {
         return;

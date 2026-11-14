@@ -1565,7 +1565,14 @@ pub fn stream_voxel_colliders(
     mut status: ResMut<TerrainCollisionStatus>,
     runtime: Option<Res<crate::terrain::runtime::TerrainRuntime>>,
     players: Query<(Entity, &GlobalTransform), With<crate::player::Player>>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::player::Player>)>,
+    cameras: Query<
+        (
+            &GlobalTransform,
+            Option<&Camera>,
+            Option<&bevy::camera::RenderTarget>,
+        ),
+        (With<Camera3d>, Without<crate::player::Player>),
+    >,
     columns: Query<(
         Entity,
         &crate::terrain::plugin::TerrainChunk,
@@ -1587,7 +1594,12 @@ pub fn stream_voxel_colliders(
         .collect();
     let mut anchors: Vec<Vec3> = player_anchors.iter().map(|(_, pos)| *pos).collect();
     if anchors.is_empty() {
-        anchors.extend(cameras.iter().take(1).map(GlobalTransform::translation));
+        anchors.extend(
+            cameras
+                .iter()
+                .find(|(_, cam, target)| crate::editor_camera::is_window_camera(*cam, *target))
+                .map(|(t, _, _)| t.translation()),
+        );
     }
     if anchors.is_empty() {
         return;
