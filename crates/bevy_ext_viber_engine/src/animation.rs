@@ -85,6 +85,31 @@ pub const AIRBORNE_GRACE: f32 = 0.10;
 /// Air-time mínimo (s) para uma aterragem tocar o one-shot `jumpland` —
 /// descidas de escada e flickers de declive não são aterragens.
 pub const LANDING_AIR_TIME: f32 = 0.25;
+/// Submersão (m, da lâmina à raiz do herói) a partir da qual a animação troca
+/// para nadar/boiar.
+///
+/// Espelha o `SWIM_DEPTH` do controller do Vael (`src/player.rs`): a física
+/// mantém o herói com a raiz (pés) ~1 m abaixo da linha de água, e os clips
+/// de natação vêm com o root NA linha de água (offset +1 m baked no pelvis —
+/// ver `tools/offset_anim.py` no Vael). Abaixo deste limiar o herói está a
+/// vadear: continue com walk/idle.
+pub const SWIM_SUBMERSION: f32 = 0.88;
+/// Velocidade planar (m/s) acima da qual o estado de água é nadar em vez de
+/// boiar. O herói nada a ~2,3 m/s (4,0 m/s × drag 0,58 do controller).
+pub const SWIM_MOVE_GATE: f32 = 0.6;
+
+/// Estado de água para a animação: `Swim` a mover, `SwimIdle` parado,
+/// `None` fora de água (o chamador mantém o estado seco).
+pub fn water_state(planar_speed: f32, submerged: bool) -> Option<AnimState> {
+    if !submerged {
+        return None;
+    }
+    Some(if planar_speed >= SWIM_MOVE_GATE {
+        AnimState::Swim
+    } else {
+        AnimState::SwimIdle
+    })
+}
 /// Cooldown do hit-react por entidade (s): rajadas de dano no mesmo pack de
 /// frames fazem UMA reação de flinch, não um loop de tremores.
 pub const HIT_REACT_COOLDOWN: f32 = 0.4;
@@ -363,6 +388,11 @@ pub enum AnimState {
     Run,
     Jump,
     Fall,
+    /// A nadar à superfície (em movimento) — ver [`water_state`].
+    Swim,
+    /// A boiar/tear água, parado. Substitui Jump/Fall enquanto o herói está
+    /// submerso até ao peito.
+    SwimIdle,
 }
 
 impl AnimState {
@@ -378,6 +408,8 @@ impl AnimState {
             AnimState::Run => &["run", "sprint", "runforward", "jog"],
             AnimState::Jump => &["jump", "jumpup", "jumpstart"],
             AnimState::Fall => &["fall", "falling", "jumpair", "jump"],
+            AnimState::Swim => &["swim", "swimfwd", "swimforward", "swimfast"],
+            AnimState::SwimIdle => &["swimidle", "tread", "treadwater", "float"],
         }
     }
 
@@ -392,6 +424,8 @@ impl AnimState {
             AnimState::Run => &[AnimState::Walk, AnimState::Idle],
             AnimState::Jump => &[AnimState::Fall, AnimState::Idle],
             AnimState::Fall => &[AnimState::Jump, AnimState::Idle],
+            AnimState::Swim => &[AnimState::SwimIdle, AnimState::Walk, AnimState::Idle],
+            AnimState::SwimIdle => &[AnimState::Swim, AnimState::Idle],
         }
     }
 }
@@ -1280,6 +1314,7 @@ pub fn drive_player_animation(
     mut players: PlayerQuery,
     handles: Query<&AnimationGraphHandle>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    terrain: Option<Res<crate::terrain::runtime::TerrainRuntime>>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs().max(1e-4);
@@ -1316,9 +1351,22 @@ pub fn drive_player_animation(
                 MotionGates::HERO,
             );
         }
+        // Água: submerso até ao peito, nadar/boiar substituem Jump/Fall (a
+        // mola de flutuação oscila o `vel_y` e o estado aéreo piscava a cada
+        // inversão). A cota vem do terreno — a mesma que a física consulta.
+        let submerged = terrain
+            .as_deref()
+            .and_then(|rt| rt.water_surface_at(transform.translation.x, transform.translation.z))
+            .is_some_and(|water_y| water_y - transform.translation.y >= SWIM_SUBMERSION);
+        if let Some(water) = water_state(animator.speed, submerged) {
+            state = water;
+        }
         let blended = animator.locomotion.is_some()
             && !animator.is_busy()
-            && !matches!(state, AnimState::Jump | AnimState::Fall);
+            && !matches!(
+                state,
+                AnimState::Jump | AnimState::Fall | AnimState::Swim | AnimState::SwimIdle
+            );
         if let Ok(handle) = handles.get(animator.player) {
             let weights = locomotion_weights(animator.speed, MotionGates::HERO, MotionSpeeds::HERO);
             drive_locomotion_blend(
@@ -1600,6 +1648,7 @@ impl bevy::app::Plugin for AnimationPlugin {
             bevy::app::Update,
             (
                 rearm_after_scene_swap,
+                play_pending_gestures,
                 tick_animator_actions,
                 // O flinch corre antes dos drivers: um one-shot que ele toca
                 // bloqueia o `play_state` do driver no mesmo frame (`is_busy`).
@@ -1619,6 +1668,29 @@ impl bevy::app::Plugin for AnimationPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Água: nadar com velocidade, boiar parado, e nada fora de água.
+    #[test]
+    fn water_state_picks_swim_or_float_only_when_submerged() {
+        assert_eq!(water_state(2.3, true), Some(AnimState::Swim));
+        assert_eq!(water_state(0.0, true), Some(AnimState::SwimIdle));
+        assert_eq!(water_state(SWIM_MOVE_GATE - 1e-3, true), Some(AnimState::SwimIdle));
+        assert_eq!(water_state(2.3, false), None);
+        assert_eq!(water_state(0.0, false), None);
+    }
+
+    /// Os estados novos têm clips para procurar e fallbacks que nunca os
+    /// prendem num rig sem natação (cai para walk/idle).
+    #[test]
+    fn swim_states_have_clip_candidates_and_safe_fallbacks() {
+        assert!(AnimState::Swim.candidates().contains(&"swim"));
+        assert!(AnimState::SwimIdle.candidates().contains(&"swimidle"));
+        assert_eq!(AnimState::Swim.fallbacks()[0], AnimState::SwimIdle);
+        assert_eq!(
+            AnimState::Swim.fallbacks().last(),
+            Some(&AnimState::Idle)
+        );
+    }
 
     /// O acumulador do Bevy (`w / (w_acc + w)`, idle → walk → run) nunca
     /// divide por zero com os pesos que o driver escreve, a qualquer
@@ -2962,5 +3034,60 @@ mod tests {
             app.world().get::<AnimatedScene>(prop).is_none(),
             "the prop is still not a character"
         );
+    }
+}
+
+/// Um `viber.gesture` pedido antes de o rig da entidade estar ligado (cena
+/// glTF ainda a carregar). Antes perdia-se com um aviso; agora espera até
+/// [`PENDING_GESTURE_SECS`] pelo `CharacterAnimator` e toca nessa altura.
+#[derive(Component, Debug, Clone)]
+pub struct PendingGesture {
+    pub name: String,
+    pub speed: f32,
+    pub lock: bool,
+    pub blend: Option<f32>,
+    /// Segundos à espera.
+    pub age: f32,
+}
+
+/// Quanto tempo um gesto espera pelo rig: um aceno 3 s depois ainda lê como
+/// resposta; mais do que isso já não.
+pub const PENDING_GESTURE_SECS: f32 = 3.0;
+
+/// Toca os gestos em espera cujo rig já ligou; larga os velhos.
+pub fn play_pending_gestures(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut pending: Query<(Entity, &mut PendingGesture, Option<&mut CharacterAnimator>)>,
+    mut players: PlayerQuery,
+) {
+    for (entity, mut gesture, animator) in &mut pending {
+        let Some(mut animator) = animator else {
+            gesture.age += time.delta_secs();
+            if gesture.age > PENDING_GESTURE_SECS {
+                debug!(
+                    "viber.gesture('{}'): o rig não ligou em {PENDING_GESTURE_SECS} s — largado",
+                    gesture.name
+                );
+                commands.entity(entity).remove::<PendingGesture>();
+            }
+            continue;
+        };
+        commands.entity(entity).remove::<PendingGesture>();
+        let Some(index) = crate::luau::sfx::match_gesture_clip(&animator, &gesture.name) else {
+            continue;
+        };
+        let Some(node) = animator.nodes.get(index).copied() else {
+            continue;
+        };
+        let blend = gesture
+            .blend
+            .map(Duration::from_secs_f32)
+            .unwrap_or(Duration::from_millis(250));
+        if (gesture.speed - 1.0).abs() < 1e-3 {
+            play_action(&mut animator, &mut players, node, blend, gesture.lock);
+        } else {
+            play_action_scaled(&mut animator, &mut players, node, blend, gesture.lock, gesture.speed);
+        }
     }
 }
