@@ -1103,11 +1103,25 @@ pub fn luau_update(
                 blend,
             } => {
                 let Ok(mut animator) = animators.get_mut(entity) else {
-                    if locals.gesture_warned.insert(entity) {
-                        warn!(target: "viber::luau",
-                            "viber.gesture('{name}'): entidade sem CharacterAnimator — \
-                             cena glTF ainda a carregar ou rig sem clips");
-                    }
+                    // Sem rig da engine: o jogo pode ter outro (estados de
+                    // animação autorados no Jackdaw) — fica com o pedido.
+                    commands.trigger(UnboundGesture {
+                        entity,
+                        name: name.clone(),
+                        speed,
+                    });
+                    // Rig ainda a carregar: o gesto espera por ele (e é
+                    // largado em silêncio se não chegar — sem aviso por
+                    // NPC a cada arranque).
+                    commands.entity(entity).try_insert(
+                        crate::animation::PendingGesture {
+                            name,
+                            speed,
+                            lock,
+                            blend,
+                            age: 0.0,
+                        },
+                    );
                     continue;
                 };
                 let Some(index) = match_gesture_clip(&animator, &name) else {
@@ -1894,4 +1908,14 @@ pub fn luau_on_remove(
                 .retain(|_, params| params.owner != Some(entity));
         }
     }
+}
+
+/// `viber.gesture` numa entidade sem `CharacterAnimator`. A engine não tem
+/// como o tocar; um jogo com outro animador (o Vael com o
+/// `jackdaw_animation_runtime`) observa este evento e toca o estado.
+#[derive(Event, Debug, Clone)]
+pub struct UnboundGesture {
+    pub entity: Entity,
+    pub name: String,
+    pub speed: f32,
 }

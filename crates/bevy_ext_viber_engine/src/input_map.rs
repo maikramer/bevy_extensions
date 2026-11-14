@@ -213,6 +213,13 @@ pub fn gather_actions(
     };
 }
 
+/// Presente quando o jogo escreve o [`ActionState`] por conta própria (o
+/// Vael avalia-o com o `jackdaw_input`): o [`gather_actions`] da engine
+/// deixa de correr, em vez de calcular um estado que seria reescrito no
+/// mesmo frame. O [`ActionMap`] continua a ser a fonte dos binds.
+#[derive(Resource, Debug, Default, Clone, Copy)]
+pub struct ExternalActionState;
+
 pub struct InputMapPlugin;
 
 impl Plugin for InputMapPlugin {
@@ -223,7 +230,12 @@ impl Plugin for InputMapPlugin {
             // mesmo schedule; sem a ordem explícita este sistema podia ler o
             // estado do frame ANTERIOR (ação 1 frame atrasada, conforme a
             // ordem que o scheduler escolhesse).
-            .add_systems(PreUpdate, gather_actions.after(bevy::input::InputSystems));
+            .add_systems(
+                PreUpdate,
+                gather_actions
+                    .after(bevy::input::InputSystems)
+                    .run_if(not(resource_exists::<ExternalActionState>)),
+            );
     }
 }
 
