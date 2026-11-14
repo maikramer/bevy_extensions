@@ -2,7 +2,8 @@
 //! componente `recipes::spawn::OrbitCamera`); o monólito reexporta para
 //! `viber::camera::camera_offset` e `viber::recipes::spawn::OrbitCamera`
 //! continuarem a resolver. Os sistemas de câmara (third-person, follow,
-//! colisão de terreno) continuam no monólito.
+//! colisão de terreno, FX) vivem no [`crate::camera_glue`] — o monólito
+//! re-exporta esse módulo como `viber::camera` (exit2/luau).
 
 use bevy::prelude::*;
 

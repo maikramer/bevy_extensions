@@ -16,8 +16,10 @@
 //! | [`textures`] | [`textures::TexturesPlugin`] (reexport do `bevy_ext_gltf`) |
 //! | [`editor_camera`] | [`editor_camera::EditorCameraPlugin`] |
 //! | [`sky`] | [`sky::SkyPlugin`] |
-//! | [`vitals`] | [`vitals::VitalsPlugin`] |
+//! | [`vitals`] | [`vitals::VitalsPlugin`] (reexport do `bevy_ext_core`) |
 //! | [`feedback`] | [`feedback::FeedbackPlugin`] |
+//! | [`camera_glue`] | sistemas de câmara de jogo (third-person/script/FX) |
+//! | [`netplay`] | [`netplay::NetPlayPlugin`] (listen server `VIBER_NET`) |
 //! | [`render_lod`] | ladder de LOD/glTF por distância |
 //! | [`frame_pacing`] | [`frame_pacing::FramePacingPlugin`] |
 //! | [`draw_diag`] | [`draw_diag::DrawDiagPlugin`] |
@@ -34,6 +36,7 @@ extern crate self as viber;
 
 pub mod app;
 pub mod camera;
+pub mod camera_glue;
 pub mod cinematic;
 pub mod config;
 pub mod decal_fx;
@@ -48,6 +51,7 @@ pub mod grass;
 pub mod hud_assets;
 pub mod ibl;
 pub mod luau;
+pub mod netplay;
 pub mod profiler;
 pub mod render_lod;
 pub mod scene_loader;
@@ -59,16 +63,12 @@ pub mod vitals;
 pub mod water_ssr;
 pub mod worldsys;
 
-// TODO(exit2/luau): `netplay` volta quando o `input_map` (ActionState) sair
-// do monólito para o core — o ficheiro fica intacto em src/netplay.rs, mas
-// não compila sem a dep `viber`.
-
-/// Alias de compat `viber::…` — o `feedback.rs` (que NÃO se pode tocar nesta
-/// branch: outro agente move-o ao core na exit2/luau) importa
-/// `viber::hud::assets::HudAssets`. Sem a dep `viber`, o alias de crate
-/// (`extern crate self`) + este `hud::assets` na raiz dão ao caminho
-/// histórico um destino local (o HudAssets movido). Apagar quando o feedback
-/// migrar.
+/// Alias de compat `viber::…` — o `feedback.rs` (definição CANÓNICA aqui
+/// desde a exit2/hubs; o monólito re-exporta este módulo na exit2/luau)
+/// importa `viber::hud::assets::HudAssets`. Sem a dep `viber`, o alias de
+/// crate (`extern crate self`) + este `hud::assets` na raiz dão ao caminho
+/// histórico um destino local (o HudAssets movido — o mesmo tipo que o
+/// `viber::hud::assets` do monólito re-exporta).
 #[doc(hidden)]
 pub mod hud {
     pub mod assets {

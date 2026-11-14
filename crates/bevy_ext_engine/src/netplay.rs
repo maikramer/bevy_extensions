@@ -17,8 +17,9 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 
-// TODO(viber-exit): `ActionState` vive no `input_map` do monólito.
-use viber::input_map::ActionState;
+// Contrato do core (TypePaths `viber::input_map` congelados lá): o mesmo
+// `ActionState` que o `gather_actions` do monólito reescreve por frame.
+use bevy_ext_core::input_map::ActionState;
 use bevy_ext_core::Player;
 
 #[derive(Clone, Debug, Reflect)]

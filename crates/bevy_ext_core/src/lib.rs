@@ -306,7 +306,7 @@ pub struct ScriptCameraFree {
     pub look: Vec3,
 }
 
-#[derive(Debug, Clone, Default, Resource, Reflect)]
+#[derive(Debug, Clone, Copy, Default, Resource, Reflect)]
 #[reflect(Resource)]
 #[type_path = "viber::camera"]
 pub struct CameraSnapshot {
