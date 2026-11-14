@@ -94,6 +94,16 @@ impl Default for ArchSpec {
     }
 }
 
+/// Resolved world footprint of one opening of an [`ArchSpec`] (XZ mask queries).
+#[derive(Debug, Clone, Copy)]
+pub struct ArchFootprint {
+    pub at: Vec2,
+    pub yaw: f32,
+    pub span: f32,
+    pub thickness: f32,
+    pub depth: f32,
+}
+
 /// One opening, resolved against the terrain: where it stands, which way it
 /// faces, how wide it is, and what the ground does under each of its feet.
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +198,22 @@ impl ArchSpec {
     /// The base comes from the heightfield under the arch's feet minus a metre
     /// of embed, exactly the treatment every ground-anchored feature gets —
     /// and like every mod build, it reads the grid up front and never again.
+    pub fn footprints(&self, base: &dyn HeightField) -> Vec<ArchFootprint> {
+        if !self.is_valid() {
+            return Vec::new();
+        }
+        self.instances(base)
+            .into_iter()
+            .map(|inst| ArchFootprint {
+                at: inst.at,
+                yaw: inst.yaw,
+                span: inst.span,
+                thickness: self.thickness,
+                depth: self.depth,
+            })
+            .collect()
+    }
+
     pub fn build(&self, base: &dyn HeightField) -> Vec<Box<dyn VoxelMod>> {
         if !self.is_valid() {
             return Vec::new();
@@ -256,19 +282,16 @@ impl ArchSpec {
             let radius = half_th * (0.85 + 1.3 * u * u);
             (Vec3::new(xz.x, foot + lift + half_th, xz.y), radius)
         };
+        let rock_relief = (half_th * 0.14).clamp(0.14, 0.36);
         for i in 0..NATURAL_SEGMENTS {
             let u0 = -1.0 + 2.0 * i as f32 / NATURAL_SEGMENTS as f32;
             let u1 = -1.0 + 2.0 * (i + 1) as f32 / NATURAL_SEGMENTS as f32;
             let (a, ra) = point(u0);
             let (b, rb) = point(u1);
-            out.push(Box::new(RoundConeMod::new(
-                format!("{label}:{i}"),
-                a,
-                b,
-                ra,
-                rb,
-                ModOp::Union,
-            )));
+            out.push(Box::new(
+                RoundConeMod::new(format!("{label}:{i}"), a, b, ra, rb, ModOp::Union)
+                    .with_noise(rock_relief),
+            ));
         }
     }
 }

@@ -22,7 +22,7 @@ pub mod mods;
 pub mod paths;
 pub mod transvoxel_mesh;
 
-pub use arch::ArchSpec;
+pub use arch::{ArchFootprint, ArchSpec};
 pub use bridge::{BridgeSpec, BridgeStyle};
 pub use cave::CaveSpec;
 pub use field::{Span, VoxelField};
@@ -30,8 +30,8 @@ pub use heightfield::HeightField;
 pub use index::{ChunkClass, ModIndex};
 pub use mesh::{ChunkMeshData, TintParams, tint_vertex_color};
 pub use mods::{
-    ArchMod, Bounds3, BoxMod, CapsuleMod, EllipsoidMod, HalfEllipsoidMod, ModOp, OrientedBoxMod,
-    RoundConeMod, VoxelMod,
+    ArchMod, Bounds3, BoxMod, CapsuleMod, CragMod, EllipsoidMod, HalfEllipsoidMod, ModOp,
+    OrientedBoxMod, RoundConeMod, VoxelMod,
 };
 pub use transvoxel_mesh::{
     VOXEL_CHUNK_CELLS, VoxelChunkParams, build_voxel_mesh, transition_sides,

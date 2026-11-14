@@ -21,7 +21,9 @@
 
 use bevy::math::{Vec2, Vec3};
 
-use super::mods::{CapsuleMod, EllipsoidMod, HalfEllipsoidMod, ModOp, RoundConeMod, VoxelMod};
+use super::mods::{
+    CapsuleMod, CragMod, EllipsoidMod, HalfEllipsoidMod, ModOp, RoundConeMod, VoxelMod,
+};
 use crate::HeightField;
 use crate::paths::{chaikin_smooth, resample};
 
@@ -191,7 +193,7 @@ impl CaveSpec {
     /// The profile is keyed on `t` directly rather than through
     /// [`crate::paths::station_lerp`]: `t` is already in hand here, and
     /// that helper would have to search the polyline for a point we placed.
-    fn radius_at(&self, t: f32) -> f32 {
+    pub fn radius_at(&self, t: f32) -> f32 {
         let base = profile_at(&self.radius, t);
         if self.mouth_flare == 1.0 {
             return base;
@@ -268,11 +270,12 @@ impl CaveSpec {
             for (end, from) in [(0usize, 1usize), (stations.len() - 1, stations.len() - 2)] {
                 let mouth = stations[end];
                 let inward = (stations[from] - mouth).normalize_or_zero();
+                let lateral = Vec2::new(-inward.y, inward.x);
                 let ground = base.sample(mouth.x, mouth.y);
-                // A FACE é o plano da boca, mas inclinada para dentro (~15°):
-                // uma parede exactamente vertical lê-se como muro e estica a
-                // UV do splat em riscas. O monte cresce para DENTRO; o tubo
-                // corta o arco na face.
+                let asym = ((mouth.x * 0.37 + mouth.y * 0.61).sin()).clamp(-1.0, 1.0);
+                // A FACE é o plano da boca, inclinada para dentro (~15°) para não
+                // soar a muro cortado a régua. O relevo estratificado do
+                // `HalfEllipsoidMod` parte a silhueta em bancadas de rocha.
                 let outward = Vec3::new(-inward.x, 0.0, -inward.y);
                 let face = (outward + Vec3::Y * 0.26).normalize_or_zero();
                 mods.push(Box::new(HalfEllipsoidMod::new(
@@ -280,8 +283,32 @@ impl CaveSpec {
                     Vec3::new(mouth.x, ground, mouth.y),
                     Vec3::new(r_mound, self.mound_height, r_mound),
                     face,
-                    (r_mound * 0.08).clamp(0.6, 1.4),
+                    (r_mound * 0.11).clamp(0.85, 1.85),
                 )));
+                // Espigões laterais assimétricos atrás do plano da boca: ancoram o
+                // morro na paisagem em vez de uma cúpula isolada sobre chão plano.
+                for (tag, side, h_mul, r_mul) in [
+                    ("wing_l", -1.0f32, 0.68 - asym * 0.08, 0.72),
+                    ("wing_r", 1.0f32, 0.56 + asym * 0.09, 0.64),
+                ] {
+                    let wing_xy = mouth
+                        + inward * (r_mound * (0.28 + 0.08 * side * asym))
+                        + lateral * (side * r_mound * 0.68);
+                    let wing_g = base.sample(wing_xy.x, wing_xy.y).min(ground);
+                    let wing_face = (outward + Vec3::new(lateral.x * side * 0.22, 0.32, lateral.y * side * 0.22))
+                        .normalize_or_zero();
+                    mods.push(Box::new(HalfEllipsoidMod::new(
+                        format!("{label}:{tag}:{end}"),
+                        Vec3::new(wing_xy.x, wing_g, wing_xy.y),
+                        Vec3::new(
+                            r_mound * r_mul,
+                            self.mound_height * h_mul,
+                            r_mound * r_mul,
+                        ),
+                        wing_face,
+                        (r_mound * 0.09).clamp(0.65, 1.5),
+                    )));
+                }
             }
         }
         for i in 0..stations.len() - 1 {
@@ -349,32 +376,61 @@ impl CaveSpec {
             )));
         }
 
-        // Ombro do arco: blocos `Union` DEPOIS dos tubos subtractivos, para
-        // comerem um pouco do arco perfeitamente circular. O buraco deixa de
-        // ser um círculo de compasso: ganha uma pedra de fecho em cima e dois
-        // contrafortes nos ombros, como uma boca de gruta de verdade.
+        // Ombro e beira do arco: blocos rochosos ruidosos DEPOIS dos tubos
+        // subtractivos, para partir o círculo de compasso com sobranceiro de
+        // rocha estratificada acima da abertura e pilares assimétricos nos flancos.
         if self.open_ends && self.mound_height > 0.0 && self.mound_height.is_finite() {
             for (end, from) in [(0usize, 1usize), (stations.len() - 1, stations.len() - 2)] {
                 let mouth = stations[end];
                 let inward = (stations[from] - mouth).normalize_or_zero();
+                let lateral = Vec2::new(-inward.y, inward.x);
+                let mouth_yaw = inward.x.atan2(inward.y);
                 let ground = base.sample(mouth.x, mouth.y);
-                let r = self.radius_at(0.0);
-                let at = mouth + inward * (r * 0.55);
-                mods.push(Box::new(EllipsoidMod::new(
+                let r = self.radius_at(if end == 0 { 0.0 } else { 1.0 });
+                let asym = ((mouth.x * 0.43 - mouth.y * 0.29).sin()).clamp(-1.0, 1.0);
+                let rim_noise = (r * 0.24).clamp(0.32, 0.85);
+                let at = mouth + inward * (r * 0.48) + lateral * (asym * r * 0.16);
+                mods.push(Box::new(CragMod::new(
                     format!("{label}:rim:{end}:top"),
-                    Vec3::new(at.x, ground + 2.0 * r + 0.1, at.y),
-                    Vec3::new(r * 0.55, r * 0.34, r * 0.55),
-                    0.0,
+                    Vec3::new(at.x, ground + r * 2.08, at.y),
+                    Vec3::new(r * 0.96, r * 0.42, r * 0.68),
+                    mouth_yaw + asym * 0.28,
+                    rim_noise,
                     ModOp::Union,
                 )));
-                let lateral = Vec2::new(-inward.y, inward.x);
+                // Beiral superior assimétrico (laje que sobressai no topo do arco,
+                // bem acima da linha do olho para nunca tapar a entrada).
+                let brow_at = mouth + inward * (r * 0.24) - lateral * (asym * r * 0.26);
+                mods.push(Box::new(CragMod::new(
+                    format!("{label}:rim:{end}:brow"),
+                    Vec3::new(brow_at.x, ground + r * 2.20, brow_at.y),
+                    Vec3::new(r * 0.78, r * 0.30, r * 0.56),
+                    mouth_yaw - asym * 0.35,
+                    rim_noise * 0.9,
+                    ModOp::Union,
+                )));
                 for (side, s) in [("a", -1.0f32), ("b", 1.0f32)] {
-                    let p = at + lateral * (s * r * 0.78);
-                    mods.push(Box::new(EllipsoidMod::new(
+                    let h_shift = s * asym * r * 0.16;
+                    let p = mouth
+                        + inward * (r * (0.44 - s * asym * 0.12))
+                        + lateral * (s * r * 1.02);
+                    mods.push(Box::new(CragMod::new(
                         format!("{label}:rim:{end}:{side}"),
-                        Vec3::new(p.x, ground + r * 1.52, p.y),
-                        Vec3::splat(r * 0.24),
-                        0.0,
+                        Vec3::new(p.x, ground + r * 1.18 + h_shift, p.y),
+                        Vec3::new(r * 0.48, r * 0.72, r * 0.62),
+                        mouth_yaw + s * 0.42,
+                        rim_noise * 0.85,
+                        ModOp::Union,
+                    )));
+                    let foot = mouth
+                        + inward * (r * (0.28 + s * asym * 0.10))
+                        + lateral * (s * r * 1.28);
+                    mods.push(Box::new(CragMod::new(
+                        format!("{label}:rim:{end}:{side}_jamb"),
+                        Vec3::new(foot.x, ground + r * 0.38, foot.y),
+                        Vec3::new(r * 0.56, r * 0.54, r * 0.66),
+                        mouth_yaw - s * 0.55,
+                        rim_noise * 0.8,
                         ModOp::Union,
                     )));
                 }

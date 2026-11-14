@@ -432,6 +432,9 @@ pub struct RoundConeMod {
     pub b: Vec3,
     pub ra: f32,
     pub rb: f32,
+    /// Optional deterministic stratified rock fracture amplitude (m). 0 =
+    /// exact smooth SDF (default for [`RoundConeMod::new`]).
+    pub noise: f32,
     pub op: ModOp,
     pub label: String,
 }
@@ -443,9 +446,19 @@ impl RoundConeMod {
             b,
             ra: ra.max(0.01),
             rb: rb.max(0.01),
+            noise: 0.0,
             op,
             label: label.into(),
         }
+    }
+
+    pub fn with_noise(mut self, noise: f32) -> Self {
+        self.noise = if noise.is_finite() {
+            noise.max(0.0)
+        } else {
+            0.0
+        };
+        self
     }
 }
 
@@ -455,6 +468,11 @@ impl VoxelMod for RoundConeMod {
         let l2 = ba.dot(ba);
         let rr = self.ra - self.rb;
         let a2 = l2 - rr * rr;
+        let relief = if self.noise > 0.0 {
+            HalfEllipsoidMod::wobble(p) * self.noise
+        } else {
+            0.0
+        };
         // Two degenerate cases collapse to spheres rather than dividing by ~0:
         // a zero-length segment, and one end sphere swallowing the other
         // (|Δr| >= length). The min of the two sphere distances is continuous
@@ -462,7 +480,7 @@ impl VoxelMod for RoundConeMod {
         if l2 <= 1e-12 || a2 <= 1e-9 {
             let da = (p - self.a).length() - self.ra;
             let db = (p - self.b).length() - self.rb;
-            return da.min(db);
+            return da.min(db) - relief;
         }
         let il2 = 1.0 / l2;
         let pa = p - self.a;
@@ -472,17 +490,19 @@ impl VoxelMod for RoundConeMod {
         let y2 = y * y * l2;
         let z2 = z * z * l2;
         let k = rr.signum() * rr * rr * x2;
-        if z.signum() * a2 * z2 > k {
-            return (x2 + z2).sqrt() * il2 - self.rb;
-        }
-        if y.signum() * a2 * y2 < k {
-            return (x2 + y2).sqrt() * il2 - self.ra;
-        }
-        ((x2 * a2 * il2).sqrt() + y * rr) * il2 - self.ra
+        let base_d = if z.signum() * a2 * z2 > k {
+            (x2 + z2).sqrt() * il2 - self.rb
+        } else if y.signum() * a2 * y2 < k {
+            (x2 + y2).sqrt() * il2 - self.ra
+        } else {
+            ((x2 * a2 * il2).sqrt() + y * rr) * il2 - self.ra
+        };
+        base_d - relief
     }
 
     fn bounds(&self) -> Bounds3 {
-        Bounds3::from_corners(self.a, self.b).expanded(self.ra.max(self.rb) + 1.0)
+        Bounds3::from_corners(self.a, self.b)
+            .expanded(self.ra.max(self.rb) + 1.0 + self.noise * 1.6)
     }
 
     fn op(&self) -> ModOp {
@@ -539,8 +559,18 @@ impl HalfEllipsoidMod {
 
     /// Continuous, deterministic relief in `[-1.5, 1.5]`: no RNG, so the same
     /// world meshes byte for byte.
+    /// Continuous, deterministic rock relief in `[-1.5, 1.5]`: stratified
+    /// domain-warped bedding shelves + angular ribs + craggy grain so rock
+    /// mounds never read as smooth concrete domes. Zero when `self.noise == 0`.
     fn wobble(p: Vec3) -> f32 {
-        (p.x * 0.31).sin() * 0.5 + (p.z * 0.37).cos() * 0.5 + (p.y * 0.23).sin() * 0.5
+        let strata_warp =
+            (p.x * 0.09 + p.z * 0.07).sin() * 1.15 + (p.x * 0.04 - p.z * 0.11).cos() * 0.85;
+        let bed_y = p.y + strata_warp;
+        let strata = ((bed_y * 0.82).sin() + 0.35 * (bed_y * 1.65).sin()) / 1.35;
+        let rib = (p.x * 0.17 + p.z * 0.13 + (p.y * 0.21).sin() * 0.7).sin() * 0.5
+            + (p.z * 0.23 - p.x * 0.14).cos() * 0.5;
+        let crag = (p.x * 0.53 + p.y * 0.39).sin() * (p.z * 0.47 - p.y * 0.31).cos();
+        strata * 0.55 + rib * 0.55 + crag * 0.35
     }
 }
 
@@ -550,8 +580,10 @@ impl VoxelMod for HalfEllipsoidMod {
         let relief = Self::wobble(p) * self.noise;
         let ellipsoid = (q.length() - 1.0) * self.radii.min_element() - relief;
         // Intersection with the half-space BEHIND the face: max() keeps only
-        // the part where both are solid (ellipsoid and inward side).
-        let face = (p - self.center).dot(self.normal) + relief * 0.6;
+        // the part where both are solid (ellipsoid and inward side). Stronger
+        // stratified rock relief breaks the vertical cut plane into natural
+        // bedding steps.
+        let face = (p - self.center).dot(self.normal) + relief * 0.85;
         ellipsoid.max(face)
     }
 
@@ -608,6 +640,64 @@ impl VoxelMod for EllipsoidMod {
 
     fn bounds(&self) -> Bounds3 {
         yawed_bounds(self.center, self.radii, 1.0)
+    }
+
+    fn op(&self) -> ModOp {
+        self.op
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+/// A yawed rock mass combining an oriented ellipsoid with stratified 3D
+/// geological fracture relief ([`HalfEllipsoidMod::wobble`]). Used for cave
+/// brows, jamb buttresses and outcrops so rock blocks carry jagged stone facets.
+#[derive(Debug, Clone)]
+pub struct CragMod {
+    pub center: Vec3,
+    pub radii: Vec3,
+    pub yaw: f32,
+    pub noise: f32,
+    pub op: ModOp,
+    pub label: String,
+}
+
+impl CragMod {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        label: impl Into<String>,
+        center: Vec3,
+        radii: Vec3,
+        yaw: f32,
+        noise: f32,
+        op: ModOp,
+    ) -> Self {
+        Self {
+            center,
+            radii: radii.max(Vec3::splat(0.01)),
+            yaw,
+            noise: if noise.is_finite() {
+                noise.max(0.0)
+            } else {
+                0.0
+            },
+            op,
+            label: label.into(),
+        }
+    }
+}
+
+impl VoxelMod for CragMod {
+    fn distance(&self, p: Vec3) -> f32 {
+        let q = yaw_local(p, self.center, self.yaw) / self.radii;
+        let relief = HalfEllipsoidMod::wobble(p) * self.noise;
+        (q.length() - 1.0) * self.radii.min_element() - relief
+    }
+
+    fn bounds(&self) -> Bounds3 {
+        yawed_bounds(self.center, self.radii, 1.0 + self.noise * 1.6)
     }
 
     fn op(&self) -> ModOp {
