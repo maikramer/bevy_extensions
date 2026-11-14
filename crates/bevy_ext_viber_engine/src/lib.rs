@@ -85,6 +85,7 @@ pub mod sky_nishita;
 pub mod spawn_gate;
 pub mod spawner;
 pub mod streaming;
+pub mod world_ready;
 pub mod terrain;
 pub mod textures;
 pub mod time_fx;

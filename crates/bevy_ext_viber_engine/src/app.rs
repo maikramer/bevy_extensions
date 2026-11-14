@@ -420,10 +420,8 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // têm hierarquias fundas: o stack default do IO Task Pool (2 MiB)
     // estourava com o pool atual do Vael. Inicializa o pool ANTES do
     // `TaskPoolPlugin` do `DefaultPlugins` (que respeita o global já criado)
-    // com 32 MiB e o mesmo escalonamento de threads do default.
-    let io_threads = std::thread::available_parallelism()
-        .map(|n| (n.get() / 4).clamp(1, 4))
-        .unwrap_or(1);
+    // com 32 MiB. Ver [`io_thread_count`] para o número de threads.
+    let io_threads = io_thread_count();
     bevy::tasks::IoTaskPool::get_or_init(|| {
         bevy::tasks::TaskPoolBuilder::new()
             .num_threads(io_threads)
@@ -785,6 +783,7 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     app.init_resource::<music::CombatMusicState>();
     app.init_resource::<hud::markers::HudMarkers>();
     app.init_resource::<music::ScriptSoundLoops>();
+    app.add_plugins(crate::world_ready::WorldReadyPlugin);
     app.add_plugins(menus::MenusPlugin);
     // Save/load & opções: serviço de ENGINE (grava `world_kv`/posição/vitais
     // em qualquer preset; os campos RPG só entram quando os recursos existem).
@@ -1127,4 +1126,26 @@ mod tests {
             "sem FSM simples ninguém corre o sense_ai"
         );
     }
+}
+
+/// Threads do `IoTaskPool`.
+///
+/// No Bevy é ali que corre TODO o trabalho de um load: a leitura, o decode
+/// meshopt do nosso reader, o parse do glTF e o transcode KTX2 (UASTC → BCn)
+/// de cada textura — o loader do glTF paraleliza as texturas no mesmo pool.
+/// O default do Bevy (¼ dos cores, teto 4) deixava ~1.4 GB de GLB do Vael
+/// numa fila de 4 e o carregamento demorava minutos com 12 cores parados.
+/// Ficam dois cores livres (main + render); threads ociosas não custam nada
+/// depois do carregamento. `VIBER_IO_THREADS` força o número (medições).
+pub fn io_thread_count() -> usize {
+    if let Some(n) = std::env::var("VIBER_IO_THREADS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(2).clamp(2, 16))
+        .unwrap_or(2)
 }

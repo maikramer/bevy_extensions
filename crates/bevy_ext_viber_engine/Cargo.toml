@@ -23,6 +23,9 @@ bevy = { version = "0.20.1", features = [
     "bevy_remote", "wav", "jpeg", "webp", "basis-universal",
     "dfg_lut", "bluenoise_texture", "area_light_luts",
     "experimental_pbr_pcss", "bevy_dev_tools", "bevy_gizmos",
+    # KTX2 zstd pela libzstd (C): o `ruzstd` (Rust puro, o default do Bevy)
+    # era metade do tempo de CPU do carregamento dos GLB (perfil 2026-11-13).
+    "zstd_c",
 ] }
 clap = { version = "4.6", features = ["derive"] }
 celer-nlu = { version = "0.3.0", path = "../../../CelerAI/crates/nlu", optional = true }

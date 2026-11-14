@@ -918,14 +918,14 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
 ]
 
 [[package]]
 name = "bevy_ext_gltf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_save"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "bevy_ext_world",
@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_terrain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_world"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -1013,6 +1013,7 @@ dependencies = [
  "flate2",
  "jackdaw_bsn",
  "jackdaw_prefab",
+ "jackdaw_scene_types",
  "roxmltree",
  "serde",
  "serde_yaml",
@@ -1202,14 +1203,13 @@ dependencies = [
 
 [[package]]
 name = "bevy_gradmesh"
-version = "0.3.7"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd9503d85e4f09025d72a2f36c40a056f83faea65dd4769cfa803d30588f1849"
+checksum = "34a0ce233f49f30435ea543b6b56ecab12a50405ee1c3dceeb685d3b51579052"
 dependencies = [
  "bevy",
  "bevy_asset",
  "bevy_material",
- "bytemuck",
 ]
 
 [[package]]
@@ -1240,6 +1240,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "wgpu-types",
+ "zstd",
 ]
 
 [[package]]
@@ -2206,7 +2207,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_terrain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "transvoxel",
@@ -2482,6 +2483,16 @@ dependencies = [
  "jobserver",
  "libc",
  "shlex",
+]
+
+[[package]]
+name = "cdt"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91b872294f63ef586b32aa94141561681aa35ca2d703960cca4f661f4e18184"
+dependencies = [
+ "geometry-predicates",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3151,12 +3162,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "earcutr"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79127ed59a85d7687c409e9978547cffb7dc79675355ed22da6b66fd5f6ead01"
 dependencies = [
  "itertools 0.11.0",
+ "num-traits",
+]
+
+[[package]]
+name = "earcutr"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afc28d89ac6cb489f679fcf51aaa62b4667bb0fb73a30f1d4d23949069707c07"
+dependencies = [
+ "itertools 0.14.0",
  "num-traits",
 ]
 
@@ -3512,7 +3539,7 @@ version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fc1a1678e54befc9b4bcab6cd43b8e7f834ae8ea121118b0fd8c42747675b4a"
 dependencies = [
- "earcutr",
+ "earcutr 0.4.3",
  "float_next_after",
  "geo-types",
  "geographiclib-rs",
@@ -3546,6 +3573,12 @@ checksum = "c5a7f08910fd98737a6eda7568e7c5e645093e073328eeef49758cfe8b0489c7"
 dependencies = [
  "libm",
 ]
+
+[[package]]
+name = "geometry-predicates"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dba84198cf199c11b83f1cb9243eaeb70dc50b719d2835ebf34bf2481bca010"
 
 [[package]]
 name = "gethostname"
@@ -4279,6 +4312,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jackdaw_geometry"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "145f254df66d3bbc76f4f97ae8f03447f3bdb2aa29a16da5f8a4048cd7876a28"
+dependencies = [
+ "bevy",
+ "bitflags 2.13.2",
+ "cdt",
+ "earcutr 0.5.0",
+ "glam 0.33.12",
+ "serde",
+ "slotmap",
+]
+
+[[package]]
 name = "jackdaw_prefab"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4288,6 +4336,22 @@ dependencies = [
  "jackdaw_bsn",
  "path-slash",
  "pathdiff",
+]
+
+[[package]]
+name = "jackdaw_scene_types"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26f817651c6ac685c4cd06547184c901a37b7ca5693e7c17fa65fddff0959a83"
+dependencies = [
+ "bevy",
+ "dunce",
+ "glam 0.33.12",
+ "jackdaw_geometry",
+ "path-slash",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -8660,6 +8724,34 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.1+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "zune-core"

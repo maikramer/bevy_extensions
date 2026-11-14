@@ -368,10 +368,12 @@ pub fn options_body(selected: usize, volumes: (f32, f32, f32), controls: &str) -
 /// nome fixo do protótipo e aparecia em qualquer jogo). `...` em ASCII: o
 /// atlas de fontes da engine não tem o glifo `…` e saía um retângulo.
 ///
-/// Não nasce no modo Edit: aí o `Time<Virtual>` está em pausa desde o
-/// `Startup`, `loading_hide_system` nunca vê `elapsed > 2 s` e o véu ficava
-/// VISÍVEL para sempre — no editor externo tapava o viewport de UI (a
-/// `GameUiCamera` desenha a UI do jogo por cima da imagem).
+/// Não nasce no modo Edit: aí o mundo não "carrega" para jogar e o véu ficava
+/// por cima do viewport de UI do editor externo (a `GameUiCamera` desenha a
+/// UI do jogo por cima da imagem).
+///
+/// Fica por cima de tudo (até do fade da troca de cena): nada do mundo se vê
+/// antes de [`crate::world_ready::WorldReadiness::ready`].
 fn spawn_loading_screen(
     mut commands: Commands,
     config: Option<Res<crate::config::GameConfig>>,
@@ -395,44 +397,121 @@ fn spawn_loading_screen(
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 bottom: Val::Px(0.0),
+                flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
+                row_gap: Val::Px(18.0),
                 ..Default::default()
             },
             BackgroundColor(Color::srgb(0.03, 0.03, 0.04)),
+            // Acima do fade da troca de cena (`i32::MAX - 8`).
+            GlobalZIndex(i32::MAX - 7),
             Name::new("ui:loading"),
             LoadingScreen,
+            crate::scene_loader::Persistent,
         ))
         .with_children(|root| {
             root.spawn((
-                Text::new(format!("{title}\n\na forjar o mundo...")),
+                Text::new(title),
                 TextColor(Color::srgb(0.95, 0.85, 0.6)),
-                TextFont::from_font_size(26.0),
+                TextFont::from_font_size(30.0),
             ));
+            root.spawn((
+                Text::new("a forjar o mundo..."),
+                TextColor(Color::srgb(0.78, 0.72, 0.58)),
+                TextFont::from_font_size(18.0),
+                LoadingStatus,
+            ));
+            // Pré-aquece o atlas de glifos do estado no 1.º frame (que sobe
+            // sem orçamento — ver `world_ready::unthrottle_until_stbn`). Um
+            // glifo novo MODIFICA o atlas, e o Bevy tira da GPU um asset
+            // modificado enquanto o orçamento do frame está esgotado: o texto
+            // do véu sumia durante a subida das texturas.
+            root.spawn((
+                Text::new(LOADING_GLYPHS),
+                TextColor(Color::NONE),
+                TextFont::from_font_size(18.0),
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..Default::default()
+                },
+            ));
+            // Barra de progresso dos modelos.
+            root.spawn((
+                Node {
+                    width: Val::Px(LOADING_BAR_WIDTH),
+                    height: Val::Px(4.0),
+                    ..Default::default()
+                },
+                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.08)),
+            ))
+            .with_children(|bar| {
+                bar.spawn((
+                    Node {
+                        width: Val::Px(0.0),
+                        height: Val::Percent(100.0),
+                        ..Default::default()
+                    },
+                    BackgroundColor(Color::srgb(0.95, 0.85, 0.6)),
+                    LoadingBarFill,
+                ));
+            });
         });
 }
 
-/// Levanta o loading screen quando o jogador existe, passaram 2 s, e os
-/// albedos do terreno já estão residentes (ou não há terreno de camadas).
-/// Teto de 8 s — os GLBs continuam a streamar em fundo.
+const LOADING_BAR_WIDTH: f32 = 360.0;
+/// Todos os glifos das linhas de estado do véu (`WorldReadiness::status_line`).
+const LOADING_GLYPHS: &str =
+    "abcdefghijklmnopqrstuvwxyzáéíóúãõç ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789/%().,-";
+
+/// Texto de estado do véu ("a carregar modelos 120/354").
+#[derive(Component)]
+struct LoadingStatus;
+
+/// Preenchimento da barra do véu.
+#[derive(Component)]
+struct LoadingBarFill;
+
+/// O véu cobre o ecrã enquanto o mundo não está pronto — no arranque e em
+/// cada troca de cena (a [`crate::world_ready::WorldReadiness`] abre uma
+/// época nova no `Swap`). Os GLB já não "streamam" à vista: o jogo só
+/// aparece inteiro. A rede de segurança é o teto da prontidão
+/// (`VIBER_LOADING_MAX_S`), não um temporizador fixo daqui.
 fn loading_hide_system(
-    time: Res<Time>,
-    players: Query<(), With<Player>>,
+    readiness: Option<Res<crate::world_ready::WorldReadiness>>,
     mut loading: Query<&mut Visibility, With<LoadingScreen>>,
-    server: Option<Res<AssetServer>>,
-    gate: Option<Res<crate::terrain::runtime::TerrainTextureGate>>,
+    mut status: Query<&mut Text, With<LoadingStatus>>,
+    mut fill: Query<&mut Node, With<LoadingBarFill>>,
 ) {
-    let textures_ready = match (&server, &gate) {
-        (Some(server), Some(gate)) => gate.ready(server),
-        _ => true,
+    let Some(readiness) = readiness else {
+        return;
     };
-    let ready = players.iter().next().is_some() && time.elapsed_secs() > 2.0 && textures_ready;
-    if !ready && time.elapsed_secs() < 8.0 {
+    // Na troca de cena a prontidão só cai no `Swap` (já depois do fade a
+    // preto) e o `Settle` espera por ela antes do fade de volta.
+    let show = !readiness.ready;
+    let target = if show {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in loading.iter_mut() {
+        if *visibility != target {
+            *visibility = target;
+        }
+    }
+    if !show {
         return;
     }
-    for mut visibility in loading.iter_mut() {
-        if *visibility != Visibility::Hidden {
-            *visibility = Visibility::Hidden;
+    let line = readiness.status_line();
+    for mut text in status.iter_mut() {
+        if text.0 != line {
+            text.0 = line.clone();
+        }
+    }
+    let width = Val::Px(LOADING_BAR_WIDTH * readiness.shown_progress);
+    for mut node in fill.iter_mut() {
+        if node.width != width {
+            node.width = width;
         }
     }
 }

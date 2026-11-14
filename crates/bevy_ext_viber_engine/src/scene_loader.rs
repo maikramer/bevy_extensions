@@ -596,8 +596,16 @@ pub fn drive_scene_loader(world: &mut World) {
                 .iter(world)
                 .next()
                 .is_some();
-            let ready = frames >= SETTLE_MIN_FRAMES && !groups_pending && !settling;
-            if ready || frames >= SETTLE_TIMEOUT_FRAMES {
+            // O véu (`menus::loading_hide_system`) cobre o ecrã até o mundo
+            // novo estar inteiro: modelos, texturas do terreno, spawn groups
+            // e herói assente. O teto é o da prontidão (`VIBER_LOADING_MAX_S`).
+            let world_ready = world
+                .get_resource::<crate::world_ready::WorldReadiness>()
+                .is_none_or(|r| r.ready);
+            let ready = frames >= SETTLE_MIN_FRAMES && !groups_pending && !settling && world_ready;
+            let fallback = frames >= SETTLE_TIMEOUT_FRAMES
+                && !world.contains_resource::<crate::world_ready::WorldReadiness>();
+            if ready || fallback {
                 let mut loader = world.resource_mut::<SceneLoader>();
                 loader.phase = LoaderPhase::FadeIn;
                 loader.t = 1.0;

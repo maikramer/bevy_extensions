@@ -657,6 +657,12 @@ fn ping(_params: In<Option<Value>>, world: &mut World) -> BrpResult {
     if let Some(world_path) = served {
         pong["world"] = json!(world_path);
     }
+    // O ecrã de carregamento só sai com o mundo inteiro (GLBs, texturas,
+    // herói assente). Agentes esperam por `ready: true` antes de capturar ou
+    // mandar input — `viber debug wait-ready` faz o polling.
+    let loading = crate::world_ready::readiness_json(world);
+    pong["ready"] = loading["ready"].clone();
+    pong["loading"] = loading;
     Ok(pong)
 }
 

@@ -350,6 +350,7 @@ pub fn current_method(_input: In<Option<Value>>, world: &mut World) -> BrpResult
         .map(|e| e.0)
         .unwrap_or(0);
     let entities = world.entities().count_spawned();
+    let loading = crate::world_ready::readiness_json(world);
     let loader = world.get_resource::<crate::scene_loader::SceneLoader>();
     Ok(json!({
         "scene": current.id,
@@ -364,6 +365,9 @@ pub fn current_method(_input: In<Option<Value>>, world: &mut World) -> BrpResult
         "last_error": loader.and_then(|l| l.last_error.clone()),
         "last_swap_ms": loader.map(|l| l.last_swap_ms),
         "last_sweep": loader.map(|l| l.last_sweep.clone()),
+        // Agentes: só capturar/agir com `ready: true` (o véu cobre o ecrã).
+        "ready": loading["ready"].clone(),
+        "loading": loading,
     }))
 }
 
