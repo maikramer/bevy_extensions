@@ -340,3 +340,205 @@ fn componentes_tipados_migram_sem_perdas() {
         bevy_ext_world::bsn::worlds_equivalent(&a.root_attrs, &a.nodes, &b.root_attrs, &b.nodes);
     assert!(same.is_ok(), "{same:?}\n{migrated}");
 }
+
+/// O `SceneNodeId` do documento fica disponível pela origem do nó: é a chave
+/// que o jogo usa para receber as edições do Play do Jackdaw.
+#[test]
+fn scene_node_id_fica_registado_pela_origem() {
+    let dir = std::env::temp_dir().join(format!("bsn_node_id_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), "assets:\n  roots: assets\n").unwrap();
+    let path = dir.join("world.bsn");
+    std::fs::write(
+        &path,
+        r#"#"world"
+bevy_world_xml::bsn::WorldNode {
+    tag: "world",
+    attrs: [],
+    text: "",
+}
+bevy_ecs::hierarchy::Children [
+    #"poço"
+    bevy_transform::components::transform::Transform {
+        translation: glam::Vec3 { x: 3.0, y: 0.0, z: 0.0 },
+        rotation: glam::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+        scale: glam::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+    }
+    bevy_world_xml::bsn::WorldNode {
+        tag: "Entity",
+        attrs: [],
+        text: "",
+    }
+    jackdaw_scene_types::node_id::SceneNodeId(4294967301)
+    jackdaw_animation_runtime::AnimationState("idle")
+]
+"#,
+    )
+    .unwrap();
+    let world = bevy_ext_world::bsn::load::load_bsn_world(&path).expect("carrega");
+    let node = world
+        .nodes
+        .iter()
+        .find(|n| n.tag == "Entity")
+        .expect("o nó");
+    let origin = node.origin.as_ref().expect("origem");
+    assert_eq!(
+        bevy_ext_world::bsn::specs::scene_node_id_for(origin),
+        Some(4294967301)
+    );
+    // O componente que o DSL não conhece fica guardado para o jogo; os
+    // consumidos (WorldNode/Transform/SceneNodeId) não.
+    let native = bevy_ext_world::bsn::specs::native_components_for(origin).expect("nativos");
+    let paths: Vec<&str> = native
+        .iter()
+        .filter_map(jackdaw_bsn::patch_type_path)
+        .collect();
+    assert_eq!(paths, ["jackdaw_animation_runtime::AnimationState"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// O nó fica registado com os atributos crus e os finais; `live_attrs`
+/// recompõe-nos com o que o editor mandou, mantendo os derivados.
+#[test]
+fn live_attrs_recompoe_o_no_editado() {
+    let dir = std::env::temp_dir().join(format!("bsn_live_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), "assets:\n  roots: assets\n").unwrap();
+    let path = dir.join("world.bsn");
+    std::fs::write(
+        &path,
+        r#"#"world"
+bevy_world_xml::bsn::WorldNode {
+    tag: "world",
+    attrs: [],
+    text: "",
+}
+bevy_ecs::hierarchy::Children [
+    #"pedra"
+    bevy_transform::components::transform::Transform {
+        translation: glam::Vec3 { x: 3.0, y: 0.0, z: 0.0 },
+        rotation: glam::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+        scale: glam::Vec3 { x: 1.0, y: 1.0, z: 1.0 },
+    }
+    bevy_world_xml::bsn::WorldNode {
+        tag: "GltfScene",
+        attrs: [
+            bevy_world_xml::bsn::WorldProp { key: "url", value: "/a.glb" },
+        ],
+        text: "",
+        pose: true,
+    }
+]
+"#,
+    )
+    .unwrap();
+    let world = bevy_ext_world::bsn::load::load_bsn_world(&path).expect("carrega");
+    let node = world.nodes.iter().find(|n| n.tag == "GltfScene").unwrap();
+    let origin = node.origin.as_ref().unwrap();
+    let recorded = bevy_ext_world::bsn::specs::node_for(origin).expect("registado");
+    assert!(!recorded.has_children);
+    assert_eq!(recorded.raw_attrs, vec![("url".into(), "/a.glb".into())]);
+    // Derivado do load: o nome autoral e a pose.
+    assert!(recorded.attrs.iter().any(|(k, v)| k == "name" && v == "pedra"));
+
+    let raw = vec![("url".to_string(), "/b.glb".to_string())];
+    let specs = bevy_ext_scene::NodeSpecs {
+        script: Some(bevy_ext_scene::ScriptRef {
+            path: "pedra.lua".into(),
+        }),
+        ..Default::default()
+    };
+    let attrs = bevy_ext_world::bsn::specs::live_attrs(&recorded, Some(&raw), &specs, None);
+    let get = |key: &str| attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    assert_eq!(get("url"), Some("/b.glb"), "o editor ganha");
+    assert_eq!(get("name"), Some("pedra"), "derivado mantém-se");
+    assert_eq!(get("script"), Some("pedra.lua"), "spec escrito");
+    assert!(get("translation").is_some(), "pose do load mantém-se");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Um nó com filhos no mesmo ficheiro tem a subárvore recomposta a partir
+/// do registo do load (re-spawn a quente de um grupo).
+#[test]
+fn subarvore_registada_recompoe_os_filhos() {
+    let dir = std::env::temp_dir().join(format!("bsn_sub_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.yaml"), "assets:\n  roots: assets\n").unwrap();
+    let path = dir.join("world.bsn");
+    std::fs::write(
+        &path,
+        r#"#"world"
+bevy_world_xml::bsn::WorldNode {
+    tag: "world",
+    attrs: [],
+    text: "",
+}
+bevy_ecs::hierarchy::Children [
+    #"acampamento"
+    bevy_world_xml::bsn::WorldNode {
+        tag: "Group",
+        attrs: [],
+        text: "",
+    }
+    bevy_ecs::hierarchy::Children [
+        #"fogueira"
+        bevy_world_xml::bsn::WorldNode {
+            tag: "GltfScene",
+            attrs: [
+                bevy_world_xml::bsn::WorldProp { key: "url", value: "/f.glb" },
+            ],
+            text: "",
+        }
+        --
+        #"tenda"
+        bevy_world_xml::bsn::WorldNode {
+            tag: "GltfScene",
+            attrs: [
+                bevy_world_xml::bsn::WorldProp { key: "url", value: "/t.glb" },
+            ],
+            text: "",
+        }
+    ]
+]
+"#,
+    )
+    .unwrap();
+    let world = bevy_ext_world::bsn::load::load_bsn_world(&path).expect("carrega");
+    let group = world.nodes.iter().find(|n| n.tag == "Group").expect("grupo");
+    let origin = group.origin.as_ref().unwrap();
+    let node = bevy_ext_world::bsn::specs::node_for(origin).unwrap();
+    assert!(node.has_children);
+    let kids = bevy_ext_world::bsn::specs::recorded_subtree(origin).expect("subárvore");
+    let urls: Vec<&str> = kids
+        .iter()
+        .filter_map(|k| k.attrs.iter().find(|(key, _)| key == "url").map(|(_, v)| v.as_str()))
+        .collect();
+    assert_eq!(urls, ["/f.glb", "/t.glb"]);
+    assert_eq!(kids.len(), group.children.len());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Um spec removido no editor leva o seu atributo: os atributos derivados
+/// de specs são recompostos só a partir dos specs actuais.
+#[test]
+fn spec_removido_sai_dos_atributos() {
+    let recorded = bevy_ext_world::bsn::specs::RecordedNode {
+        tag: "GltfScene".into(),
+        raw_attrs: vec![("url".into(), "/a.glb".into())],
+        attrs: vec![
+            ("url".into(), "/a.glb".into()),
+            ("name".into(), "pedra".into()),
+            ("collider".into(), "shape: box".into()),
+            ("prop-x".into(), "1".into()),
+        ],
+        text: String::new(),
+        has_children: false,
+    };
+    let empty = bevy_ext_scene::NodeSpecs::default();
+    for raw in [None, Some(recorded.raw_attrs.as_slice())] {
+        let attrs = bevy_ext_world::bsn::specs::live_attrs(&recorded, raw, &empty, None);
+        let keys: Vec<&str> = attrs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"url") && keys.contains(&"name"), "{keys:?}");
+        assert!(!keys.contains(&"collider") && !keys.contains(&"prop-x"), "{keys:?}");
+    }
+}

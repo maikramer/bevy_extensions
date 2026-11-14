@@ -70,7 +70,9 @@ impl JackdawExtension for VoxelTerrainExtension {
             // sem isto os attrs do DSL não chegam à cena e o preview nativo
             // vê só `Transform`/`GltfSource`.
             app.register_type::<bevy_ext_world::bsn::WorldNode>()
-                .register_type::<bevy_ext_world::bsn::WorldProp>();
+                .register_type::<bevy_ext_world::bsn::WorldProp>()
+                // Identidade das instâncias de prefab (`bsn_prefabify`).
+                .register_type::<bevy_ext_world::bsn::WorldOrigin>();
             app.register_type::<bevy_ext_terrain::VoxelTerrain>()
                 .register_type::<bevy_ext_terrain::VoxelCave>()
                 .register_type::<bevy_ext_terrain::VoxelChamber>()

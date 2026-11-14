@@ -30,6 +30,7 @@ bevy = { workspace = true, features = ["std", "bevy_camera", "bevy_log"] }
 # Formato `.bsn` (Jackdaw): o jogo lê o documento e reconstrói `XmlNode`; não
 # puxa `jackdaw_runtime` nem o editor.
 jackdaw_bsn.workspace = true
+jackdaw_scene_types.workspace = true
 # `IsA` (prefab do Jackdaw): os `<Include>` são instâncias que o editor
 # expande; o loader resolve-as com o mesmo código.
 jackdaw_prefab.workspace = true

@@ -17,6 +17,10 @@ use std::collections::BTreeMap;
 
 fn main() -> anyhow::Result<()> {
     let mut dry_run = false;
+    // `--props`: `AuthoredProps` → `CustomProperties` (componente do Jackdaw).
+    let mut props = false;
+    // `--node-ids`: `SceneNodeId` em cada nó (edições ao vivo do Play).
+    let mut node_ids = false;
     #[cfg(feature = "terrain")]
     let mut terrain = false;
     #[cfg(not(feature = "terrain"))]
@@ -25,6 +29,8 @@ fn main() -> anyhow::Result<()> {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--props" => props = true,
+            "--node-ids" => node_ids = true,
             "--terrain" => {
                 #[cfg(feature = "terrain")]
                 {
@@ -45,6 +51,49 @@ fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "terrain"))]
     if terrain_requested {
         anyhow::bail!("--terrain requer --features terrain");
+    }
+    if node_ids {
+        let mut total = 0;
+        for file in &files {
+            let text = std::fs::read_to_string(file)?;
+            let (minted, n) = bevy_ext_world::bsn::specs::mint_node_ids_text(&text, || {
+                jackdaw_scene_types::SceneNodeId::next().0
+            });
+            if n == 0 {
+                continue;
+            }
+            // Recusa escrever um ficheiro que o Jackdaw não volte a ler.
+            jackdaw_bsn::parse_bsn_text(&minted)
+                .map_err(|err| anyhow::anyhow!("{file}: ficaria inválido: {err}"))?;
+            println!("{file}: {n} ids");
+            total += n;
+            if !dry_run {
+                let tmp = format!("{file}.migrate.tmp");
+                std::fs::write(&tmp, minted)?;
+                std::fs::rename(&tmp, file)?;
+            }
+        }
+        println!("total: {total}{}", if dry_run { " (dry-run)" } else { "" });
+        return Ok(());
+    }
+    if props {
+        let mut total = 0;
+        for file in &files {
+            let text = std::fs::read_to_string(file)?;
+            let (migrated, n) = bevy_ext_world::bsn::specs::migrate_props_text(&text);
+            if n == 0 {
+                continue;
+            }
+            println!("{file}: {n} AuthoredProps → CustomProperties");
+            total += n;
+            if !dry_run {
+                let tmp = format!("{file}.migrate.tmp");
+                std::fs::write(&tmp, migrated)?;
+                std::fs::rename(&tmp, file)?;
+            }
+        }
+        println!("total: {total}{}", if dry_run { " (dry-run)" } else { "" });
+        return Ok(());
     }
     let mut total_nodes = 0;
     let mut total: BTreeMap<String, usize> = BTreeMap::new();

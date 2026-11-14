@@ -895,6 +895,7 @@ mod tests {
     fn registry_with_world() -> TypeRegistry {
         let mut registry = TypeRegistry::default();
         registry.register::<WorldNode>();
+        registry.register::<crate::bsn::WorldOrigin>();
         registry.register::<WorldProp>();
         bevy_ext_terrain::register_types(&mut registry);
         registry

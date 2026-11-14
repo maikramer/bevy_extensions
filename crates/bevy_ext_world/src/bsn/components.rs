@@ -9,6 +9,19 @@
 
 use bevy::prelude::*;
 
+/// Identidade estável de um nó que é instância de um prefab: o ficheiro e o
+/// caminho de origem (a chave dos saves — colheita, destrutíveis). Numa
+/// instância, um `WorldNode` próprio substituiria o do prefab por inteiro;
+/// este componente pequeno fica na instância e o loader usa-o no lugar de
+/// `WorldNode.origin_file/origin_path`.
+#[derive(Component, Reflect, Default, Clone, Debug, PartialEq)]
+#[reflect(Component, Default, Debug, Clone)]
+#[type_path = "bevy_world_xml::bsn"]
+pub struct WorldOrigin {
+    pub file: String,
+    pub path: Vec<u32>,
+}
+
 /// Um nó do DSL de mundo, preservado tal como foi autorado.
 #[derive(Component, Reflect, Default, Clone, Debug)]
 #[reflect(Component, Default, Debug, Clone)]

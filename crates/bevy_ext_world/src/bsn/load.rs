@@ -23,6 +23,7 @@ use crate::xml::include::{
 use crate::xml::{NodeOrigin, XmlNode};
 
 const WORLD_NODE: &str = "bevy_world_xml::bsn::WorldNode";
+const WORLD_ORIGIN: &str = "bevy_world_xml::bsn::WorldOrigin";
 const ISA: &str = "jackdaw::prefab::components::IsA";
 const TRANSFORM: &str = "bevy_transform::components::transform::Transform";
 const GLTF_SOURCE: &str = "jackdaw_scene_types::types::GltfSource";
@@ -207,13 +208,28 @@ impl Loader {
         let Some(world) = world_node(ast, patches_entity) else {
             return self.convert_folder(ast, patches_entity, current_path, prefix);
         };
+        // Identidade fixada (instância de prefab, nó arrumado noutra pasta):
+        // usada tal e qual — é a chave dos saves e não pode mudar.
+        let pinned = struct_patch(ast, patches_entity, WORLD_ORIGIN).map(|own| NodeOrigin {
+            file: Arc::from(self.root_dir.join(field_str(own, "file").unwrap_or_default()).as_path()),
+            path: field(own, "path")
+                .and_then(as_list)
+                .map(|values| values.iter().filter_map(as_u32).collect())
+                .unwrap_or_default(),
+        });
         let tag = world.tag.clone();
         let mut attrs: Vec<(String, String)> = world
             .attrs
             .iter()
             .map(|prop| (prop.key.clone(), prop.value.clone()))
             .collect();
-        let origin = self.origin_for(&world, current_path, prefix);
+        let raw_attrs = attrs.clone();
+        let origin = pinned.unwrap_or_else(|| self.origin_for(&world, current_path, prefix));
+        // Identidade estável do nó no editor (Play do Jackdaw): o jogo põe-a
+        // nas entidades deste nó para as edições ao vivo as encontrarem.
+        if let Some(id) = ast.stable_id_of(patches_entity) {
+            crate::bsn::specs::record_node_id(&origin, id);
+        }
 
         if tag.eq_ignore_ascii_case("include") {
             let instance = struct_patch(ast, patches_entity, ISA)
@@ -236,6 +252,7 @@ impl Loader {
         }
         apply_transform_and_previews(ast, patches_entity, &tag, world.pose, &mut attrs);
         crate::bsn::specs::apply_specs(ast, patches_entity, &origin, &mut attrs);
+        crate::bsn::specs::record_native(ast, patches_entity, &origin);
         #[cfg(feature = "terrain")]
         crate::bsn::terrain::apply_terrain(ast, patches_entity, &tag, &mut attrs);
 
@@ -271,6 +288,16 @@ impl Loader {
             return Ok(out);
         }
 
+        crate::bsn::specs::record_node(
+            &origin,
+            crate::bsn::specs::RecordedNode {
+                tag: tag.clone(),
+                raw_attrs,
+                attrs: attrs.clone(),
+                text: world.text.clone(),
+                has_children: !children.is_empty(),
+            },
+        );
         Ok(vec![XmlNode {
             tag,
             attrs,

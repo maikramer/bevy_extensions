@@ -7,7 +7,8 @@
 //! componentes só quando a ida e volta é exata.
 
 use std::any::TypeId;
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
@@ -19,12 +20,19 @@ use bevy_ext_scene::{
 
 use crate::xml::NodeOrigin;
 use jackdaw_bsn::SceneBsnAst;
+use jackdaw_scene_types::{CustomProperties, PropertyValue};
 
 fn registry() -> &'static TypeRegistry {
     static REGISTRY: OnceLock<TypeRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         let mut registry = TypeRegistry::default();
         bevy_ext_scene::register_types(&mut registry);
+        // As `prop-*` vivem no componente nativo do Jackdaw (o inspector do
+        // editor tem painel próprio para ele).
+        registry.register::<CustomProperties>();
+        registry.register::<PropertyValue>();
+        registry.register::<BTreeMap<String, PropertyValue>>();
+        registry.register::<Cow<'static, str>>();
         registry
     })
 }
@@ -34,6 +42,7 @@ where
     T: Reflect + FromReflect + Default + TypePath,
 {
     let value = jackdaw_bsn::get_bsn_field(ast, entity, T::type_path(), "")?;
+    let value = normalize_options(&value, TypeId::of::<T>(), registry());
     let partial = jackdaw_bsn::bsn_value_to_reflect(&value, TypeId::of::<T>(), registry(), None)?;
     let mut out = T::default();
     out.try_apply(partial.as_ref()).ok()?;
@@ -53,6 +62,245 @@ fn write_attrs<T: AttrSpec>(spec: &T, attrs: &mut Vec<(String, String)>) {
 /// anexar às entidades que o spawner do Viber cria (`SceneSource`).
 static INDEX: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), Arc<NodeSpecs>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// `SceneNodeId` (Jackdaw) de cada nó, pela origem — o último load ganha.
+static NODE_IDS: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), u64>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+pub(crate) fn record_node_id(origin: &NodeOrigin, id: u64) {
+    if let Ok(mut ids) = NODE_IDS.write() {
+        ids.insert((Path::to_path_buf(&origin.file), origin.path.clone()), id);
+    }
+}
+
+/// Patches de componentes que o loader não consome (o DSL não os conhece):
+/// `AnimationSet`, camera rig, binds de UI, componentes do próprio jogo….
+static NATIVE: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), Arc<Vec<jackdaw_bsn::BsnPatch>>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Tipos que o loader já traduz para o DSL (ou que são estrutura do
+/// documento): não passam como componentes nativos.
+const CONSUMED_PREFIXES: &[&str] = &[
+    "bevy_world_xml::",
+    "bevy_transform::",
+    "bevy_ecs::",
+    "bevy_light::",
+    "jackdaw::prefab::",
+    "jackdaw_scene_types::node_id::",
+    "jackdaw_scene_types::types::GltfSource",
+    "jackdaw_scene_types::types::CustomProperties",
+    "bevy_ext_scene",
+    "bevy_ext_terrain",
+];
+
+pub(crate) fn record_native(ast: &SceneBsnAst, entity: bevy::ecs::entity::Entity, origin: &NodeOrigin) {
+    let Some(patches) = ast.get_patches(entity) else {
+        return;
+    };
+    let native: Vec<jackdaw_bsn::BsnPatch> = patches
+        .0
+        .iter()
+        .filter_map(|&pe| ast.get_patch(pe))
+        .filter(|patch| {
+            jackdaw_bsn::patch_type_path(patch)
+                .is_some_and(|path| !CONSUMED_PREFIXES.iter().any(|p| path.starts_with(p)))
+        })
+        .cloned()
+        .collect();
+    let key = (Path::to_path_buf(&origin.file), origin.path.clone());
+    if let Ok(mut index) = NATIVE.write() {
+        if native.is_empty() {
+            index.remove(&key);
+        } else {
+            index.insert(key, Arc::new(native));
+        }
+    }
+}
+
+/// Um nó tal como o loader o entregou à engine.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecordedNode {
+    pub tag: String,
+    /// Atributos autorados no `WorldNode` (antes de pose/specs/previews).
+    pub raw_attrs: Vec<(String, String)>,
+    /// Atributos finais (o que o parser da engine leu).
+    pub attrs: Vec<(String, String)>,
+    pub text: String,
+    /// Tem nós filhos no DSL (um re-spawn isolado perdia-os).
+    pub has_children: bool,
+}
+
+static NODES: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), Arc<RecordedNode>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+pub fn record_node(origin: &NodeOrigin, node: RecordedNode) {
+    if let Ok(mut nodes) = NODES.write() {
+        nodes.insert(
+            (Path::to_path_buf(&origin.file), origin.path.clone()),
+            Arc::new(node),
+        );
+    }
+}
+
+/// O nó (tag/atributos) de onde uma entidade veio.
+pub fn node_for(origin: &NodeOrigin) -> Option<Arc<RecordedNode>> {
+    NODES
+        .read()
+        .ok()?
+        .get(&(origin.file.to_path_buf(), origin.path.clone()))
+        .cloned()
+}
+
+/// Filhos directos registados de um nó (mesmo ficheiro, caminho + 1 índice),
+/// por ordem. Um `<Include>`/prefab tem os filhos noutro ficheiro: não
+/// aparecem aqui.
+pub fn recorded_children(origin: &NodeOrigin) -> Vec<(NodeOrigin, Arc<RecordedNode>)> {
+    let Ok(nodes) = NODES.read() else {
+        return Vec::new();
+    };
+    let depth = origin.path.len();
+    let mut out: Vec<(NodeOrigin, Arc<RecordedNode>)> = nodes
+        .iter()
+        .filter(|((file, path), _)| {
+            file.as_path() == origin.file.as_ref()
+                && path.len() == depth + 1
+                && path.starts_with(&origin.path)
+        })
+        .map(|((file, path), node)| {
+            (
+                NodeOrigin {
+                    file: Arc::from(file.as_path()),
+                    path: path.clone(),
+                },
+                node.clone(),
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+    out
+}
+
+/// A subárvore registada debaixo de `origin`, como a engine a leu, para
+/// re-spawnar um nó com filhos. `None` quando um filho esperado não está
+/// registado (vem de outro ficheiro): o re-spawn perdê-lo-ia.
+pub fn recorded_subtree(origin: &NodeOrigin) -> Option<Vec<crate::xml::XmlNode>> {
+    let mut out = Vec::new();
+    for (child, node) in recorded_children(origin) {
+        let children = if node.has_children {
+            let kids = recorded_subtree(&child)?;
+            if kids.is_empty() {
+                return None;
+            }
+            kids
+        } else {
+            Vec::new()
+        };
+        out.push(crate::xml::XmlNode {
+            tag: node.tag.clone(),
+            attrs: node.attrs.clone(),
+            text: node.text.clone(),
+            children,
+            origin: Some(Arc::new(child)),
+        });
+    }
+    Some(out)
+}
+
+/// O `url` do modelo do nó de onde uma entidade veio (como no DSL:
+/// `/assets/meshes/…glb`).
+pub fn model_url_for(origin: &NodeOrigin) -> Option<String> {
+    node_for(origin)?
+        .attrs
+        .iter()
+        .find(|(key, _)| key == "url")
+        .map(|(_, url)| url.clone())
+}
+
+/// Todas as chaves de atributo que os componentes tipados escrevem.
+pub fn spec_attr_keys() -> &'static [&'static str] {
+    static KEYS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        let mut keys = Vec::new();
+        keys.extend_from_slice(ColliderSpec::KEYS);
+        keys.extend_from_slice(BodySpec::KEYS);
+        keys.extend_from_slice(Destructible::KEYS);
+        keys.extend_from_slice(Harvestable::KEYS);
+        keys.extend_from_slice(ModelLod::KEYS);
+        keys.extend_from_slice(FloraStation::KEYS);
+        keys.extend_from_slice(ScriptRef::KEYS);
+        keys.extend_from_slice(ParticleSpec::KEYS);
+        keys.extend_from_slice(SpawnExclusionSpec::KEYS);
+        keys.extend_from_slice(PortalSpec::KEYS);
+        keys
+    })
+}
+
+/// Atributos de um nó editado ao vivo: os autorados que o editor enviou
+/// (`raw`; sem eles, os do load), mais os derivados do load que o `raw` não
+/// traz (nome, previews), depois os componentes tipados e a pose actual.
+pub fn live_attrs(
+    recorded: &RecordedNode,
+    raw: Option<&[(String, String)]>,
+    specs: &NodeSpecs,
+    pose: Option<crate::bsn::Pose>,
+) -> Vec<(String, String)> {
+    // Atributos que vieram de um componente tipado (e não do `WorldNode`):
+    // saem e voltam pelo `write_spec_attrs` — assim um spec REMOVIDO no
+    // editor leva o seu atributo consigo.
+    let from_spec = |key: &str| {
+        !recorded.raw_attrs.iter().any(|(k, _)| k == key)
+            && (spec_attr_keys().contains(&key) || key.starts_with("prop-"))
+    };
+    let mut attrs: Vec<(String, String)> = match raw {
+        Some(raw) => {
+            let mut attrs = raw.to_vec();
+            for (key, value) in &recorded.attrs {
+                let derived = !recorded.raw_attrs.iter().any(|(k, _)| k == key);
+                if derived && !from_spec(key) && !attrs.iter().any(|(k, _)| k == key) {
+                    attrs.push((key.clone(), value.clone()));
+                }
+            }
+            attrs
+        }
+        None => recorded
+            .attrs
+            .iter()
+            .filter(|(key, _)| !from_spec(key))
+            .cloned()
+            .collect(),
+    };
+    write_spec_attrs(specs, &mut attrs);
+    if let Some(pose) = pose {
+        crate::bsn::pose::write_pose_attrs(&mut attrs, pose);
+    }
+    attrs
+}
+
+/// Componentes autorados no editor que o DSL não transporta, para o jogo os
+/// aplicar à entidade do nó (`jackdaw_bsn::apply_component_patch`).
+pub fn native_components_for(origin: &NodeOrigin) -> Option<Arc<Vec<jackdaw_bsn::BsnPatch>>> {
+    NATIVE
+        .read()
+        .ok()?
+        .get(&(origin.file.to_path_buf(), origin.path.clone()))
+        .cloned()
+}
+
+/// [`record_node_id`] para o jogo (nós criados no editor durante o Play).
+pub fn record_node_id_pub(origin: &NodeOrigin, id: u64) {
+    record_node_id(origin, id);
+}
+
+/// O `SceneNodeId` do nó de onde uma entidade veio (a sua `SceneSource`),
+/// se o documento o tinha: é por ele que o editor endereça as edições do
+/// Play (`ControlEvent::NodeComponents`).
+pub fn scene_node_id_for(origin: &NodeOrigin) -> Option<u64> {
+    NODE_IDS
+        .read()
+        .ok()?
+        .get(&(origin.file.to_path_buf(), origin.path.clone()))
+        .copied()
+}
 
 /// Os componentes tipados do nó de onde uma entidade veio, se o documento os
 /// tinha (o último load de cada ficheiro ganha).
@@ -90,7 +338,10 @@ pub(crate) fn apply_specs(
         lod: read::<ModelLod>(ast, entity),
         flora: read::<FloraStation>(ast, entity),
         script: read::<ScriptRef>(ast, entity),
-        props: read::<AuthoredProps>(ast, entity),
+        props: merged_props(
+            read::<AuthoredProps>(ast, entity),
+            read::<CustomProperties>(ast, entity),
+        ),
         particle: read::<ParticleSpec>(ast, entity),
         exclusion: read::<SpawnExclusionSpec>(ast, entity),
         portal: read::<PortalSpec>(ast, entity),
@@ -98,6 +349,13 @@ pub(crate) fn apply_specs(
     if specs.is_empty() {
         return;
     }
+    write_spec_attrs(&specs, attrs);
+    record(origin, specs);
+}
+
+/// Escreve nos `attrs` os atributos equivalentes aos componentes tipados
+/// (o componente ganha a um atributo homónimo).
+pub fn write_spec_attrs(specs: &NodeSpecs, attrs: &mut Vec<(String, String)>) {
     if let Some(spec) = &specs.collider {
         write_attrs(spec, attrs);
     }
@@ -136,6 +394,11 @@ pub(crate) fn apply_specs(
             }
         }
     }
+}
+
+/// Regista (ou substitui) os componentes tipados de um nó — o jogo chama-o
+/// depois de re-spawnar um nó editado ao vivo.
+pub fn set_node_specs(origin: &NodeOrigin, specs: NodeSpecs) {
     record(origin, specs);
 }
 
@@ -167,7 +430,7 @@ pub fn lift_specs(tag: &str, attrs: &[(String, String)]) -> LiftedSpecs {
     take::<FloraStation>(attrs, &mut out);
     take::<ScriptRef>(attrs, &mut out);
     if let Some((props, keys)) = AuthoredProps::from_attrs(attrs) {
-        out.components.push(Box::new(props));
+        out.components.push(Box::new(custom_from_authored(&props)));
         out.consumed.extend(keys);
     }
     match tag {
@@ -293,3 +556,536 @@ fn parse_prop(line: &str) -> Option<(String, String)> {
     }
     Some((key.to_string(), value.to_string()))
 }
+
+/// Texto de um [`PropertyValue`] tal como o DSL o espera numa `prop-*`.
+pub fn property_text(value: &PropertyValue) -> String {
+    match value {
+        PropertyValue::Bool(v) => v.to_string(),
+        PropertyValue::Int(v) => v.to_string(),
+        PropertyValue::Float(v) => v.to_string(),
+        PropertyValue::String(v) => v.to_string(),
+        PropertyValue::Vec2(v) => format!("{} {}", v.x, v.y),
+        PropertyValue::Vec3(v) => format!("{} {} {}", v.x, v.y, v.z),
+        PropertyValue::Color(c) => {
+            let c = c.to_srgba();
+            format!("{} {} {} {}", c.red, c.green, c.blue, c.alpha)
+        }
+        // Uma entidade não tem forma no DSL: o script não a pode ler.
+        PropertyValue::Entity(_) => String::new(),
+    }
+}
+
+/// As `prop-*` de um nó: as antigas ([`AuthoredProps`]) e as do componente
+/// do Jackdaw ([`CustomProperties`]); numa chave repetida ganha o Jackdaw.
+pub fn merged_props(
+    authored: Option<AuthoredProps>,
+    custom: Option<CustomProperties>,
+) -> Option<AuthoredProps> {
+    let Some(custom) = custom else {
+        return authored;
+    };
+    let mut props = authored.unwrap_or_default();
+    for (key, value) in custom.properties.iter() {
+        if matches!(value, PropertyValue::Entity(_)) {
+            continue;
+        }
+        let text = property_text(value);
+        match props.props.iter_mut().find(|prop| prop.key == *key) {
+            Some(prop) => prop.value = text,
+            None => props.props.push(bevy_ext_scene::AuthoredProp {
+                key: key.clone(),
+                value: text,
+            }),
+        }
+    }
+    (!props.props.is_empty()).then_some(props)
+}
+
+/// [`AuthoredProps`] → [`CustomProperties`] com valores `String`: a ida e
+/// volta pelo DSL é exata ("0.50" continua "0.50", "007" não vira 7).
+pub fn custom_from_authored(props: &AuthoredProps) -> CustomProperties {
+    let mut custom = CustomProperties::default();
+    for prop in &props.props {
+        custom.properties.insert(
+            prop.key.clone(),
+            PropertyValue::String(Cow::Owned(prop.value.clone())),
+        );
+    }
+    custom
+}
+
+const AUTHORED_OPEN: &str = "bevy_ext_scene::AuthoredProps {";
+const AUTHORED_PROP: &str = "bevy_ext_scene::AuthoredProp { key: \"";
+
+/// Troca cada bloco `AuthoredProps { props: [...] }` de um `.bsn` pelo
+/// [`CustomProperties`] equivalente, no próprio texto. Um bloco com escapes
+/// ou chaves repetidas fica como está. Idempotente. Devolve quantos trocou.
+pub fn migrate_props_text(text: &str) -> (String, usize) {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(text.len());
+    let mut migrated = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.trim() != AUTHORED_OPEN {
+            out.push_str(line);
+            i += 1;
+            continue;
+        }
+        let indent = &line[..line.len() - line.trim_start().len()];
+        let close = format!("{indent}}}");
+        let Some(end) = (i + 1..lines.len()).find(|&j| lines[j].trim_end() == close) else {
+            out.push_str(line);
+            i += 1;
+            continue;
+        };
+        let props: Option<Vec<(String, String)>> = lines[i + 1..end]
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| !matches!(*l, "props: [" | "]," | "props: [],"))
+            .map(parse_authored_prop)
+            .collect();
+        let unique = props.as_ref().is_some_and(|props| {
+            let mut keys: Vec<&str> = props.iter().map(|(k, _)| k.as_str()).collect();
+            keys.sort_unstable();
+            keys.windows(2).all(|w| w[0] != w[1])
+        });
+        let Some(props) = props.filter(|_| unique) else {
+            for l in &lines[i..=end] {
+                out.push_str(l);
+            }
+            i = end + 1;
+            continue;
+        };
+        let authored = AuthoredProps {
+            props: props
+                .into_iter()
+                .map(|(key, value)| bevy_ext_scene::AuthoredProp { key, value })
+                .collect(),
+        };
+        for part in component_text(&custom_from_authored(&authored)).lines() {
+            out.push_str(indent);
+            out.push_str(part);
+            out.push('\n');
+        }
+        migrated += 1;
+        i = end + 1;
+    }
+    (out, migrated)
+}
+
+fn parse_authored_prop(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix(AUTHORED_PROP)?;
+    let rest = rest.strip_suffix(" },")?;
+    // O emissor omite o campo com o valor por defeito: `{ key: "x" }` = "".
+    if let Some(key) = rest.strip_suffix('"')
+        && !key.contains('"')
+        && !key.contains('\\')
+    {
+        return Some((key.to_string(), String::new()));
+    }
+    let (key, rest) = rest.split_once("\", value: \"")?;
+    let value = rest.strip_suffix('"')?;
+    if key.contains('\\') || value.contains('\\') || value.contains('"') {
+        return None;
+    }
+    Some((key.to_string(), value.to_string()))
+}
+
+const OPTION_SOME: &str = "core::option::Option::Some";
+
+/// O emissor do Jackdaw grava um `Option<T>` com valor como o valor nu
+/// (`preset: "fire"`), mas o `bsn_value_to_reflect` só aceita
+/// `core::option::Option::Some("fire")` — o nu lia como `None` (2.5k
+/// partículas do mundo perdiam o preset). Percorre o valor contra o tipo e
+/// embrulha em `Some(..)` todo o valor nu num campo `Option<T>`.
+pub fn normalize_options(
+    value: &jackdaw_bsn::BsnValue,
+    type_id: TypeId,
+    registry: &TypeRegistry,
+) -> jackdaw_bsn::BsnValue {
+    use bevy::reflect::{TypeInfo, enums::VariantInfo};
+    use jackdaw_bsn::{BsnField, BsnStructData, BsnStructFields, BsnTupleStructData, BsnValue};
+    let Some(info) = registry.get(type_id).map(|reg| reg.type_info()) else {
+        return value.clone();
+    };
+    match info {
+        TypeInfo::Enum(enum_info) if enum_info.type_path().starts_with("core::option::Option<") => {
+            let inner = match enum_info.variant("Some") {
+                Some(VariantInfo::Tuple(tuple)) => tuple.field_at(0).map(|f| f.type_id()),
+                _ => None,
+            };
+            let explicit = match value {
+                BsnValue::Type(path) => path.ends_with("None") || path.ends_with("Some"),
+                BsnValue::TupleStruct(data) => data.type_path.ends_with("Some"),
+                _ => false,
+            };
+            if explicit {
+                if let (BsnValue::TupleStruct(data), Some(inner)) = (value, inner) {
+                    return BsnValue::TupleStruct(BsnTupleStructData {
+                        type_path: data.type_path.clone(),
+                        values: data
+                            .values
+                            .iter()
+                            .map(|v| normalize_options(v, inner, registry))
+                            .collect(),
+                    });
+                }
+                return value.clone();
+            }
+            let inner_value = match inner {
+                Some(inner) => normalize_options(value, inner, registry),
+                None => value.clone(),
+            };
+            BsnValue::TupleStruct(BsnTupleStructData {
+                type_path: OPTION_SOME.to_string(),
+                values: vec![inner_value],
+            })
+        }
+        TypeInfo::Struct(struct_info) => match value {
+            BsnValue::Struct(data) => BsnValue::Struct(BsnStructData {
+                type_path: data.type_path.clone(),
+                fields: BsnStructFields(
+                    data.fields
+                        .0
+                        .iter()
+                        .map(|field| BsnField {
+                            name: field.name.clone(),
+                            value: match struct_info.field(&field.name) {
+                                Some(info) => normalize_options(&field.value, info.type_id(), registry),
+                                None => field.value.clone(),
+                            },
+                        })
+                        .collect(),
+                ),
+            }),
+            _ => value.clone(),
+        },
+        TypeInfo::List(list) => match value {
+            BsnValue::List(items) => BsnValue::List(
+                items
+                    .iter()
+                    .map(|item| normalize_options(item, list.item_ty().id(), registry))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        },
+        TypeInfo::Enum(enum_info) => match value {
+            // Variante tuple de um enum nosso (`ColliderShape::Mesh {..}` é
+            // struct-variant; aqui só se desce nas tuple-variants).
+            BsnValue::TupleStruct(data) => {
+                let name = data.type_path.rsplit("::").next().unwrap_or_default();
+                match enum_info.variant(name) {
+                    Some(VariantInfo::Tuple(tuple)) => BsnValue::TupleStruct(BsnTupleStructData {
+                        type_path: data.type_path.clone(),
+                        values: data
+                            .values
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| match tuple.field_at(i) {
+                                Some(f) => normalize_options(v, f.type_id(), registry),
+                                None => v.clone(),
+                            })
+                            .collect(),
+                    }),
+                    _ => value.clone(),
+                }
+            }
+            BsnValue::Struct(data) => {
+                let name = data.type_path.rsplit("::").next().unwrap_or_default();
+                match enum_info.variant(name) {
+                    Some(VariantInfo::Struct(variant)) => BsnValue::Struct(BsnStructData {
+                        type_path: data.type_path.clone(),
+                        fields: BsnStructFields(
+                            data.fields
+                                .0
+                                .iter()
+                                .map(|field| BsnField {
+                                    name: field.name.clone(),
+                                    value: match variant.field(&field.name) {
+                                        Some(info) => {
+                                            normalize_options(&field.value, info.type_id(), registry)
+                                        }
+                                        None => field.value.clone(),
+                                    },
+                                })
+                                .collect(),
+                        ),
+                    }),
+                    _ => value.clone(),
+                }
+            }
+            _ => value.clone(),
+        },
+        _ => value.clone(),
+    }
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    fn read_text<T>(text: &str) -> Option<T>
+    where
+        T: Reflect + FromReflect + Default + TypePath,
+    {
+        let ast = jackdaw_bsn::parse_bsn_text(text).unwrap();
+        read::<T>(&ast, ast.roots[0])
+    }
+
+    #[test]
+    fn option_nu_le_como_some() {
+        let spec: ParticleSpec =
+            read_text("#\"p\"\nbevy_ext_scene::ParticleSpec {\n    preset: \"fire\",\n}\n").unwrap();
+        assert_eq!(spec.preset.as_deref(), Some("fire"));
+        let spec: ParticleSpec = read_text(
+            "#\"p\"\nbevy_ext_scene::ParticleSpec {\n    preset: core::option::Option::Some(\"dust\"),\n}\n",
+        )
+        .unwrap();
+        assert_eq!(spec.preset.as_deref(), Some("dust"));
+        let spec: ParticleSpec = read_text(
+            "#\"p\"\nbevy_ext_scene::ParticleSpec {\n    preset: core::option::Option::None,\n}\n",
+        )
+        .unwrap();
+        assert_eq!(spec.preset, None);
+    }
+
+    #[test]
+    fn option_dentro_de_option_de_struct() {
+        // `emitter: Some(ParticleEmitter { start_color: "…" (nu) })`.
+        let text = "#\"p\"\nbevy_ext_scene::ParticleSpec {\n    emitter: core::option::Option::Some(bevy_ext_scene::ParticleEmitter { preset: \"fire\", emission_rate: 18.0, start_color: \"#ff8800\" }),\n}\n";
+        let spec: ParticleSpec = read_text(text).unwrap();
+        let emitter = spec.emitter.expect("emissor");
+        assert_eq!(emitter.start_color.as_deref(), Some("#ff8800"));
+        assert_eq!(emitter.emission_rate, 18.0);
+    }
+
+    #[test]
+    fn todos_os_specs_do_emissor_voltam_iguais() {
+        // O que o `component_text` (= emissor do editor) grava tem de ler
+        // de volta igual, para cada spec com `Option`.
+        let particle = ParticleSpec {
+            preset: Some("leaves".into()),
+            emitter: None,
+        };
+        let text = format!("#\"p\"\n{}\n", component_text(&particle));
+        assert_eq!(read_text::<ParticleSpec>(&text), Some(particle), "{text}");
+        let lod = ModelLod {
+            lod1: Some("/a_lod1.glb".into()),
+            lod2: None,
+            near: Some(50.0),
+            mid: None,
+        };
+        let text = format!("#\"p\"\n{}\n", component_text(&lod));
+        assert_eq!(read_text::<ModelLod>(&text), Some(lod), "{text}");
+    }
+}
+
+const WORLD_NODE_LINE: &str = "bevy_world_xml::bsn::WorldNode {";
+
+/// Fim do bloco que abre em `lines[open]` (contagem de chavetas fora de
+/// strings).
+fn block_end(lines: &[&str], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (index, line) in lines.iter().enumerate().skip(open) {
+        let mut in_str = false;
+        let mut escaped = false;
+        for c in line.chars() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if in_str => escaped = true,
+                '"' => in_str = !in_str,
+                '{' | '[' | '(' if !in_str => depth += 1,
+                '}' | ']' | ')' if !in_str => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn starts_node_boundary(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("#\"") || t == "--" || t.starts_with(']') || t.starts_with("bevy_ecs::hierarchy::Children [")
+}
+
+/// Dá um `SceneNodeId` a cada nó com `WorldNode` que não o tem, inserindo
+/// só a linha do id a seguir ao bloco `WorldNode` (o resto do ficheiro fica
+/// byte a byte). Com ids, os nós de um módulo aberto no seu separador são
+/// endereçáveis pelas edições ao vivo do Play. Idempotente. Devolve quantos
+/// cunhou.
+pub fn mint_node_ids_text(text: &str, mut mint: impl FnMut() -> u64) -> (String, usize) {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut insert_after: Vec<(usize, String)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim() != WORLD_NODE_LINE {
+            continue;
+        }
+        let Some(end) = block_end(&lines, index) else {
+            continue;
+        };
+        // Componentes do próprio nó: do início do nó até à fronteira seguinte.
+        let start = (0..index)
+            .rev()
+            .find(|&i| starts_node_boundary(lines[i]))
+            .map_or(0, |i| i + 1);
+        let stop = (end + 1..lines.len())
+            .find(|&i| starts_node_boundary(lines[i]))
+            .unwrap_or(lines.len());
+        let own = lines[start..stop]
+            .iter()
+            .any(|l| l.trim_start().starts_with("jackdaw_scene_types::node_id::SceneNodeId("));
+        if own {
+            continue;
+        }
+        let indent = &line[..line.len() - line.trim_start().len()];
+        insert_after.push((
+            end,
+            format!("{indent}jackdaw_scene_types::node_id::SceneNodeId({})\n", mint()),
+        ));
+    }
+    let count = insert_after.len();
+    let mut out = String::with_capacity(text.len() + count * 64);
+    let mut pending = insert_after.into_iter().peekable();
+    for (index, line) in lines.iter().enumerate() {
+        out.push_str(line);
+        while pending.peek().is_some_and(|(at, _)| *at == index) {
+            if !line.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&pending.next().expect("peeked").1);
+        }
+    }
+    (out, count)
+}
+
+#[cfg(test)]
+mod node_id_tests {
+    use super::*;
+
+    const DOC: &str = "#\"world\"
+bevy_world_xml::bsn::WorldNode {
+    tag: \"world\",
+    attrs: [],
+    text: \"a { b } [c]\",
+}
+bevy_ecs::hierarchy::Children [
+    #\"pedra\"
+    bevy_world_xml::bsn::WorldNode {
+        tag: \"GltfScene\",
+        attrs: [
+            bevy_world_xml::bsn::WorldProp { key: \"url\", value: \"/a.glb\" },
+        ],
+        text: \"\",
+    }
+    --
+    #\"ja-tem\"
+    jackdaw_scene_types::node_id::SceneNodeId(4294967999)
+    bevy_world_xml::bsn::WorldNode {
+        tag: \"Entity\",
+        attrs: [],
+        text: \"\",
+    }
+]
+";
+
+    #[test]
+    fn cunha_so_quem_nao_tem_e_le_de_volta() {
+        let mut next = 1u64 << 40;
+        let (text, n) = mint_node_ids_text(DOC, || {
+            next += 1;
+            next
+        });
+        assert_eq!(n, 2, "{text}");
+        let ast = jackdaw_bsn::parse_bsn_text(&text).expect("continua válido");
+        let root = ast.roots[0];
+        assert!(ast.stable_id_of(root).is_some());
+        let (again, n2) = mint_node_ids_text(&text, || unreachable!());
+        assert_eq!((again.as_str(), n2), (text.as_str(), 0), "idempotente");
+        // O resto do ficheiro fica igual: só linhas acrescentadas.
+        let removed: String = text
+            .lines()
+            .filter(|l| !l.contains("SceneNodeId(1099511627"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(removed, DOC);
+    }
+}
+
+#[cfg(test)]
+mod custom_props_tests {
+    use super::*;
+
+    fn read_back(text: &str) -> (Option<AuthoredProps>, Option<CustomProperties>) {
+        let ast = jackdaw_bsn::parse_bsn_text(text).expect("bsn válido");
+        let entity = ast.roots[0];
+        (
+            read::<AuthoredProps>(&ast, entity),
+            read::<CustomProperties>(&ast, entity),
+        )
+    }
+
+    const OLD: &str = "\
+bevy_ext_scene::AuthoredProps {
+    props: [
+        bevy_ext_scene::AuthoredProp { key: \"cinematic\", value: \"campo-de-batalha\" },
+        bevy_ext_scene::AuthoredProp { key: \"radius\", value: \"0.50\" },
+        bevy_ext_scene::AuthoredProp { key: \"group\" },
+    ],
+}
+";
+
+    #[test]
+    fn migra_e_le_de_volta_igual() {
+        let (text, n) = migrate_props_text(OLD);
+        assert_eq!(n, 1, "{text}");
+        assert!(text.contains("CustomProperties"), "{text}");
+        assert!(!text.contains("AuthoredProps"), "{text}");
+        let (again, n2) = migrate_props_text(&text);
+        assert_eq!((again.as_str(), n2), (text.as_str(), 0), "idempotente");
+
+        let (authored, custom) = read_back(&text);
+        assert!(authored.is_none());
+        let merged = merged_props(None, custom).expect("props");
+        assert_eq!(merged.get("cinematic"), Some("campo-de-batalha"));
+        assert_eq!(merged.get("radius"), Some("0.50"), "texto exato");
+        assert_eq!(merged.get("group"), Some(""), "valor omitido = vazio");
+    }
+
+    #[test]
+    fn jackdaw_ganha_numa_chave_repetida() {
+        let authored = AuthoredProps {
+            props: vec![bevy_ext_scene::AuthoredProp {
+                key: "radius".into(),
+                value: "1".into(),
+            }],
+        };
+        let mut custom = CustomProperties::default();
+        custom
+            .properties
+            .insert("radius".into(), PropertyValue::Float(2.5));
+        custom
+            .properties
+            .insert("on".into(), PropertyValue::Bool(true));
+        let merged = merged_props(Some(authored), Some(custom)).unwrap();
+        assert_eq!(merged.get("radius"), Some("2.5"));
+        assert_eq!(merged.get("on"), Some("true"));
+    }
+
+    #[test]
+    fn lift_emite_o_componente_do_jackdaw() {
+        let attrs = vec![("prop-cinematic".to_string(), "x".to_string())];
+        let lifted = lift_specs("Entity", &attrs);
+        let names: Vec<String> = lifted
+            .components
+            .iter()
+            .filter_map(|c| c.get_represented_type_info())
+            .map(|i| i.type_path().to_string())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("CustomProperties")), "{names:?}");
+    }
+}
+
