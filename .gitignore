@@ -14,3 +14,7 @@ crates/bevy_ext_engine/Cargo.lock
 
 # Build das extensões Jackdaw (jd build)
 extensions/*/target/
+
+# Workspaces próprios dentro de crates/ (o do engine é standalone e tem o seu
+# target de 12 GB; o `/target` da raiz não o cobre).
+crates/*/target/
