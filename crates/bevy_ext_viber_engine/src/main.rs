@@ -1,5 +1,10 @@
 //! Viber CLI — runs and validates AiGameKit declarative world XML.
 
+// O bin nasceu no crate `viber`; no exit a package passou a
+// `bevy_ext_viber_engine` e só a lib (via `crate::`) seguiu o novo nome.
+// Este alias mantém os `viber::` do bin a resolver para a lib.
+extern crate bevy_ext_viber_engine as viber;
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
