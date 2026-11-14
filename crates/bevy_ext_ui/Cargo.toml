@@ -34,5 +34,3 @@ bevy_ext_world = { workspace = true }
 # A superfície `viber.ui.*` corre na VM Luau do host; o crate só precisa do
 # handle e da instalação da tabela.
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
-# `Locale::load` (contrato do host de localização) lê `locale/<lang>.json`.
-serde_json = { workspace = true }
