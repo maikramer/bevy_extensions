@@ -115,13 +115,15 @@ pub mod player {
     pub use bevy_engine_core::{Player, TeleportSettle};
     // TODO(viber-exit): `landing_position`/`hero_*`/`player_movement` seguem
     // no `viber::player` até saírem para um crate de gameplay.
-    pub use viber::player::{hero_collider, hero_controller, landing_position, player_movement};
+    pub use viber::player::{
+        hero_collider, hero_controller_bundle, landing_position, player_movement,
+    };
 }
 
-/// `terrain` — o runtime voxel (specs das features, plugin/delta, splat)
-/// vive no [`bevy_ext_terrain_runtime`]; os TypePaths históricos
-/// (`viber::terrain::…`) estão congelados lá.
-pub use bevy_ext_terrain_runtime as terrain;
+/// `terrain` — o runtime voxel segue no monólito (a troca para o
+/// [`bevy_ext_terrain_runtime`] é a wave D, bloqueada na água; os TypePaths
+/// históricos `viber::terrain::…` continuam a resolver por aqui).
+pub use viber::terrain as terrain;
 
 // ── ponte transitória ao monólito `viber` (TODO(viber-exit)) ────────────
 //
@@ -167,8 +169,6 @@ pub use bevy_ext_terrain_runtime as terrain;
 //                  e não tem estes tipos
 //   xml          → IR XML (`XmlNode`, `NodeOrigin`, `include::load_world*`)
 pub use viber::{
-    ambient, animation, app, camera, cinematic, config, editor_camera, foliage, hud,
-    interact, luau, menus, meshopt, music, nav, particles, physics, physics_fx, player, project,
-    prop_tint, ragdoll, render_lod, scene, sky, spawner, terrain, textures, ui, vinst, vitals,
-    worldsys, xml,
+    cinematic, editor_camera, foliage, luau, project, prop_tint, ragdoll, render_lod, scene,
+    sky, spawner, textures, ui, vinst, vitals, worldsys, xml,
 };

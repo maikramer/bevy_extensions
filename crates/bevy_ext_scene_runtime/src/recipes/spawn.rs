@@ -11,7 +11,7 @@
 //! `bevy_gradmesh` — pipelines de mesh/material cacheados por chave.
 //!
 //! exit3/wave-c: re-sync com o monólito — a cópia trazia o fallback
-//! `StandardMaterial` e colisores rapier directos; o monólito tinha à
+//! `StandardMaterial` e colisores Avian directos; o monólito tinha à
 //! frente o pipeline gradmesh (chaves de material por spec, cache de
 //! meshes por forma, `fallback_mesh` centrado no bounds, stats + warn dos
 //! mapas sem amostragem), os componentes tipados de física
@@ -1244,7 +1244,7 @@ fn push_shore_rock_group(
         // Assentam meio afundadas — a base do GLB nunca fica a flutuar no
         // declive da margem.
         base_y_offset: -0.12,
-        template_collider: Some(crate::physics::ColliderShape::Box {
+        template_collider: Some(viber::physics::ColliderShape::Box {
             size: bevy::math::Vec3::new(0.9, 0.8, 0.9),
             offset: bevy::math::Vec3::ZERO,
         }),
@@ -1422,8 +1422,8 @@ fn collect_spawn_groups(
                         // Box/None/Auto nunca o usam — não pedir um load
                         // de path vazio.
                         let url = match shape {
-                            crate::physics::ColliderShape::Mesh { url, .. }
-                            | crate::physics::ColliderShape::Precompute { url } => url,
+                            viber::physics::ColliderShape::Mesh { url, .. }
+                            | viber::physics::ColliderShape::Precompute { url } => url,
                             _ => return None,
                         };
                         Some(crate::meshopt::load_gltf(
@@ -1474,8 +1474,8 @@ fn collect_spawn_groups(
                     // colisão — as outras formas pediam o load de um path vazio.
                     collider_handle: spawner_spec.template_collider.as_ref().and_then(|shape| {
                         let url = match shape {
-                            crate::physics::ColliderShape::Mesh { url, .. }
-                            | crate::physics::ColliderShape::Precompute { url } => url,
+                            viber::physics::ColliderShape::Mesh { url, .. }
+                            | viber::physics::ColliderShape::Precompute { url } => url,
                             _ => return None,
                         };
                         Some(crate::meshopt::load_gltf(
@@ -1507,11 +1507,11 @@ fn collect_spawn_groups(
 /// Attaches the Rapier body + collider a spec asks for.
 ///
 /// Boxes are built here; `trimesh` / `precompute` / `auto` need mesh data that
-/// is still loading, so they leave a [`crate::physics::PendingCollider`] for
-/// [`crate::physics::resolve_pending_colliders`] to finish. The collision glTF
+/// is still loading, so they leave a [`viber::physics::PendingCollider`] for
+/// [`viber::physics::resolve_pending_colliders`] to finish. The collision glTF
 /// is requested now so the load is already in flight.
 fn attach_physics(entity: &mut EntityWorldMut, ctx: &mut SpawnCtx, spec: &EntitySpec) {
-    use crate::physics::{ColliderShape, PendingCollider, body_bundle, immediate_collider};
+    use viber::physics::{ColliderShape, PendingCollider, body_bundle, immediate_collider};
 
     let physics = &spec.physics;
     if physics.is_empty() {
@@ -1521,7 +1521,7 @@ fn attach_physics(entity: &mut EntityWorldMut, ctx: &mut SpawnCtx, spec: &Entity
     let scripted = spec.script.is_some();
     if let Some((body, gravity)) = body_bundle(physics.body, physics.gravity_scale) {
         entity.insert((body, gravity));
-        if let Some(mass) = crate::physics::mass_properties(physics.mass) {
+        if let Some(mass) = viber::physics::mass_properties(physics.mass) {
             entity.insert(mass);
         }
     }
@@ -1540,8 +1540,11 @@ fn attach_physics(entity: &mut EntityWorldMut, ctx: &mut SpawnCtx, spec: &Entity
             // Rapier aplica a escala do `GlobalTransform` ao collider — passar
             // a escala do spec aqui dava escala² ao colisor.
             if let EntityKind::Primitive { shape, .. } = &spec.kind {
-                entity.insert(crate::physics::collider_for_shape(shape, Vec3::ONE));
-                crate::physics::stamp_collider_role(entity, trigger, scripted);
+                // O papel ANTES do collider: o Avian lê `CollisionEventsEnabled`
+                // ao criar o proxy da árvore (`Add<Collider>`) e não tem
+                // observer para a flag — inserida depois, não tem efeito.
+                viber::physics::stamp_collider_role(entity, trigger, scripted);
+                entity.insert(viber::physics::collider_for_shape(shape, Vec3::ONE));
             } else {
                 entity.insert(PendingCollider {
                     shape: ColliderShape::Auto,
@@ -1586,23 +1589,24 @@ fn attach_physics(entity: &mut EntityWorldMut, ctx: &mut SpawnCtx, spec: &Entity
 /// eventos ficam na entidade que segura o collider.
 fn place_immediate(
     entity: &mut EntityWorldMut,
-    collider: bevy_rapier3d::prelude::Collider,
+    collider: avian3d::prelude::Collider,
     transform: Transform,
     trigger: bool,
     scripted: bool,
 ) {
     if transform.translation == Vec3::ZERO {
+        viber::physics::stamp_collider_role(entity, trigger, scripted);
         entity.insert(collider);
-        crate::physics::stamp_collider_role(entity, trigger, scripted);
         return;
     }
-    // Rapier positions a collider by its own entity transform, so
-    // `pos-offset-y` becomes a child holding the shape; the render mesh
-    // keeps the entity's placement untouched.
+    // O collider é posicionado pelo transform da própria entidade, por isso
+    // `pos-offset-y` vira um filho que segura a forma; a malha renderizada
+    // mantém a colocação da entidade intacta.
     let parent = entity.id();
     entity.world_scope(|world| {
-        let mut child = world.spawn((Name::new("collider"), collider, transform, ChildOf(parent)));
-        crate::physics::stamp_collider_role(&mut child, trigger, scripted);
+        let mut child = world.spawn((Name::new("collider"), transform, ChildOf(parent)));
+        viber::physics::stamp_collider_role(&mut child, trigger, scripted);
+        child.insert(collider);
     });
 }
 
@@ -1722,7 +1726,7 @@ fn spawn_entity(
             // Corpo do objeto composto: os colisores das partes (filhos com
             // `ColliderShape::Auto`, resolvidos em `attach_physics`) colam-se
             // a ESTE body — colisor composto do Rapier, um por primitiva.
-            if let Some((rb, gravity)) = crate::physics::body_bundle(*body, None) {
+            if let Some((rb, gravity)) = viber::physics::body_bundle(*body, None) {
                 entity.insert((rb, gravity));
             }
             // Colocação: `place` explícito ganha (amostra o terreno onde o
@@ -2092,13 +2096,13 @@ fn spawn_entity(
                 Visibility::Inherited,
                 // Corpo do NPC: o herói deixava de o atravessar (cápsula de
                 // ~1,8 m nos pés do NPC, como a do herói).
-                bevy_rapier3d::prelude::RigidBody::Fixed,
-                bevy_rapier3d::prelude::Collider::compound(vec![(
+                avian3d::prelude::RigidBody::Static,
+                avian3d::prelude::Collider::compound(vec![(
                     Vec3::Y * NPC_CAPSULE_CENTER,
                     Quat::IDENTITY,
-                    bevy_rapier3d::prelude::Collider::capsule_y(
-                        NPC_CAPSULE_HALF_HEIGHT,
+                    avian3d::prelude::Collider::capsule(
                         NPC_CAPSULE_RADIUS,
+                        NPC_CAPSULE_HALF_HEIGHT * 2.0,
                     ),
                 )]),
             ));
@@ -2185,13 +2189,10 @@ fn spawn_entity(
             entity.insert((
                 GltfScenePending::single(handle),
                 crate::player::Player::default(),
-                // Character controller: the hero is moved by code but has to be
-                // stopped by the world's static colliders (walls, buildings,
-                // props), so Rapier resolves the motion instead of the
-                // transform being written blind.
-                bevy_rapier3d::prelude::RigidBody::KinematicPositionBased,
+                // Corpo dinâmico + tnua: o controller resolve o movimento
+                // contra os colliders estáticos (paredes, edifícios, props).
+                crate::player::hero_controller_bundle(),
                 crate::player::hero_collider(),
-                crate::player::hero_controller(),
             ));
         }
         // Ground features + `<Terrain>` + spawner groups return before the

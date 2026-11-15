@@ -171,7 +171,9 @@ pub struct RoadSpec {
     /// Edge alpha fade (fraction of the half-width).
     pub edge_feather: f32,
     /// Junction flare annotations (network-internal, set by expansion).
-    pub(crate) flare: Option<Flare>,
+    /// Junction flare annotations (network-internal, set by expansion); o
+    // scene_runtime lê-as no spawn (functional update), por isso públicas.
+    pub flare: Option<Flare>,
 }
 
 impl Default for RoadSpec {

@@ -35,7 +35,7 @@ use crate::{
     a11y, ambient, animation, attachment, audio_space, camera, editor_camera, foliage, hud,
     ik, impact, input_map, locale, luau, menus, meshopt, music, nav, netplay, particles, physics,
     physics_fx, player, postfx, profiler, prop_tint, ragdoll, recipes, render_lod, save, sky,
-    spawner, streaming, terrain, terrain_host, textures, time_fx, ui, worldsys, xml,
+    spawner, streaming, terrain, textures, time_fx, ui, worldsys, xml,
 };
 
 // Para quê a App é montada — o enum saiu para o `bevy_ext_core` (contrato
@@ -730,25 +730,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // Pós-processamento (exposição/bloom/SSAO) na câmara do mundo; os
     // `pp-*` das `<BiomeRegion>` conduzem-no. `VIBER_NO_POSTFX=1` desliga.
     app.add_plugins(postfx::PostFxPlugin);
-    // Glue do shim `postfx.rs`: o foco de DOF das cinemáticas passa ao
-    // contrato do crate (depois do tick que move o playback, antes do drive
-    // que lê — o MESMO frame).
-    app.add_systems(
-        bevy::app::Update,
-        postfx::publish_cinematic_focus
-            .after(crate::cinematic::CinematicTick)
-            .before(postfx::FxDrive),
-    );
-    // DLSS (feature `dlss`): o reset de teleporte do histórico NGX era
-    // registado pelo plugin do postfx no monólito; o crate não o conhece.
-    #[cfg(feature = "dlss")]
-    {
-        crate::dlss::register_teleport_reset(app);
-        app.add_systems(
-            bevy::app::Update,
-            postfx::swap_taa_for_dlss.after(bevy_ext_postfx::AttachCameras),
-        );
-    }
+    // (O foco de DOF das cinemáticas e a troca TAA→DLSS vivem DENTRO da
+    // lente do postfx: o `drive_dof_focus` lê o playback directamente e o
+    // plugin trata do DLSS — nada a registar aqui.)
     // `<PostFxDebugToggle>`: teclas que comutam os gates de pós-processo ao
     // vivo (inerte sem a tag no mundo).
     app.add_plugins(crate::postfx_toggle::PostFxDebugTogglePlugin);

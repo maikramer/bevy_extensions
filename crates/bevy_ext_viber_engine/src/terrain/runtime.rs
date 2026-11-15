@@ -43,7 +43,7 @@ use super::voxel::{Span, VoxelField};
 use super::water::{WaterBody, WaterMeshData, lake_water_mesh_dense, river_water_mesh_dense};
 use super::water_material::{WaterExtension, WaterMaterial, WaterUniforms};
 use crate::profiler::{Group, timed};
-use crate::recipes::spawn::PendingTerrain;
+pub use crate::recipes::spawn::PendingTerrain;
 use crate::textures::WorldTiledTextures;
 
 /// One texture still loading, watched by [`drop_failed_terrain_textures`].
@@ -2955,7 +2955,7 @@ mod tests {
     /// with registries, fully headless.
     #[test]
     fn test_bootstrap_builds_a_carved_world_headless() {
-        use crate::recipes::spawn::PendingTerrain;
+        pub use crate::recipes::spawn::PendingTerrain;
         use bevy::math::Vec2;
 
         let mut app = bevy::app::App::new();

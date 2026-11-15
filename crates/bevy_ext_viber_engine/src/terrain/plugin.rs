@@ -936,7 +936,7 @@ pub(crate) fn max_lod_for(spec: &TerrainSpec, edge: f32) -> u8 {
 
 /// Full chunk edge in meters (the bootstrap's `edge`, which falls back to
 /// whole meters when `resolution` does not divide `chunk_size` exactly).
-pub(crate) fn chunk_edge(spec: &TerrainSpec) -> f32 {
+pub fn chunk_edge(spec: &TerrainSpec) -> f32 {
     let step = lod0_step(spec);
     (spec.chunk_size / step as f32).round().max(1.0) * step as f32
 }

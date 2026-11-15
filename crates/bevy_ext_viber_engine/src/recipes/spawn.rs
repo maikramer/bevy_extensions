@@ -89,10 +89,16 @@ impl GltfScenePending {
 }
 
 // Declarative terrain collected from the entity tree, consumed by the
-// terrain runtime ([`crate::terrain::runtime`]) at startup. O tipo vive no
-// `bevy_ext_terrain_runtime` (TypePath `viber::recipes::spawn` congelado
-// lá); o caminho `crate::recipes::spawn::PendingTerrain` mantém-se.
-pub use crate::terrain::runtime::PendingTerrain;
+// terrain runtime ([`crate::terrain::runtime`]) at startup.
+#[derive(Resource, Default, Reflect)]
+#[reflect(Resource)]
+pub struct PendingTerrain {
+    pub base_dir: Option<PathBuf>,
+    #[reflect(ignore)]
+    pub terrain: Option<TerrainSpec>,
+    #[reflect(ignore)]
+    pub features: TerrainFeatures,
+}
 
 fn is_ground_feature(kind: &EntityKind) -> bool {
     matches!(

@@ -30,6 +30,11 @@ pub enum AnimState {
     Run,
     Jump,
     Fall,
+    /// A nadar à superfície (em movimento) — ver [`water_state`].
+    Swim,
+    /// A boiar/tear água, parado. Substitui Jump/Fall enquanto o herói está
+    /// submerso até ao peito.
+    SwimIdle,
 }
 
 impl AnimState {
@@ -45,6 +50,8 @@ impl AnimState {
             AnimState::Run => &["run", "sprint", "runforward", "jog"],
             AnimState::Jump => &["jump", "jumpup", "jumpstart"],
             AnimState::Fall => &["fall", "falling", "jumpair", "jump"],
+            AnimState::Swim => &["swim", "swimfwd", "swimforward", "swimfast"],
+            AnimState::SwimIdle => &["swimidle", "tread", "treadwater", "float"],
         }
     }
 
@@ -59,6 +66,8 @@ impl AnimState {
             AnimState::Run => &[AnimState::Walk, AnimState::Idle],
             AnimState::Jump => &[AnimState::Fall, AnimState::Idle],
             AnimState::Fall => &[AnimState::Jump, AnimState::Idle],
+            AnimState::Swim => &[AnimState::SwimIdle, AnimState::Walk, AnimState::Idle],
+            AnimState::SwimIdle => &[AnimState::Swim, AnimState::Idle],
         }
     }
 }

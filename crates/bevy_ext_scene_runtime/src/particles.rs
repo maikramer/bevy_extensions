@@ -1018,7 +1018,7 @@ pub struct ParticleEmitter {
 /// senão qualquer `Camera` (testes headless).
 fn simulation_camera<'a>(
     editor: &'a Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: &'a Query<&GlobalTransform, With<Camera3d>>,
+    cameras: &'a crate::editor_camera::EyeCameraQuery,
     any_camera: &'a Query<&GlobalTransform, With<Camera>>,
 ) -> Option<&'a GlobalTransform> {
     crate::editor_camera::active_camera_eye(editor, cameras).or_else(|| any_camera.iter().next())
@@ -1040,7 +1040,7 @@ fn idle_gate_enabled() -> bool {
 pub fn particle_emitter_update(
     time: Res<Time>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     any_camera: Query<&GlobalTransform, With<Camera>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut emitters: Query<(Entity, &GlobalTransform, &mut ParticleEmitter, &Mesh3d)>,
@@ -1501,7 +1501,7 @@ type AmbientFxItem<'w, 's> = (
 pub fn ambient_fx_manager(
     time: Res<Time>,
     editor: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: crate::editor_camera::EyeCameraQuery,
     any_camera: Query<&GlobalTransform, With<Camera>>,
     mut markers: Query<AmbientFxItem<'_, '_>>,
     mut meshes: ResMut<Assets<Mesh>>,
