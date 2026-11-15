@@ -473,7 +473,7 @@ impl SessionPaths {
 }
 
 /// Resolve a porta a usar: `--port`, `VAEL_TOOLS_PORT`, a sessão do mundo,
-/// ou a porta por omissão.
+/// a engine viva mais recente do registo, ou a porta por omissão.
 pub fn resolve_port(explicit: Option<u16>, world: Option<&Path>) -> u16 {
     if let Some(port) = explicit {
         return port;
@@ -483,22 +483,43 @@ pub fn resolve_port(explicit: Option<u16>, world: Option<&Path>) -> u16 {
     {
         return port;
     }
-    let Some(world) = world else {
-        return DEFAULT_TOOLS_PORT;
-    };
-    let target = std::fs::canonicalize(world).unwrap_or_else(|_| world.to_path_buf());
-    let target = target.to_string_lossy();
+    let target = world.map(|world| {
+        let canonicalized = std::fs::canonicalize(world).unwrap_or_else(|_| world.to_path_buf());
+        canonicalized.to_string_lossy().into_owned()
+    });
+    let mut fallback_port: Option<u16> = None;
     for (_, paths) in SessionPaths::all() {
         let Some(info) = paths.engine_info() else {
             continue;
         };
-        let candidate =
-            std::fs::canonicalize(&info.world).unwrap_or_else(|_| info.world.clone().into());
-        if candidate.to_string_lossy() == target {
-            return info.port;
+        if let Some(target) = &target {
+            let candidate =
+                std::fs::canonicalize(&info.world).unwrap_or_else(|_| info.world.clone().into());
+            if candidate.to_string_lossy() == *target {
+                return info.port;
+            }
+        }
+        // Engine viva mais recente: o fallback quando o mundo pedido não
+        // casa com sessão nenhuma (a porta fixa 15702 é histórico do `viber
+        // run`; o alocador actual dá porta própria a cada engine).
+        if is_listening(info.port)
+            && fallback_port.is_none_or(|current| info.started_at_ms > started_of(current))
+        {
+            fallback_port = Some(info.port);
         }
     }
-    DEFAULT_TOOLS_PORT
+    fallback_port.unwrap_or(DEFAULT_TOOLS_PORT)
+}
+
+/// `started_at_ms` da engine registrada na porta dada (0 se desconhecido) —
+/// o desempate do fallback de [`resolve_port`].
+fn started_of(port: u16) -> u64 {
+    SessionPaths::all()
+        .into_iter()
+        .filter_map(|(_, paths)| paths.engine_info())
+        .find(|info| info.port == port)
+        .map(|info| info.started_at_ms)
+        .unwrap_or(0)
 }
 
 fn cache_root() -> PathBuf {
