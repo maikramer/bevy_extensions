@@ -227,8 +227,43 @@ fn registration<'a>(
 
 fn component_reflection<'a>(
     registry: &'a TypeRegistry,
+    entity: Entity,
+    world: &World,
     type_path: &str,
 ) -> Result<&'a ReflectComponent, String> {
+    // O MESMO type_path pode ter VÁRIOS registos no grafo do teste/app: o
+    // contrato unificado (`bevy_ext_core`) e variantes do mesmo tipo de
+    // compilações distintas (deps normal vs dev — o `cargo tree --duplicate`
+    // mostra os gémeos). O mapa `type_path_to_id` guarda só o ÚLTIMO, e o
+    // `reflect_mut` falhava em silêncio (`Ok(false)` num patch) quando a
+    // entidade carregava o outro. Resolve pelo TypeId do componente REAL na
+    // entidade; sem ela (ou sem match), cai no último de sempre.
+    let candidates: Vec<&TypeRegistration> = registry
+        .iter()
+        .filter(|r| r.type_info().type_path() == type_path)
+        .collect();
+    if candidates.len() > 1 {
+        if let Ok(entity_ref) = world.get_entity(entity) {
+            for component_id in entity_ref.archetype().components() {
+                let Some(info) = world.components().get_info(*component_id) else {
+                    continue;
+                };
+                let Some(type_id) = info.type_id() else {
+                    continue;
+                };
+                if let Some(r) = candidates
+                    .iter()
+                    .find(|r| r.type_info().type_id() == type_id)
+                {
+                    return r.data::<ReflectComponent>().ok_or_else(|| {
+                        format!(
+                            "'{type_path}' está registado mas não é um componente refletido"
+                        )
+                    });
+                }
+            }
+        }
+    }
     let registration = registration(registry, type_path)?;
     registration
         .data::<ReflectComponent>()
@@ -489,7 +524,7 @@ pub fn patch_component(
 ) -> Result<Patched, String> {
     let registry = registry_arc(world)?;
     let registry = registry.read();
-    let reflection = component_reflection(&registry, type_path)?;
+    let reflection = component_reflection(&registry, entity, world, type_path)?;
     let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
         return Err(format!("entidade {entity:?} não existe"));
     };
@@ -567,7 +602,7 @@ pub fn insert_component(
 ) -> Result<(), String> {
     let registry = registry_arc(world)?;
     let registry = registry.read();
-    let reflection = component_reflection(&registry, type_path)?;
+    let reflection = component_reflection(&registry, entity, world, type_path)?;
     let value = build_component(&registry, type_path, patch)?;
     let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
         return Err(format!("entidade {entity:?} não existe"));
@@ -584,7 +619,7 @@ pub fn remove_component(
 ) -> Result<bool, String> {
     let registry = registry_arc(world)?;
     let registry = registry.read();
-    let reflection = component_reflection(&registry, type_path)?;
+    let reflection = component_reflection(&registry, entity, world, type_path)?;
     let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
         return Err(format!("entidade {entity:?} não existe"));
     };
