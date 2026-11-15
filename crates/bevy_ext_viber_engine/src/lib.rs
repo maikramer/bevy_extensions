@@ -35,7 +35,10 @@ pub mod ambient;
 pub mod animation;
 pub mod app;
 pub mod attachment;
-pub mod audio_space;
+// Som 3D + oclusão movidos ao `bevy_ext_audio` (onda exit3/wave-b); o
+// caminho `viber::audio_space` reexporta o módulo e o TypePath do
+// `SpatialOneShot` fica congelado lá.
+pub use bevy_ext_audio::audio_space as audio_space;
 pub mod audit;
 pub mod bake;
 pub mod bridge;

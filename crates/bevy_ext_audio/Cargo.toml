@@ -18,4 +18,5 @@ bevy = { workspace = true, features = ["std", "bevy_asset", "bevy_camera"] }
 # Player e InteriorSceneConfig (tipos com o TypePath histórico do viber).
 bevy_ext_core = { workspace = true }
 # Backend kira: buses tipados, instâncias por loop e reverb nos tracks.
-bevy_kira_audio = { workspace = true }
+# `spatial`: pan/atenuação 3D do audio_space (onda exit3/wave-b).
+bevy_kira_audio = { workspace = true, features = ["spatial"] }
