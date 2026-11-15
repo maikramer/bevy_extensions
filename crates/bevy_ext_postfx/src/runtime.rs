@@ -1796,6 +1796,19 @@ pub fn torch_pool_is_warm(color: bevy::color::LinearRgba) -> bool {
 /// primeira observação e escreve `base × torch_pool_gain(night)` — nunca
 /// acumula (a base nunca é alterada). Corre no `Update`, depois do drive
 /// da atmosfera do jogo (fonte da fração `night`).
+///
+/// Marca uma PointLight cuja intensidade é de OUTRO dono: o
+/// [`torch_pool_drive`] não lhe toca.
+///
+/// O ganho nocturno daqui é uma compensação de AUTORIA (o valor do `.bsn` foi
+/// afinado para o quente da vila); as luzes que o pool de luzas práticas
+/// spawna nascem a 0 e o dono compõe a noite — sem a marca ficavam
+/// congeladas no escuro. (O pool do jogo insere-a nas `PoolLight` dele.)
+#[derive(Component)]
+pub struct NightGainExempt;
+
+/// acumula (a base nunca é alterada). Corre no `Update`, depois do drive
+/// da atmosfera do jogo (fonte da fração `night`).
 #[allow(clippy::type_complexity)]
 fn torch_pool_drive(
     atmosphere: Res<crate::env::AtmosphereState>,
@@ -1806,6 +1819,7 @@ fn torch_pool_drive(
         Option<&TorchLightBase>,
         Option<&crate::env::AuthoredShadowLight>,
         Option<&crate::env::TravellerLantern>,
+        Option<&NightGainExempt>,
     )>,
 ) {
     let torch = torch_pool_gain(atmosphere.night);
@@ -1813,7 +1827,12 @@ fn torch_pool_drive(
     if (torch - 1.0).abs() < 1e-4 && (fill - 1.0).abs() < 1e-4 {
         return;
     }
-    for (entity, mut light, base, torch_authored, traveller_lantern) in &mut lights {
+    for (entity, mut light, base, torch_authored, traveller_lantern, exempt) in &mut lights {
+        // Luz conduzida por fora (as `PoolLight` do pool de luzas práticas):
+        // base 0 no nascimento e o dono compõe a noite. Ver [`NightGainExempt`].
+        if exempt.is_some() {
+            continue;
+        }
         // A lanterna do viajante conduz a PRÓPRIA intensidade (`night` ×
         // LANTERN_MAX_INTENSITY) e nasce a 0. Sem esta saída, o pool
         // capturava a base 0 no primeiro frame e escrevia 0 × ganho para

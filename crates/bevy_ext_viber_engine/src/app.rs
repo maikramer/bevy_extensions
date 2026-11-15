@@ -733,9 +733,15 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // Pós-processamento (exposição/bloom/SSAO) na câmara do mundo; os
     // `pp-*` das `<BiomeRegion>` conduzem-no. `VIBER_NO_POSTFX=1` desliga.
     app.add_plugins(postfx::PostFxPlugin);
-    // (O foco de DOF das cinemáticas e a troca TAA→DLSS vivem DENTRO da
-    // lente do postfx: o `drive_dof_focus` lê o playback directamente e o
-    // plugin trata do DLSS — nada a registar aqui.)
+    // Foco de DOF das cinemáticas (exit5/G-2): a lente saiu para o
+    // `bevy_ext_postfx::runtime` e lá lê o RECURSO `PostFxCinematicFocus`
+    // em vez do playback do monólito — este glue de uma linha publica-o
+    // antes do drive (o twin não pode depender das cinemáticas: ciclo).
+    app.init_resource::<postfx::PostFxCinematicFocus>();
+    app.add_systems(
+        bevy::app::Update,
+        postfx::publish_cinematic_focus.before(postfx::FxDrive),
+    );
     // `<PostFxDebugToggle>`: teclas que comutam os gates de pós-processo ao
     // vivo (inerte sem a tag no mundo).
     app.add_plugins(crate::postfx_toggle::PostFxDebugTogglePlugin);
@@ -1079,8 +1085,10 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
                 .after(worldsys::sun_drive)
                 .after(worldsys::daycycle_drive),
             // `weather_drive`/`atmosphere_drive` vivem no AmbientPlugin (dono
-            // do `AtmosphereState`), ordenados contra este `sun_drive`.
-            timed(Group::World, worldsys::sun_drive),
+            // do `AtmosphereState`), ordenados contra este `sun_drive`. A
+            // lente (twin) lê a paleta do MESMO frame: os drives do mundo
+            // correm antes do set `FxDrive` da cadeia de drives.
+            timed(Group::World, worldsys::sun_drive).before(postfx::FxDrive),
         ),
     );
     // Tuplo dividido: o Bevy limita tuples de sistemas a 20 elementos (e o

@@ -119,7 +119,9 @@ impl Plugin for AmbientPlugin {
                         crate::profiler::Group::World,
                         crate::worldsys::atmosphere_drive,
                     )
-                    .after(crate::worldsys::sun_drive),
+                    .after(crate::worldsys::sun_drive)
+                    // A lente (twin) lê a paleta do MESMO frame.
+                    .before(crate::postfx::FxDrive),
                     // …e empurra-a para o storage buffer do domo (`SkyUniform`)
                     // — é esta escrita por frame que faz o céu mudar com o
                     // `set_clock` (o relógio do mundo não é `globals.time`).
