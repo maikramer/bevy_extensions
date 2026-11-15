@@ -295,6 +295,8 @@ mod tests {
             grid: Arc::new(grid),
             water: vec![],
             roads: vec![],
+            // Sem pavimento nos testes (grelha vazia).
+            paving: std::sync::Arc::new(bevy_ext_terrain_runtime::paving::PavingGrid::default()),
             pads: vec![],
             voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
             deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),

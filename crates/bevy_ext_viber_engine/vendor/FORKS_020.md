@@ -1,5 +1,18 @@
 # vendor/ — patch do rerecast (Bevy 0.20)
 
+**Adição 2026-11-15 — `bevy_skeleton_modifiers/`**: fork do upstream
+`jmwmulle/bevy_skeleton_modifiers` tag `v0.1.1` (rev `9d2175e`, 2026-10-09),
+portado a Bevy **0.20.1** + glam **0.33** (o upstream declara no próprio
+release que 0.1.1 não migra para Bevy 0.20). Ligado por **path-dep** do
+`bevy_ext_physics` (não `[patch.crates-io]` — não há versão registry
+compatível a interceptar). Diffs e gate (suíte golden do Godot 4.7.2, 29/29
+com o golden `ccd_warm` saltado por divergência caótica da glibc local,
+pré-existente ao port) em
+[`bevy_skeleton_modifiers/VAEL_PATCH.md`](bevy_skeleton_modifiers/VAEL_PATCH.md).
+Des-vendor quando o upstream publicar bevy 0.20. Consumidor: a migração do IK
+do `bevy_ext_physics/src/ik.rs` para a pilha de modificadores do crate
+(TwoBoneIk/SpringBoneChain; pés, look-at da cabeça e springs de criaturas).
+
 **Atualização 2026-11-11**: os quatro forks restantes do ecossistema de
 navegação saíram no crates.io com Bevy 0.20 e foram **removidos do vendor**:
 

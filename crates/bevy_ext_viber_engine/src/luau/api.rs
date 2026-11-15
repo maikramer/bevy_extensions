@@ -756,10 +756,11 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    // viber.bone_offset(bone, rx, ry, rz) — rotação ADITIVA num osso do
-    // herói, somada por cima da animação (idle/walk/run) todos os frames.
-    // Serve para o braço da tocha ficar à frente sem perder a locomoção;
-    // zeros (identidade) limpam a entrada.
+    // viber.bone_offset(bone, rx, ry, rz) — rotação ADITIVA num osso do rig
+    // da PRÓPRIA entidade, somada por cima da animação (idle/walk/run) todos
+    // os frames. Serve para o braço da tocha ficar à frente sem perder a
+    // locomoção; zeros (identidade) limpam a entrada. Fora de `on_update` (sem
+    // entidade) cai no herói — o comportamento histórico.
     api.set(
         "bone_offset",
         lua.create_function(|lua, (bone, rx, ry, rz): (String, f32, f32, f32)| {
@@ -777,10 +778,15 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             } else {
                 Quat::from_euler(EulerRot::XYZ, rx, ry, rz)
             };
+            let entity = lua
+                .app_data_mut::<ScriptCtx>()
+                .expect("ScriptCtx app data seeded in LuaScriptHost::new")
+                .entity;
             lua.app_data_mut::<ScriptCtx>()
                 .expect("ScriptCtx app data seeded in LuaScriptHost::new")
                 .commands
                 .push(ScriptCommand::SetBoneOffset {
+                    entity,
                     bone: bone.trim().to_lowercase(),
                     rotation,
                 });

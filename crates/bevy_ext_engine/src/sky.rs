@@ -820,19 +820,13 @@ mod tests {
         };
         let shader = config.render_world_shader();
         assert!(shader.contains("const CFG_SKY_MODEL: f32 = 1;"));
-        assert!(shader.contains(&format!(
-            "const CFG_NISHITA_GAIN: f32 = {};",
-            NISHITA_GAIN
-        )));
+        assert!(shader.contains(&format!("const CFG_NISHITA_GAIN: f32 = {};", NISHITA_GAIN)));
         let model = config.nishita_model();
         assert!(shader.contains(&format!(
             "const CFG_NISHITA_RAYLEIGH: vec3<f32> = vec3({}, {}, {});",
             model.rayleigh[0], model.rayleigh[1], model.rayleigh[2]
         )));
-        assert!(shader.contains(&format!(
-            "const CFG_NISHITA_MIE: f32 = {};",
-            MIE_BASE * 1.5
-        )));
+        assert!(shader.contains(&format!("const CFG_NISHITA_MIE: f32 = {};", MIE_BASE * 1.5)));
         // O default continua analytic.
         assert!(
             SkyConfig::default()

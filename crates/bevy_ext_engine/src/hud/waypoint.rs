@@ -7,9 +7,9 @@
 use bevy::prelude::*;
 use bevy::ui::Val2;
 
+use crate::camera::OrbitCamera;
 use crate::hud::markers::HudMarkers;
 use bevy_ext_core::Player;
-use crate::camera::OrbitCamera;
 
 /// Raiz da seta (posicionada em % do ecrã).
 #[derive(Component, Debug, Clone, Copy, Reflect)]

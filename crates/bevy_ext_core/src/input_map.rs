@@ -25,6 +25,7 @@ pub enum Action {
     Interact,
     Lock,
     Menu,
+    Crouch,
 }
 
 impl Action {
@@ -36,6 +37,7 @@ impl Action {
             "interact" => Some(Self::Interact),
             "lock" => Some(Self::Lock),
             "menu" => Some(Self::Menu),
+            "crouch" => Some(Self::Crouch),
             _ => None,
         }
     }
@@ -48,6 +50,7 @@ impl Action {
             Self::Interact => "interact",
             Self::Lock => "lock",
             Self::Menu => "menu",
+            Self::Crouch => "crouch",
         }
     }
 }
@@ -81,6 +84,7 @@ impl Default for ActionMap {
         bindings.insert(Action::Interact, bind("e", "east"));
         bindings.insert(Action::Lock, bind("z", "left_trigger2"));
         bindings.insert(Action::Menu, bind("q", "start"));
+        bindings.insert(Action::Crouch, bind("lctrl", "dpad_down"));
         Self { bindings }
     }
 }
@@ -110,6 +114,8 @@ pub struct ActionState {
     pub interact_just: bool,
     pub lock_just: bool,
     pub menu_just: bool,
+    /// Agachar é CONTÍNUO (held): alimenta a ação `Crouch` do tnua.
+    pub crouch_held: bool,
 }
 
 impl ActionState {
@@ -121,6 +127,7 @@ impl ActionState {
             Action::Interact => self.interact_just,
             Action::Lock => self.lock_just,
             Action::Menu => self.menu_just,
+            Action::Crouch => self.crouch_held,
         }
     }
 }

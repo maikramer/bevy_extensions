@@ -169,12 +169,26 @@ pub struct RoadSpec {
     pub texture: Option<String>,
     /// Meters of road length per texture tile.
     pub texture_scale: f32,
+    /// Tint under the texture. Only read by grid paving today: the ribbon
+    /// draws with a fixed stone fallback so it stays identical to the shipped
+    /// roads.
+    pub base_color: [f32; 3],
+    pub roughness: f32,
+    /// Rim wobble as a fraction of the paved edge's feather band
+    /// (`edge-noise`). Only read by grid paving.
+    pub edge_noise: f32,
     /// Edge alpha fade (fraction of the half-width).
     pub edge_feather: f32,
     /// Junction flare annotations (network-internal, set by expansion).
     /// `pub` porque o parser e o collect de features constroem o spec com
     /// struct-update (`..road.clone()`), que exige todos os campos visíveis.
     pub flare: Option<Flare>,
+    /// Grid paving: the corridor is still carved and still registered as a
+    /// [`RoadPath`] (nav pricing, `isPointOnRoad`, the grass clearance), but
+    /// the ribbon is **not** drawn — the surface comes from the world's
+    /// [`super::paving::PavingGrid`] instead, rasterized from this road's
+    /// carved stations.
+    pub paving: Option<super::paving::PavingStyle>,
 }
 
 impl Default for RoadSpec {
@@ -197,8 +211,12 @@ impl Default for RoadSpec {
             viaduct_clearance: 0.0,
             texture: None,
             texture_scale: 6.0,
+            base_color: [0.62, 0.60, 0.56],
+            roughness: 0.9,
+            edge_noise: 0.0,
             edge_feather: 1.0,
             flare: None,
+            paving: None,
         }
     }
 }
@@ -241,8 +259,16 @@ pub struct RoadNetworkSpec {
     pub flatten_max_grade: f32,
     pub texture: Option<String>,
     pub texture_scale: f32,
+    /// Tint / roughness / rim wobble inherited by every expanded segment
+    /// (read by grid paving).
+    pub base_color: [f32; 3],
+    pub roughness: f32,
+    pub edge_noise: f32,
     pub ways: Vec<WaySpec>,
     pub segments: Vec<SegmentSpec>,
+    /// Grid paving (`paving="1"`): every expanded segment paints into the
+    /// world lattice instead of drawing a ribbon.
+    pub paving: Option<super::paving::PavingStyle>,
 }
 
 impl Default for RoadNetworkSpec {
@@ -258,8 +284,12 @@ impl Default for RoadNetworkSpec {
             flatten_max_grade: 0.22,
             texture: None,
             texture_scale: 9.0,
+            base_color: [0.62, 0.60, 0.56],
+            roughness: 0.9,
+            edge_noise: 0.0,
             ways: Vec::new(),
             segments: Vec::new(),
+            paving: None,
         }
     }
 }
@@ -551,8 +581,12 @@ impl RoadNetworkSpec {
                     closed: false,
                     texture: self.texture.clone(),
                     texture_scale: self.texture_scale,
+                    base_color: self.base_color,
+                    roughness: self.roughness,
+                    edge_noise: self.edge_noise,
                     edge_feather: 1.0,
                     flare: None,
+                    paving: self.paving.clone(),
                 }
                 .with_flare(&crossings),
             );

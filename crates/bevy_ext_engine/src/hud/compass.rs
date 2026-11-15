@@ -3,8 +3,8 @@
 
 use bevy::prelude::*;
 
-use bevy_ext_core::Player;
 use crate::camera::OrbitCamera;
+use bevy_ext_core::Player;
 
 /// One direction letter in the sliding compass strip.
 #[derive(Component, Reflect)]

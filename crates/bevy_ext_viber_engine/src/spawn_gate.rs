@@ -184,6 +184,7 @@ fn hold_gated(
     mut commands: Commands,
     time: Res<Time<Real>>,
     runtime: Option<Res<crate::terrain::runtime::TerrainRuntime>>,
+    readiness: Option<Res<crate::world_ready::WorldReadiness>>,
     columns: Query<&crate::terrain::plugin::TerrainChunk, With<crate::physics::VoxelCollider>>,
     mut gated: Query<(
         Entity,
@@ -202,10 +203,19 @@ fn hold_gated(
             // congelar o herói no `y-fallback` para sempre.
             None => true,
             Some(rt) => {
-                !rt.in_field(gate.hold.x, gate.hold.z)
+                // O chão pode demorar/existir já; o TIMEOUT só dispensa o
+                // chão (coluna que nunca assa), nunca a época: soltar o
+                // herói antes de o mundo estar inteiro era o que o mostrava
+                // a afundar no chão à frente do jogador. Com o tempo
+                // congelado atrás do véu o herói fica em espera na posição
+                // de hold — a colocação no chão e o levantar do véu
+                // acontecem no mesmo frame.
+                let ground_ok = !rt.in_field(gate.hold.x, gate.hold.z)
                     || rt.spec.collision_resolution == 0
                     || ground_ready_at(gate.hold, rt, &columns)
-                    || gate.waited >= GATE_TIMEOUT_S
+                    || gate.waited >= GATE_TIMEOUT_S;
+                let world_ready = readiness.as_deref().is_none_or(|r| r.ready);
+                ground_ok && world_ready
             }
         };
         if let Some(mut player) = player {
@@ -239,6 +249,11 @@ fn hold_gated(
     }
 }
 
+/// Conjunto dos sistemas do portão (o véu de loading ordena-se DEPOIS:
+/// o frame que solta o herói é o frame que descobre o mundo).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SpawnGateSet;
+
 /// Liga o `<SpawnGate>`; inerte em mundos sem a tag.
 pub struct SpawnGatePlugin;
 
@@ -253,6 +268,7 @@ impl Plugin for SpawnGatePlugin {
                 Update,
                 (resolve_gates, hold_gated)
                     .chain()
+                    .in_set(SpawnGateSet)
                     .after(crate::player::player_movement)
                     .before(crate::camera::third_person_camera),
             );
@@ -296,6 +312,7 @@ mod tests {
             deltas: Arc::new(crate::terrain::delta::DeltaGrid::default()),
             paint: std::sync::Arc::new(crate::terrain::paint::PaintGrid::default()),
             splat_tuning: Default::default(),
+            paving: Default::default(),
         }
     }
 

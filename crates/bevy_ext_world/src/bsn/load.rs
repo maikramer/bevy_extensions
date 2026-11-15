@@ -41,6 +41,12 @@ pub fn load_bsn_world(path: &Path) -> Result<LoadedWorld> {
 }
 
 /// [`load_bsn_world`] com uma raiz explícita para os `<Include src="/…">`.
+///
+/// Memoizado no processo (só a última leitura): o arranque lê o MESMO mundo
+/// duas vezes — as definições (`SceneSettingsPlugin`) e a cena da engine — e
+/// cada resolução de prefabs custa ~1,4 s no `world.bsn` do Vael. A entrada
+/// só serve enquanto nenhum dos documentos lidos mudar (mtime + tamanho);
+/// gravar no editor invalida-a.
 pub fn load_bsn_world_in(path: &Path, root_dir: &Path) -> Result<LoadedWorld> {
     let path = path
         .canonicalize()
@@ -48,6 +54,96 @@ pub fn load_bsn_world_in(path: &Path, root_dir: &Path) -> Result<LoadedWorld> {
     let root_dir = root_dir
         .canonicalize()
         .unwrap_or_else(|_| root_dir.to_path_buf());
+    if let Some(hit) = memo::get(&path, &root_dir) {
+        return Ok(hit);
+    }
+    let loaded = load_bsn_world_uncached(&path, &root_dir)?;
+    memo::put(&path, &root_dir, &loaded);
+    Ok(loaded)
+}
+
+/// Memo de [`load_bsn_world_in`]: as últimas [`CAPACITY`] leituras (o
+/// mundo + os autoloads/cenas pequenas que se leem entre as duas leituras
+/// dele), cada uma validada pelas suas fontes.
+mod memo {
+    use super::LoadedWorld;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::SystemTime;
+
+    type Stamp = Option<(SystemTime, u64)>;
+
+    struct Entry {
+        path: PathBuf,
+        root_dir: PathBuf,
+        stamps: Vec<(PathBuf, Stamp)>,
+        world: LoadedWorld,
+    }
+
+    const CAPACITY: usize = 8;
+
+    static MEMO: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+    fn stamp(path: &Path) -> Stamp {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    fn disabled() -> bool {
+        std::env::var("VIBER_BSN_MEMO").is_ok_and(|v| v == "0")
+    }
+
+    pub(super) fn get(path: &Path, root_dir: &Path) -> Option<LoadedWorld> {
+        if disabled() {
+            return None;
+        }
+        let guard = MEMO.lock().ok()?;
+        let Some(entry) = guard
+            .iter()
+            .find(|entry| entry.path == path && entry.root_dir == root_dir)
+        else {
+            bevy::log::debug!("bsn memo: primeira leitura de {}", path.display());
+            return None;
+        };
+        if let Some((source, _)) = entry
+            .stamps
+            .iter()
+            .find(|(source, old)| stamp(source) != *old)
+        {
+            bevy::log::debug!("bsn memo: {} mudou — a reler", source.display());
+            return None;
+        }
+        bevy::log::debug!("bsn memo: reaproveita {}", path.display());
+        Some(entry.world.clone())
+    }
+
+    pub(super) fn put(path: &Path, root_dir: &Path, world: &LoadedWorld) {
+        if disabled() {
+            return;
+        }
+        let stamps = world
+            .sources
+            .iter()
+            .map(|source| (source.clone(), stamp(source)))
+            .collect();
+        if let Ok(mut guard) = MEMO.lock() {
+            guard.retain(|entry| entry.path != path || entry.root_dir != root_dir);
+            if guard.len() >= CAPACITY {
+                guard.remove(0);
+            }
+            guard.push(Entry {
+                path: path.to_path_buf(),
+                root_dir: root_dir.to_path_buf(),
+                stamps,
+                world: world.clone(),
+            });
+        }
+    }
+}
+
+fn load_bsn_world_uncached(path: &Path, root_dir: &Path) -> Result<LoadedWorld> {
+    let path = path.to_path_buf();
+    let root_dir = root_dir.to_path_buf();
     let mut loader = Loader {
         root_dir,
         stack: vec![path.clone()],

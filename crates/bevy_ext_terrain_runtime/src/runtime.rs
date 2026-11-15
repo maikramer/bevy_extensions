@@ -580,6 +580,10 @@ pub struct TerrainRuntime {
     pub grid: std::sync::Arc<BrushGrid>,
     pub water: Vec<WaterBody>,
     pub roads: Vec<RoadPath>,
+    /// The world's paved surface — one lattice, one owner per cell. Gameplay
+    /// reads it to know which ground is paved (`on_road` alone cannot: it
+    /// only knows the corridors of the old ribbons).
+    pub paving: std::sync::Arc<crate::paving::PavingGrid>,
     pub pads: Vec<ResolvedPad>,
     /// The 3D shape layer over `grid`: cliff bodies, overhangs, caves.
     ///
@@ -1000,6 +1004,8 @@ pub fn bootstrap(world: &mut World) {
         return;
     };
 
+    let mut lap = BootLap::start();
+
     // 1. Height grid. As roots extra vêm do config.yaml do jogo (apps mínimas
     // de teste correm sem ele — a pasta do mundo continua a ser a base).
     let asset_roots = match world.get_resource::<crate::host::TerrainWorldAssets>() {
@@ -1081,6 +1087,7 @@ pub fn bootstrap(world: &mut World) {
         }
     };
 
+    lap.mark("heightmap");
     // 2. Features (pads → water → roads). Cliffs no longer carve. Num mundo estático a
     // grelha já vem carvada: o carve corre numa CÓPIA só para resolver água/estradas/pads.
     let mut result = if static_world {
@@ -1089,6 +1096,7 @@ pub fn bootstrap(world: &mut World) {
         apply_features(&mut grid, &pending.features)
     };
 
+    lap.mark("features");
     // 2.1 Cliff bands. Resolved against the CARVED grid, so a wall beside a
     // road or a lake adapts to the ground as built, and resolved BEFORE the
     // mask so the mask can take their footprint exactly instead of hunting
@@ -1213,6 +1221,7 @@ pub fn bootstrap(world: &mut World) {
         }
     }
 
+    lap.mark("cliffs");
     // 2.7 Cachoeiras de parede — as quedas dos rios que cruzam uma banda
     // autoral passam a despencar do brow ao toe (a face lê a banda, não o
     // perfil) e ganham a fenda de spill no brow. A máscara já cobre as
@@ -1240,6 +1249,7 @@ pub fn bootstrap(world: &mut World) {
         }
     }
 
+    lap.mark("waterfalls");
     // 3. Entities. Assets are removed/reinserted to avoid aliasing `&mut World`
     //    (same pattern as `spawn::startup`).
     let mut meshes = world
@@ -1290,6 +1300,7 @@ pub fn bootstrap(world: &mut World) {
         .unwrap_or_else(|| crate::paint::PaintGrid::new(spec.world_size, grid.width()));
     let paint = std::sync::Arc::new(paint);
 
+    lap.mark("paint");
     let layer_map = if spec.layers.is_empty() {
         None
     } else if asset_server.is_none() {
@@ -1321,6 +1332,7 @@ pub fn bootstrap(world: &mut World) {
         ))
     };
 
+    lap.mark("splat");
     // Chunk LODs are picked against the camera the world spawned, so a large
     // world does not materialise at full detail (see `spawn_chunks`).
     let camera_xz = world
@@ -1504,6 +1516,7 @@ pub fn bootstrap(world: &mut World) {
             voxel_mods.len()
         );
     }
+    lap.mark("rocks+mods");
     let voxel = VoxelField::new(voxel_mods, spec.world_size, spec.chunk_size);
 
     // Caminho 100% VOLUMÉTRICO: toda a grelha sai do campo voxel por
@@ -1533,6 +1546,7 @@ pub fn bootstrap(world: &mut World) {
         voxel_standard.clone(),
         layer_map.as_ref(),
     );
+    lap.mark("voxel_columns");
     info!(
         "terrain: {} colunas voxel ({} caixas) — 100% volumétrico",
         stats.chunks, stats.meshed
@@ -1548,6 +1562,7 @@ pub fn bootstrap(world: &mut World) {
         &pending.features,
         &result,
     );
+    lap.mark("water");
     spawn_roads(
         world,
         &mut meshes,
@@ -1559,6 +1574,8 @@ pub fn bootstrap(world: &mut World) {
         &mut watched,
     );
 
+    lap.mark("roads");
+    lap.finish();
     world.insert_resource(PendingTerrainTextures { watched });
     world.insert_resource(meshes);
     world.insert_resource(materials);
@@ -1576,12 +1593,53 @@ pub fn bootstrap(world: &mut World) {
         grid: Arc::new(grid),
         water: result.water,
         roads: result.roads,
+        paving: Arc::new(result.paving),
         pads: result.pads,
         voxel: Arc::new(voxel),
         deltas: Arc::new(crate::delta::DeltaGrid::default()),
         paint,
         splat_tuning: super::splat::SplatTuning::default(),
     });
+}
+
+/// Cronómetro das fases do [`bootstrap`]: uma linha `info` no fim com o
+/// total e o peso de cada fase (é um sistema exclusivo do `Startup`, por
+/// isso cada ms aqui é um ms de ecrã preto antes do véu).
+struct BootLap {
+    t0: std::time::Instant,
+    last: std::time::Instant,
+    phases: Vec<(&'static str, f32)>,
+}
+
+impl BootLap {
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            t0: now,
+            last: now,
+            phases: Vec::new(),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.phases
+            .push((phase, (now - self.last).as_secs_f32() * 1000.0));
+        self.last = now;
+    }
+
+    fn finish(&self) {
+        let phases: Vec<String> = self
+            .phases
+            .iter()
+            .map(|(name, ms)| format!("{name} {ms:.0}"))
+            .collect();
+        info!(
+            "terrain: bootstrap em {:.0} ms ({})",
+            self.t0.elapsed().as_secs_f32() * 1000.0,
+            phases.join(", ")
+        );
+    }
 }
 
 /// O material standard legado dos chunks (o fallback quando o mundo não tem
@@ -2446,6 +2504,70 @@ fn spawn_water(
     }
 }
 
+/// `VIBER_PAVING=0` switches the lattice off (the paved nodes then draw their
+/// old ribbons/ellipses again) — the A/B for the road look.
+fn paving_enabled() -> bool {
+    !matches!(
+        std::env::var("VIBER_PAVING").as_deref(),
+        Ok("0") | Ok("false")
+    )
+}
+
+/// Spawns the merged paving surface: one mesh per (material, chunk), split by
+/// [`spawn_ground_surface`] into an opaque core plus a blended feather band.
+#[allow(clippy::too_many_arguments)]
+fn spawn_paving(
+    world: &mut World,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    asset_server: Option<&AssetServer>,
+    parent: Entity,
+    grid: &BrushGrid,
+    paving: &crate::paving::PavingGrid,
+    watched: &mut Vec<WatchedTexture>,
+) {
+    for (gid, data) in crate::paving::paving_meshes(grid, paving) {
+        if data.indices.is_empty() {
+            continue;
+        }
+        let group = &paving.groups()[gid];
+        let mut material = StandardMaterial {
+            base_color: Color::srgb(
+                group.base_color[0],
+                group.base_color[1],
+                group.base_color[2],
+            ),
+            metallic: 0.0,
+            perceptual_roughness: group.roughness,
+            alpha_mode: bevy::material::AlphaMode::Blend,
+            ..StandardMaterial::default()
+        };
+        // The core is re-materialled opaque by `spawn_ground_surface`; the
+        // loading of both maps goes through `load_world_texture`, which
+        // registers the world-tiled sampler (REPEAT + mips) in the same call.
+        let mut texture_handle = None;
+        if let (Some(server), Some(texture)) = (asset_server, group.texture.as_deref()) {
+            let image = load_world_texture(server, world, texture);
+            texture_handle = Some(image.clone());
+            material.base_color_texture = Some(image);
+        }
+        if let (Some(server), Some(normal)) = (asset_server, group.normal.as_deref()) {
+            material.normal_map_texture = Some(load_world_texture(server, world, normal));
+        }
+        spawn_ground_surface(
+            world,
+            meshes,
+            materials,
+            &data,
+            material,
+            texture_handle,
+            Name::new(format!("paving {gid}")),
+            parent,
+            watched,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_roads(
     world: &mut World,
@@ -2457,7 +2579,28 @@ fn spawn_roads(
     result: &FeatureResult,
     watched: &mut Vec<WatchedTexture>,
 ) {
+    let paving_on = paving_enabled();
+    if paving_on {
+        spawn_paving(
+            world,
+            meshes,
+            materials,
+            asset_server,
+            parent,
+            grid,
+            &result.paving,
+            watched,
+        );
+    }
+
     for (i, (path, spec)) in result.roads.iter().zip(&result.road_specs).enumerate() {
+        // A paved road keeps its carve and its `RoadPath` (nav pricing, grass
+        // clearance, `isPointOnRoad`) but draws no ribbon: the lattice owns
+        // the surface. With paving switched off for an A/B the ribbon comes
+        // back, so the comparison is apples to apples.
+        if paving_on && spec.paving.is_some() {
+            continue;
+        }
         let mesh = super::roads::road_ribbon_mesh(grid, path, spec, &result.roads, i);
         if mesh.indices.is_empty() {
             continue;
@@ -2863,6 +3006,7 @@ mod tests {
             grid: std::sync::Arc::new(grid),
             water: Vec::new(),
             roads: Vec::new(),
+            paving: Arc::new(Default::default()),
             pads: Vec::new(),
             voxel: std::sync::Arc::new(crate::voxel::VoxelField::default()),
             deltas: std::sync::Arc::new(crate::delta::DeltaGrid::default()),
@@ -2918,6 +3062,7 @@ mod tests {
             grid: std::sync::Arc::new(grid),
             water: Vec::new(),
             roads: Vec::new(),
+            paving: Arc::new(Default::default()),
             pads: Vec::new(),
             voxel: std::sync::Arc::new(crate::voxel::VoxelField::default()),
             deltas: std::sync::Arc::new(crate::delta::DeltaGrid::default()),
@@ -2967,6 +3112,7 @@ mod tests {
             grid: Arc::new(grid),
             water: Vec::new(),
             roads: Vec::new(),
+            paving: Arc::new(Default::default()),
             pads: Vec::new(),
             voxel: Arc::new(VoxelField::default()),
             deltas: Arc::new(crate::delta::DeltaGrid::default()),
@@ -2999,6 +3145,7 @@ mod tests {
 
         let features = super::super::features::TerrainFeatures {
             decals: Vec::new(),
+            paving_default: Default::default(),
             caves: Vec::new(),
             arches: Vec::new(),
             bridges: Vec::new(),

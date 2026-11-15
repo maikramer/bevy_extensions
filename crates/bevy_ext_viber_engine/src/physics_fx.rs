@@ -278,6 +278,7 @@ mod tests {
             deltas: std::sync::Arc::new(crate::terrain::delta::DeltaGrid::default()),
             paint: std::sync::Arc::new(crate::terrain::paint::PaintGrid::default()),
             splat_tuning: Default::default(),
+            paving: Default::default(),
         });
 
         let hero = app

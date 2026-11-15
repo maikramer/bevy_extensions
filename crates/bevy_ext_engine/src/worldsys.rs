@@ -315,8 +315,8 @@ pub fn daylight_factor(minute: f32, dawn: f32, dusk: f32) -> f32 {
 // `viber::worldsys` ficam congelados no crate. Os DRIVES (quem publica os
 // estados) continuam AQUI — o dono único da condução fica para a wave G.
 pub use bevy_ext_postfx::env::{
-    AtmosphereState, BiomeRegionData, BiomeRegions, EngineConfigData, EngineConfigs,
-    MOONLIGHT_RATIO, MOON_COLOR, SunLightBase, SunState, WeatherState, point_in_polygon,
+    AtmosphereState, BiomeRegionData, BiomeRegions, EngineConfigData, EngineConfigs, MOON_COLOR,
+    MOONLIGHT_RATIO, SunLightBase, SunState, WeatherState, point_in_polygon,
 };
 
 /// Período do ciclo de weather (`<Weather cycle>`) em segundos.
@@ -383,7 +383,8 @@ impl WeatherScheduler {
 /// raiz daria o oposto, ~0.67) mas preserva tempestades ocasionais (r → 1
 /// só quando o uniforme chega perto de 1).
 pub fn weather_cycle_target(seed: u64, index: u64) -> f32 {
-    let mut rng = bevy_ext_core::rng::Rng::new((seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
+    let mut rng =
+        bevy_ext_core::rng::Rng::new((seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
     let u = rng.next_f32();
     u * u
 }
@@ -965,7 +966,11 @@ fn place_ground_y(
 }
 
 /// Normal do terreno por diferenças finitas do sampler de alturas.
-fn terrain_normal(runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime, x: f32, z: f32) -> Vec3 {
+fn terrain_normal(
+    runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
+    x: f32,
+    z: f32,
+) -> Vec3 {
     const EPS: f32 = 0.5;
     let hl = runtime.sample(x - EPS, z);
     let hr = runtime.sample(x + EPS, z);

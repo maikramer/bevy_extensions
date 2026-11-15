@@ -55,6 +55,7 @@ pub fn collision_keep_within(spec: &crate::terrain::spec::TerrainSpec) -> f32 {
 pub fn stream_voxel_colliders(
     mut commands: Commands,
     mut status: ResMut<TerrainCollisionStatus>,
+    mut hero_column_log: Local<Option<(bool, [u32; 2])>>,
     runtime: Option<Res<crate::terrain::runtime::TerrainRuntime>>,
     players: Query<(Entity, &GlobalTransform), With<crate::player::Player>>,
     cameras: Query<
@@ -106,6 +107,32 @@ pub fn stream_voxel_colliders(
     *repairs = 0;
 
     let mut best_repair: Option<(f32, Entity, &Children)> = None;
+
+    // DIAGNÓSTICO da queda do herói no arranque: transições do collider na
+    // coluna que contém o 1.º herói (a que decide `ready_players`).
+    if let Some((_, pos)) = player_anchors.first() {
+        let mut next: Option<(bool, [u32; 2])> = None;
+        for (_, column, has_collider, _) in &columns {
+            if column_xz_distance(*pos, column.coords, half, edge) <= 0.0 {
+                next = Some((
+                    has_collider.is_some(),
+                    [column.coords.x, column.coords.y],
+                ));
+                break;
+            }
+        }
+        if *hero_column_log != next
+            && let Some((has, coords)) = next
+        {
+            debug!(
+                "terrain colliders: coluna do herói {:?} {} (y do herói {:.1})",
+                coords,
+                if has { "COM collider" } else { "SEM collider" },
+                pos.y
+            );
+        }
+        *hero_column_log = next;
+    }
 
     for (entity, column, has_collider, children) in &columns {
         let distance = nearest_column_distance(&anchors, column.coords, half, edge);

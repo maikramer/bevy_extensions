@@ -85,6 +85,7 @@ impl TerrainGround {
                 grid: rt.grid.clone(),
                 water: rt.water.clone(),
                 roads: rt.roads.clone(),
+                paving: rt.paving.clone(),
                 pads: rt.pads.clone(),
                 voxel: rt.voxel.clone(),
                 deltas: rt.deltas.clone(),

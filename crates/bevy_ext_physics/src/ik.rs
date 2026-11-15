@@ -3,8 +3,25 @@
 //! A função [`solve_two_bone`] é pura. O sistema só corre em rigs com
 //! [`FootIk`] que não estão congelados ([`bevy_ext_core::animation::FrozenAnimation`]):
 //! é o mesmo corte que já evita animar criaturas longe.
+//!
+//! ## Migração para `bevy_skeleton_modifiers` (2026-11-15)
+//!
+//! O caminho novo (`VAEL_SKELETON_MODS=1`, default) substitui o solver próprio
+//! pela pilha de modificadores do fork vendored: um [`TwoBoneIk`] por perna,
+//! com alvos escritos por [`foot_ik_target_system`] — o crate resolve e faz o
+//! blend via `ModifierCommon.influence` (o peso que era `foot_ik_weight`).
+//! O A/B (`VAEL_SKELETON_MODS=0`) mantém [`foot_ik_system`] intacto até a
+//! paridade ficar verificada (apagar em cima na Fase de limpeza). Os helpers
+//! de nome de osso continuam públicos — o ragdoll consome-os.
 
 use bevy::prelude::*;
+
+use bevy_skeleton_modifiers::{
+    BoneRest, ModifierCommon, SkeletonModifierSystems, SkeletonModifiersPlugin, TwoBoneIk,
+};
+// O jogo (crate `vael`) monta cadeias de mola por conteúdo (crina dos lobos);
+// re-exportar para não exigir a dep directa do fork a jusante.
+pub use bevy_skeleton_modifiers::SpringBoneChain;
 
 // Contrato de animação congelado no `bevy_ext_core` (TypePath `viber::animation`).
 use bevy_ext_core::animation::{AnimState, CharacterAnimator, FrozenAnimation};
@@ -228,9 +245,9 @@ pub(crate) struct CachedFootIkBones {
 /// frame: a bacia subia e descia com o clip mas as pernas ficavam na pose de
 /// repouso (pés colados, sem passada). Compor os locais atuais é o que deixa o
 /// IK ver a pose que o clip acabou de escrever.
-fn current_global(
+fn current_global<F: bevy::ecs::query::QueryFilter>(
     entity: Entity,
-    locals: &Query<(&Transform, Option<&ChildOf>)>,
+    locals: &Query<(&Transform, Option<&ChildOf>), F>,
     globals: &Query<&GlobalTransform>,
 ) -> Option<GlobalTransform> {
     let mut chain: Vec<Transform> = Vec::new();
@@ -278,7 +295,7 @@ fn solve_leg(
     terrain: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
     weight: f32,
     parents: &Query<&ChildOf>,
-    locals: &Query<(&Transform, Option<&ChildOf>)>,
+    locals: &Query<(&Transform, Option<&ChildOf>), impl bevy::ecs::query::QueryFilter>,
     globals: &Query<&GlobalTransform>,
 ) -> Option<[PendingRotation; 2]> {
     let hip_global = current_global(hip, locals, globals)?;
@@ -501,21 +518,27 @@ pub fn jaw_system(
     }
 }
 
-/// Rotações ADITIVAS por osso do herói, aplicadas **depois** da animação
-/// (idle/walk/run/ataques) e **antes** da propagação de transforms.
+/// Rotações ADITIVAS por osso de UM personagem, aplicadas **depois** da
+/// animação (idle/walk/run/ataques) e **antes** da propagação de transforms.
 ///
 /// É a camada que deixa o braço segurar a tocha inclinado à frente sem
 /// congelar a locomoção: o clipe escreve a pose, isto soma uma rotação local
 /// por cima. A chave é o nome do osso (`"upperarm_r"`, `"clavicle_r"`, …);
 /// `Quat::IDENTITY` remove a entrada.
-#[derive(Debug, Clone, Default, Resource, Reflect)]
-#[reflect(Resource)]
+///
+/// Vive na entidade do personagem (o script enfileira `SetBoneOffset` com a
+/// própria entidade) — substitui o antigo resource global `PlayerBoneOffsets`,
+/// que só chegava ao herói: com o componente, qualquer rig (NPC/monstro com
+/// script) pode usar `viber.bone_offset`. Registado nos DOIS caminhos do gate
+/// `VAEL_SKELETON_MODS` — é ortogonal ao crate.
+#[derive(Debug, Clone, Default, Component, Reflect)]
+#[reflect(Component)]
 #[type_path = "viber::ik"]
-pub struct PlayerBoneOffsets {
+pub struct BoneOffsets {
     pub entries: Vec<(String, Quat)>,
 }
 
-impl PlayerBoneOffsets {
+impl BoneOffsets {
     pub fn set(&mut self, bone: &str, rotation: Quat) {
         if let Some(entry) = self.entries.iter_mut().find(|(name, _)| name == bone) {
             entry.1 = rotation;
@@ -529,7 +552,7 @@ impl PlayerBoneOffsets {
     }
 }
 
-/// Soma as rotações de [`PlayerBoneOffsets`] aos ossos do herói. Corre no
+/// Soma as rotações de [`BoneOffsets`] aos ossos do rig da entidade. Corre no
 /// `PostUpdate` depois de `AnimationSystems` (a pose do clipe já está
 /// escrita) e antes de `TransformSystems::Propagate` (os filhos — mão,
 /// lampião — vêem a rotação no mesmo frame).
@@ -556,44 +579,488 @@ fn find_animator<'a>(
     None
 }
 
-pub fn player_bone_offsets_system(
-    offsets: Res<PlayerBoneOffsets>,
-    players: Query<Entity, With<bevy_ext_core::Player>>,
+/// Soma as rotações de [`BoneOffsets`] de cada personagem aos ossos do rig
+/// dele. Corre no `PostUpdate` depois de `AnimationSystems` (a pose do clipe
+/// já está escrita) e antes de `TransformSystems::Propagate` (os filhos —
+/// mão, lampião — vêem a rotação no mesmo frame). No caminho novo, também
+/// corre depois da pilha do crate (a tocha sobrepõe-se ao IK resolvido).
+///
+/// Rigs com animator da engine (herói): o `CharacterAnimator` vive no root da
+/// cena glTF (um descendente da entidade do script), por isso desce-se até ele
+/// — os ossos penduram do `animator.player`. Rigs cedidos ao Jackdaw (NPCs
+/// com `AnimationSet`, sem animator): os ossos penduram da própria entidade.
+pub fn bone_offsets_system(
+    offsets_q: Query<(Entity, &BoneOffsets)>,
     animators: Query<(Entity, &CharacterAnimator)>,
     names: Query<&Name>,
     children: Query<&Children>,
     rigs: Query<Has<FrozenAnimation>>,
     mut transforms: Query<&mut Transform>,
 ) {
-    if offsets.entries.is_empty() {
-        return;
+    for (entity, offsets) in &offsets_q {
+        if offsets.entries.is_empty() {
+            continue;
+        }
+        let animator = find_animator(entity, &children, &animators);
+        if let Some(animator) = animator
+            && rigs.get(animator.player).unwrap_or(false)
+        {
+            continue;
+        }
+        let root = rig_root(entity, animator);
+        let mut bones = Vec::new();
+        walk_bones(root, &children, &names, &mut bones);
+        for (bone, rotation) in &offsets.entries {
+            // A chave vem do script (`upperarm_r`), mas `bone_matches`
+            // normaliza o NOME do osso (`upperarmr`) — sem normalizar a
+            // agulha também, o `viber.bone_offset` documentado nunca casava
+            // com nada.
+            let needle = bevy_ext_core::animation::normalize_clip_name(bone);
+            let Some((bone_entity, _)) = bones
+                .iter()
+                .find(|(_, name)| bone_matches(name, &[needle.as_str()]))
+            else {
+                continue;
+            };
+            if let Ok(mut tf) = transforms.get_mut(*bone_entity) {
+                // Pós-multiplica no espaço LOCAL do osso: a rotação soma-se à
+                // pose animada em vez de a substituir.
+                tf.rotation = (tf.rotation * *rotation).normalize();
+            }
+        }
     }
-    let Some(player) = players.iter().next() else {
-        return;
-    };
-    let Some(animator) = find_animator(player, &children, &animators) else {
-        return;
-    };
-    if rigs.get(animator.player).unwrap_or(false) {
-        return;
-    }
+}
+
+/// Uma perna ligada ao crate: a entidade dona do [`TwoBoneIk`] e a entidade
+/// alvo (filha da raiz do rig, em espaço local dele).
+#[derive(Clone, Copy, Debug)]
+pub struct FootIkLeg {
+    /// Entidade com o `TwoBoneIk` (filha da entidade de gameplay; morre com ela).
+    pub owner: Entity,
+    /// Entidade alvo cujo `Transform` o driver escreve (filha da raiz do rig).
+    pub target: Entity,
+    /// (coxa, canela, pé) — a cadeia que o crate resolve.
+    pub bones: (Entity, Entity, Entity),
+}
+
+/// As duas pernas ligadas, vivas na entidade de gameplay que tem [`FootIk`].
+/// Inserido por [`foot_ik_bind_system`]; removido quando os ossos morrem
+/// (rebind de tier/LOD) para voltar ao estado pendente.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct FootIkRigs {
+    /// Raiz da subárvore de ossos (o `AnimationPlayer` da cena, ou a própria
+    /// entidade de gameplay nos rigs sem animator da engine).
+    pub root: Entity,
+    /// [esquerda, direita].
+    pub legs: [FootIkLeg; 2],
+}
+
+/// Marca a entidade alvo de uma perna (para o driver não tocar noutro
+/// `Transform` por engano).
+#[derive(Component)]
+struct FootIkTarget;
+
+/// Gate de A/B da migração: `VAEL_SKELETON_MODS=0` devolve o solver próprio.
+fn skeleton_mods_enabled() -> bool {
+    std::env::var("VAEL_SKELETON_MODS").ok().as_deref() != Some("0")
+}
+
+/// Raiz da subárvore de ossos de um rig: o `AnimationPlayer` da cena quando há
+/// animator da engine, ou a própria entidade de gameplay nos rigs cedidos ao
+/// runtime do Jackdaw (sem `CharacterAnimator`).
+fn rig_root(
+    entity: Entity,
+    animator: Option<&CharacterAnimator>,
+) -> Entity {
+    animator.map_or(entity, |a| a.player)
+}
+
+/// Encontra os 6 ossos das pernas descendo de `root` (nomes Mixamo e da
+/// convenção Vael — os mesmos needles do caminho velho).
+fn find_leg_bones(
+    root: Entity,
+    children: &Query<&Children>,
+    names: &Query<&Name>,
+) -> Option<[(Entity, Entity, Entity); 2]> {
     let mut bones = Vec::new();
-    walk_bones(animator.player, &children, &names, &mut bones);
-    for (bone, rotation) in &offsets.entries {
-        // A chave vem do script (`upperarm_r`), mas `bone_matches` normaliza
-        // o NOME do osso (`upperarmr`) — sem normalizar a agulha também, o
-        // `viber.bone_offset` documentado nunca casava com nada.
-        let needle = bevy_ext_core::animation::normalize_clip_name(bone);
-        let Some((entity, _)) = bones
-            .iter()
-            .find(|(_, name)| bone_matches(name, &[needle.as_str()]))
-        else {
+    walk_bones(root, children, names, &mut bones);
+    let find = |pred: fn(&str) -> bool| {
+        bones.iter().find(|(_, n)| pred(n)).map(|(e, _)| *e)
+    };
+    Some([
+        (find(is_left_hip)?, find(is_left_knee)?, find(is_left_foot)?),
+        (
+            find(is_right_hip)?,
+            find(is_right_knee)?,
+            find(is_right_foot)?,
+        ),
+    ])
+}
+
+/// Liga as pernas de um rig ao crate: um dono `TwoBoneIk` + uma entidade alvo
+/// por perna, ambos filhos (o dono da entidade de gameplay, o alvo da raiz do
+/// rig — morrem com a subárvore no rebind). Guarda também um [`BoneRest`] nos
+/// 6 ossos, para o crate não usar "a primeira pose observada" (que podia ser
+/// meio-animada) como referência.
+///
+/// Corre todos os frames sobre os rigs com [`FootIk`] sem [`FootIkRigs`]: os
+/// ossos podem ainda não ter spawnado (a cena glTF está a carregar) — retry
+/// até conseguir. Rebind de tier/LOD: o validador do outro loop remove o
+/// componente quando os ossos morrem e este sistema volta a ligar.
+fn foot_ik_bind_system(
+    mut commands: Commands,
+    pending: Query<(Entity, &FootIk, Option<&CharacterAnimator>), Without<FootIkRigs>>,
+    bound: Query<(Entity, &FootIkRigs)>,
+    locals: Query<&Transform>,
+    names: Query<&Name>,
+    children: Query<&Children>,
+) {
+    // Rigs ligados cuja subárvore morreu (troca de tier/LOD): voltar ao
+    // pendente, depois de soltar os donos velhos (as entidades alvo morreram
+    // com a subárvore, eram filhas dela).
+    for (entity, rigs) in &bound {
+        let dead = rigs.legs.iter().any(|leg| {
+            !locals.contains(leg.target)
+                || !locals.contains(leg.bones.0)
+                || !locals.contains(leg.bones.1)
+                || !locals.contains(leg.bones.2)
+        });
+        if dead {
+            for leg in rigs.legs {
+                if let Ok(mut e) = commands.get_entity(leg.owner) {
+                    e.despawn();
+                }
+            }
+            if let Ok(mut e) = commands.get_entity(entity) {
+                e.remove::<FootIkRigs>();
+            }
+        }
+    }
+
+    for (entity, _, animator) in &pending {
+        let root = rig_root(entity, animator);
+        let Some(legs) = find_leg_bones(root, &children, &names) else {
+            continue; // ossos ainda não spawnados, ou rig sem pernas — retry
+        };
+        let mut legs_out = [None, None];
+        for (side, (hip, knee, foot)) in legs.into_iter().enumerate() {
+            // Alvo em espaço LOCAL da raiz do rig: o adaptador compõe os
+            // locais do frame corrente, por isso filha da raiz funciona e
+            // morre com ela no rebind.
+            let foot_local = locals.get(foot).copied().unwrap_or_default();
+            let target = commands
+                .spawn((
+                    Name::new(format!("vael-foot-target-{}", side as u8 + 1)),
+                    FootIkTarget,
+                    ChildOf(root),
+                    foot_local,
+                ))
+                .id();
+            let owner = commands
+                .spawn((
+                    Name::new(format!("vael-foot-ik-{}", side as u8 + 1)),
+                    TwoBoneIk::new(hip, knee, foot, target),
+                    ChildOf(entity),
+                ))
+                .id();
+            // O crate usa `BoneRest` como referência (comprimentos/direções);
+            // capturar a pose de bind ANTES da primeira escrita do clip.
+            for bone in [hip, knee, foot] {
+                if let Ok(local) = locals.get(bone) {
+                    commands.entity(bone).insert(BoneRest(*local));
+                }
+            }
+            legs_out[side] = Some(FootIkLeg {
+                owner,
+                target,
+                bones: (hip, knee, foot),
+            });
+        }
+        let (Some(left), Some(right)) = (legs_out[0], legs_out[1]) else {
+            // Falhou um lado: desfazer o que spawnou e tentar de novo no
+            // frame seguinte (rigs simétricos não deviam falhar a meio, mas
+            // não deixar estado a meio).
+            for leg in legs_out.into_iter().flatten() {
+                if let Ok(mut e) = commands.get_entity(leg.owner) {
+                    e.despawn();
+                }
+                if let Ok(mut e) = commands.get_entity(leg.target) {
+                    e.despawn();
+                }
+            }
             continue;
         };
-        if let Ok(mut tf) = transforms.get_mut(*entity) {
-            // Pós-multiplica no espaço LOCAL do osso: a rotação soma-se à
-            // pose animada em vez de a substituir.
-            tf.rotation = (tf.rotation * *rotation).normalize();
+        commands.entity(entity).insert(FootIkRigs {
+            root,
+            legs: [left, right],
+        });
+    }
+}
+
+/// Escreve os alvos dos pés e o peso de blend — o port da matemática de
+/// [`solve_leg`], que aqui já não resolve ossos: o crate fá-lo na
+/// [`SkeletonModifierSystems`]. Corre depois da animação (a pose do frame é a
+/// que mede a fase de apoio) e antes da pilha de modificadores.
+///
+/// O alvo é a posição-MUNDO desejada do tornozelo, escrita em local da raiz
+/// do rig; o peso de `foot_ik_weight` vai para `ModifierCommon.influence` e o
+/// blend é do crate. Sem correção a fazer neste frame (plano, sem terreno,
+/// congelado, busy), o modificador fica inativo — o crate ignora-o e a pose
+/// do clip passa limpa.
+#[allow(clippy::too_many_arguments)]
+fn foot_ik_target_system(
+    rigs: Query<(Entity, &FootIkRigs)>,
+    animators: Query<&CharacterAnimator>,
+    mut commons: Query<&mut ModifierCommon, With<TwoBoneIk>>,
+    mut targets: Query<&mut Transform, With<FootIkTarget>>,
+    // `Without<FootIkTarget>`: os alvos de IK são marcadores, nunca ossos do
+    // rig — sem a disjunção o B0001 (acesso conflitante de Transform) rebenta
+    // a inicialização da query e o frame morre (medido 2026-11-15).
+    locals: Query<(&Transform, Option<&ChildOf>), Without<FootIkTarget>>,
+    globals: Query<&GlobalTransform>,
+    frozen: Query<Has<FrozenAnimation>>,
+    terrain: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
+) {
+    // Sem terreno (cenas sem mundo): IK todo desligado — o comportamento de
+    // `foot_ik_system` (return cedo).
+    let Some(terrain) = terrain.as_deref() else {
+        for (_, rig) in &rigs {
+            for leg in rig.legs {
+                if let Ok(mut common) = commons.get_mut(leg.owner) {
+                    common.active = false;
+                }
+            }
+        }
+        return;
+    };
+    for (entity, rig) in &rigs {
+        // Peso: animator da engine dá o estado de locomoção (e o corte de
+        // congelados); rigs cedidos ao Jackdaw ficam a 1.0 (estão sempre
+        // próximos — a cull por distância é da engine).
+        let weight = match animators.get(rig.root) {
+            Ok(animator) => {
+                if frozen.get(animator.player).unwrap_or(false) {
+                    0.0
+                } else {
+                    foot_ik_weight(animator.state, animator.is_busy())
+                }
+            }
+            Err(_) => 1.0,
+        };
+        let set_active = |commons: &mut Query<&mut ModifierCommon, With<TwoBoneIk>>,
+                          leg: &FootIkLeg,
+                          active: bool| {
+            if let Ok(mut common) = commons.get_mut(leg.owner) {
+                common.active = active;
+                if active {
+                    common.influence = weight;
+                }
+            }
+        };
+        if weight <= 0.0 {
+            for leg in &rig.legs {
+                set_active(&mut commons, leg, false);
+            }
+            continue;
+        }
+        let Some(root_global) = current_global(entity, &locals, &globals) else {
+            continue;
+        };
+        let root_y = root_global.translation().y;
+        let player_global = current_global(rig.root, &locals, &globals);
+        for leg in &rig.legs {
+            // Ossos vivos? (rebind no frame anterior pode ter trocado a
+            // subárvore — nunca activar um binding morto: o crate avisava a
+            // cada frame)
+            if !locals.contains(leg.bones.2) || player_global.is_none() {
+                set_active(&mut commons, leg, false);
+                continue;
+            }
+            let Some(foot_global) = current_global(leg.bones.2, &locals, &globals) else {
+                set_active(&mut commons, leg, false);
+                continue;
+            };
+            let foot_p = foot_global.translation();
+            let surface = if terrain.in_field(foot_p.x, foot_p.z) {
+                Some(
+                    terrain
+                        .surface_below(foot_p.x, foot_p.z, foot_p.y + FOOT_MAX_ERROR)
+                        .unwrap_or_else(|| terrain.sample_mesh_surface(foot_p.x, foot_p.z)),
+                )
+            } else {
+                None
+            };
+            let Some(surface) = surface else {
+                set_active(&mut commons, leg, false);
+                continue;
+            };
+            let terrain_delta = surface - root_y;
+            if terrain_delta.abs() > FOOT_MAX_ERROR {
+                set_active(&mut commons, leg, false);
+                continue;
+            }
+            // Altura do tornozelo acima da sola; fase de apoio vs balanço
+            // (idêntico ao caminho velho — ver os comentários de `solve_leg`).
+            let sole = foot_p.y - surface;
+            let swing_lift = (sole - 0.14).max(0.0);
+            let stance = (1.0 - swing_lift / 0.12).clamp(0.0, 1.0);
+            let clamped_delta = terrain_delta.clamp(-0.03, FOOT_MAX_ERROR);
+            let y = foot_p.y + clamped_delta * stance;
+            if (y - foot_p.y).abs() < 1e-4 {
+                set_active(&mut commons, leg, false);
+                continue;
+            }
+            let mut goal = Vec3::new(foot_p.x, y, foot_p.z);
+            // Flexão mínima no joelho para não trancar em declive (0.985).
+            if let (Some(hip_g), Some(knee_g)) = (
+                current_global(leg.bones.0, &locals, &globals),
+                current_global(leg.bones.1, &locals, &globals),
+            ) {
+                let hip_p = hip_g.translation();
+                let knee_p = knee_g.translation();
+                let soft_max_reach =
+                    (knee_p.distance(hip_p) + foot_p.distance(knee_p)) * 0.985;
+                let to_goal = goal - hip_p;
+                let reach = to_goal.length();
+                if reach > soft_max_reach && reach > 1e-4 {
+                    goal = hip_p + to_goal * (soft_max_reach / reach);
+                }
+            }
+            // Alvo em espaço LOCAL da raiz do rig (o adaptador compõe de
+            // volta para mundo com os locais do frame corrente).
+            let target_local = player_global
+                .unwrap()
+                .affine()
+                .inverse()
+                .transform_point3(goal);
+            if let Ok(mut tf) = targets.get_mut(leg.target) {
+                tf.translation = target_local;
+                tf.rotation = Quat::IDENTITY;
+            }
+            set_active(&mut commons, leg, true);
+        }
+    }
+}
+
+/// Look-at da cabeça: o osso `head` do rig vira para uma ENTIDADE do mundo
+/// (o herói, outro personagem), com arco clampado e peso amortecido — as
+/// constantes [`HEAD_LOOK_WEIGHT`]/[`HEAD_LOOK_MAX`], documentadas desde o
+/// início do módulo, tornam-se os defaults.
+///
+/// O alvo é dinâmico: quem conduz o jogo (o Vael) insere o componente com a
+/// entidade a olhar e o peso 0 quando o alvo sai de cena/alcance. O peso 0
+/// é passado limpo (o sistema sai cedo) — sem escrita no osso.
+#[derive(Component, Debug, Clone)]
+pub struct HeadLookAt {
+    /// Entidade cuja posição é o alvo do olhar.
+    pub target: Entity,
+    /// Peso por frame do slerp (0 = olhar calado).
+    pub weight: f32,
+    /// Arco máximo (rad) entre a frente actual e o alvo.
+    pub max_angle: f32,
+}
+
+impl HeadLookAt {
+    /// Para `entity`, com os defaults históricos do módulo (0.35 / 40°).
+    pub fn toward(entity: Entity) -> Self {
+        Self {
+            target: entity,
+            weight: HEAD_LOOK_WEIGHT,
+            max_angle: HEAD_LOOK_MAX,
+        }
+    }
+}
+
+/// O osso da cabeça resolvido pelo bind (por rig); removido quando morre.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct HeadLookBound {
+    pub head: Entity,
+}
+
+/// Resolve o osso da cabeça (primeiro descendente que casa `is_head` a partir
+/// da raiz do rig) para as entidades com [`HeadLookAt`] ainda sem
+/// [`HeadLookBound`]. Corre no `Update` — retry até os ossos existirem.
+fn head_look_bind_system(
+    mut commands: Commands,
+    pending: Query<(Entity, &HeadLookAt, Option<&CharacterAnimator>), Without<HeadLookBound>>,
+    names: Query<&Name>,
+    children: Query<&Children>,
+) {
+    for (entity, _, animator) in &pending {
+        let root = rig_root(entity, animator);
+        let mut bones = Vec::new();
+        walk_bones(root, &children, &names, &mut bones);
+        let Some((head, _)) = bones.iter().find(|(_, n)| is_head(n)) else {
+            continue; // ossos ainda não spawnados, ou rig sem cabeça — retry
+        };
+        commands.entity(entity).insert(HeadLookBound { head: *head });
+    }
+}
+
+/// Roda a cabeça para o alvo: arco de [`HEAD_LOOK_MAX`] (componente) na
+/// direção do alvo, aplicado com slerp de peso [`HEAD_LOOK_WEIGHT`] por frame
+/// — converge suave e nunca passa do arco. Corre DEPOIS dos offsets (a rotação
+/// de onde parte já inclui a pose do clipe + offsets) e antes da propagação.
+#[allow(clippy::too_many_arguments)]
+fn head_look_system(
+    looks: Query<(Entity, &HeadLookAt, &HeadLookBound, Option<&CharacterAnimator>)>,
+    parents: Query<&ChildOf>,
+    // ParamSet como no `foot_ik_system`: ler a pose local dos ossos e escrever
+    // a rotação da cabeça são acessos de Transform em conflito (B0001) — o
+    // empréstimo é exclusivo e sequencial (leitura primeiro, escrita no fim).
+    mut sets: ParamSet<(Query<&mut Transform>, Query<(&Transform, Option<&ChildOf>)>)>,
+    globals: Query<&GlobalTransform>,
+    frozen: Query<Has<FrozenAnimation>>,
+) {
+    for (entity, look, bound, animator) in &looks {
+        if look.weight <= 0.0 {
+            continue;
+        }
+        if let Some(animator) = animator
+            && frozen.get(animator.player).unwrap_or(false)
+        {
+            continue;
+        }
+        let locals = sets.p1();
+        let Some(head_global) = current_global(bound.head, &locals, &globals) else {
+            continue;
+        };
+        let Some(target_global) = current_global(look.target, &locals, &globals) else {
+            continue; // alvo em carga, ou já despawnado — frame sem olhar
+        };
+        let head_p = head_global.translation();
+        let to_target = target_global.translation() - head_p;
+        // Frente actual da cabeça no mundo. Os rigs da pipeline (Mixamo e a
+        // convenção Vael) olham +Z; se um rig novo vier virado ao contrário,
+        // o look-at erra 180° e este é o sítio para virar.
+        let from = head_global.rotation() * Vec3::Z;
+        let to = to_target.normalize_or_zero();
+        let angle = from.angle_between(to);
+        if !angle.is_finite() || angle < 0.05 {
+            continue; // alvo na direção actual, ou posição degenerada
+        }
+        // Arco permitido desta vez: o mais curto até ao alvo, limitado ao
+        // máximo do componente. O eixo é o da rotação mais curta entre as
+        // duas direções.
+        let step = angle.min(look.max_angle);
+        let cross = from.cross(to);
+        if cross.length_squared() < 1e-8 {
+            continue; // colineares ao contrário — eixo indeterminado, ignorar
+        }
+        let axis = cross.normalize();
+        let delta = Quat::from_axis_angle(axis, step);
+        let blended = Quat::IDENTITY.slerp(delta, look.weight.clamp(0.0, 1.0));
+        let new_world = blended * head_global.rotation();
+        let parent = parents
+            .get(bound.head)
+            .map(|c| c.parent())
+            .unwrap_or(bound.head);
+        let parent_rot = current_global(parent, &locals, &globals)
+            .map(|g| g.rotation())
+            .unwrap_or_else(|| head_global.rotation());
+        let local = parent_rot.inverse() * new_world;
+        if let Ok(mut tf) = sets.p0().get_mut(bound.head) {
+            tf.rotation = local.normalize();
         }
     }
 }
@@ -602,20 +1069,50 @@ pub struct IkPlugin;
 
 impl Plugin for IkPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VoiceEnvelope>()
-            .init_resource::<PlayerBoneOffsets>()
-            .add_systems(
+        app.init_resource::<VoiceEnvelope>();
+        if skeleton_mods_enabled() {
+            // Caminho novo: a pilha do crate faz a janela pós-animação
+            // (depois de `AnimationSystems`, antes da propagação). O driver
+            // de alvos corre antes dela; os offsets/jaw continuam a correr
+            // depois (por cima da pose resolvida, como antes).
+            app.add_plugins(SkeletonModifiersPlugin)
+                .add_systems(Update, foot_ik_bind_system)
+                .add_systems(
+                    PostUpdate,
+                    foot_ik_target_system
+                        .after(bevy::app::AnimationSystems)
+                        .before(SkeletonModifierSystems),
+                )
+                .add_systems(Update, (head_look_bind_system,)) // + foot_ik_bind_system já registado
+                .add_systems(
+                    PostUpdate,
+                    (
+                        bone_offsets_system,
+                        head_look_system,
+                        decay_voice_envelope,
+                        jaw_system,
+                    )
+                        .chain()
+                        .after(SkeletonModifierSystems)
+                        .before(bevy::transform::TransformSystems::Propagate),
+                );
+        } else {
+            // A/B: solver próprio intacto; os offsets são ortogonais ao gate.
+            app.add_systems(
                 PostUpdate,
                 (
                     foot_ik_system,
-                    player_bone_offsets_system,
+                    bone_offsets_system,
+                    head_look_system,
                     decay_voice_envelope,
                     jaw_system,
                 )
                     .chain()
                     .after(bevy::app::AnimationSystems)
                     .before(bevy::transform::TransformSystems::Propagate),
-            );
+            )
+            .add_systems(Update, head_look_bind_system);
+        }
     }
 }
 

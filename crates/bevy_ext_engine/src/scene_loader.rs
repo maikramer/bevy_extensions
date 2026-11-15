@@ -11,4 +11,3 @@ use bevy::ecs::schedule::ScheduleLabel;
 /// montam o mundo.
 #[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SceneLoad;
-

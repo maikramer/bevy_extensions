@@ -127,7 +127,10 @@ pub fn simplify_far_tiers(
     let (Some(server), Some(mut meshes)) = (server, meshes) else {
         return;
     };
-    let mut touched = false;
+    // Recolhe primeiro (só leitura) e simplifica em paralelo: no arranque
+    // chegam ~60 LOD2 de uma vez (~480 k triângulos) e o meshopt em série na
+    // main thread segurava o primeiro frame atrás do véu.
+    let mut jobs: Vec<(bevy::asset::AssetId<Mesh>, Vec<[f32; 3]>, Vec<u32>)> = Vec::new();
     for event in events.read() {
         // `Modified` conta: um asset recarregado (hot-reload no editor,
         // reimport do pack) devolve a malha ORIGINAL ao Assets e sem isto o
@@ -136,6 +139,9 @@ pub fn simplify_far_tiers(
             AssetEvent::Added { id } | AssetEvent::Modified { id } => *id,
             _ => continue,
         };
+        if jobs.iter().any(|(job, _, _)| *job == id) {
+            continue;
+        }
         let is_far = server
             .get_path(id)
             .is_some_and(|p| p.path().to_string_lossy().ends_with("_lod2.glb"));
@@ -160,11 +166,38 @@ pub fn simplify_far_tiers(
         if written_tris.get(&id).copied() == Some(indices.len() / 3) {
             continue;
         }
-        let Some(simplified) = simplify_far_indices(positions, &indices, FAR_TIER_MAX_TRIS) else {
+        if indices.len() / 3 <= FAR_TIER_MAX_TRIS {
+            continue;
+        }
+        jobs.push((id, positions.clone(), indices));
+    }
+    if jobs.is_empty() {
+        return;
+    }
+    let results: Vec<(bevy::asset::AssetId<Mesh>, usize, Option<Vec<u32>>)> = if jobs.len() == 1 {
+        jobs.into_iter()
+            .map(|(id, positions, indices)| {
+                let simplified = simplify_far_indices(&positions, &indices, FAR_TIER_MAX_TRIS);
+                (id, indices.len() / 3, simplified)
+            })
+            .collect()
+    } else {
+        bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default).scope(|scope| {
+            for (id, positions, indices) in jobs {
+                scope.spawn(async move {
+                    let simplified = simplify_far_indices(&positions, &indices, FAR_TIER_MAX_TRIS);
+                    (id, indices.len() / 3, simplified)
+                });
+            }
+        })
+    };
+    let mut touched = false;
+    for (id, before, simplified) in results {
+        let Some(simplified) = simplified else {
             continue;
         };
         total.0 += 1;
-        total.1 += indices.len() / 3;
+        total.1 += before;
         total.2 += simplified.len() / 3;
         let tris = simplified.len() / 3;
         if let Some(mut mesh) = meshes.get_mut(id) {

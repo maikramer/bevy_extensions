@@ -13,15 +13,15 @@
 
 use std::collections::HashMap;
 
+use avian3d::prelude::{Collider, RigidBody};
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use avian3d::prelude::{Collider, RigidBody};
 
 // Contratos fora do monólito: animação congelada no core, marca de script e
 // colisor pendente nos crates próprios.
+use crate::luau::LuaScriptRef;
 use bevy_ext_core::animation::CharacterAnimator;
 use bevy_ext_physics::physics::PendingCollider;
-use crate::luau::LuaScriptRef;
 
 pub const TILE: f32 = 16.0;
 

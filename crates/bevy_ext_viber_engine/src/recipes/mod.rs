@@ -20,6 +20,7 @@ use crate::terrain::TerrainSpec;
 use crate::terrain::cliffs::{CliffProfile, CliffSide, CliffSpec};
 use crate::terrain::cut::CutSpec;
 use crate::terrain::decal::GroundDecalSpec;
+use crate::terrain::paving::PavingStyle;
 use crate::terrain::plateau::{PlateauSpec, wall_profile_from_name};
 use crate::terrain::roads::{RoadNetworkSpec, RoadProfile, RoadSpec, SegmentSpec, WaySpec};
 use crate::terrain::spec::TerrainPadSpec;
@@ -3751,6 +3752,54 @@ fn warn_children(node: &XmlNode, ctx: &mut ParseCtx) {
     }
 }
 
+/// `<… paving="1" on-paving="1" paving-cell="2" …>` — the grid-paving
+/// vocabulary shared by `<Terrain>` (world defaults), `<GroundDecal>`, `<Road>`
+/// and `<RoadNetwork>`.
+///
+/// Accumulated first and committed at the end on purpose: a `.bsn` writes its
+/// attributes in whatever order the editor produced, so `paving-corner` may
+/// well come before `paving`.
+#[derive(Default)]
+struct PavingAttrs {
+    /// `paving="1"` — this node's ground becomes lattice cells.
+    on: bool,
+    /// `on-paving="1"` — a `<GroundDecal>` inset that sits *above* the paving.
+    on_paving: bool,
+    style: PavingStyle,
+}
+
+impl PavingAttrs {
+    /// Handles the plumbing keys; `false` means the key is not ours.
+    fn parse(&mut self, key: &str, value: &str, kctx: &str) -> Result<bool> {
+        match key {
+            "paving" => self.on = parse_paving_flag(value, kctx)?,
+            "on-paving" => self.on_paving = parse_paving_flag(value, kctx)?,
+            "paving-cell" => self.style.cell = values::parse_f32(value, kctx)?,
+            "paving-corner" => self.style.corner = values::parse_f32(value, kctx)?,
+            "paving-inner-corner" => self.style.inner_corner = values::parse_f32(value, kctx)?,
+            "paving-priority" => self.style.priority = values::parse_f32(value, kctx)? as i32,
+            "paving-chunk" => self.style.chunk = values::parse_f32(value, kctx)?,
+            "paving-round" => self.style.round = values::parse_bool(value, kctx)?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// The style to store on the spec, or `None` when the node did not opt in.
+    fn into_style(self) -> Option<PavingStyle> {
+        self.on.then_some(self.style)
+    }
+}
+
+/// `1|0|grid` — `grid` is accepted as the self-documenting spelling.
+fn parse_paving_flag(value: &str, kctx: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" | "grid" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => bail!("{kctx}: esperado 1|0|grid, achei `{other}`"),
+    }
+}
+
 fn finish_terrain(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec> {
     let (common, rest) = parse_common(node, ctx)?;
     warn_children(node, ctx);
@@ -3758,6 +3807,20 @@ fn finish_terrain(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec> {
     let mut spec = TerrainSpec::default();
     for (key, value) in rest {
         let kctx = format!("{ctx_tag} {key}");
+        // The world sets the grid defaults once, here: every paved node
+        // inherits whatever it does not override itself.
+        if matches!(
+            key.as_str(),
+            "paving-cell" | "paving-corner" | "paving-inner-corner" | "paving-chunk"
+        ) {
+            let mut defaults = PavingAttrs {
+                style: spec.paving.clone(),
+                ..PavingAttrs::default()
+            };
+            defaults.parse(&key, &value, &kctx)?;
+            spec.paving = defaults.style;
+            continue;
+        }
         match key.as_str() {
             "heightmap" => spec.heightmap = Some(value.trim().to_string()),
             "world-size" => {
@@ -4141,9 +4204,13 @@ fn finish_ground_decal(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec>
         name: common.name.clone(),
         ..GroundDecalSpec::default()
     };
+    let mut paving = PavingAttrs::default();
     let mut seeded = false;
     for (key, value) in rest {
         let kctx = format!("{ctx_tag} {key}");
+        if paving.parse(&key, &value, &kctx)? {
+            continue;
+        }
         match key.as_str() {
             "at" => spec.at = offset_point(values::parse_vec2(&value, &kctx)?, off),
             // Full extent, like <TerrainPad size> — halved into the radii.
@@ -4184,6 +4251,11 @@ fn finish_ground_decal(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec>
     if !seeded {
         // Position-derived seed: stable across runs, distinct per decal.
         spec.seed = spec.at.x.to_bits() ^ spec.at.y.to_bits().rotate_left(16);
+    }
+    spec.on_paving = paving.on_paving;
+    spec.paving = paving.into_style();
+    if spec.on_paving && spec.paving.is_some() {
+        bail!("{ctx_tag}: `on-paving` é para um decal SOBRE o pavimento; um nó não pode ser as duas coisas");
     }
     Ok(EntitySpec {
         prototype_instance: None,
@@ -4886,8 +4958,12 @@ fn finish_road(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec> {
     let mut window: Option<f32> = None;
     let mut max_grade: Option<f32> = None;
     let mut texture_scale: Option<f32> = None;
+    let mut paving = PavingAttrs::default();
     for (key, value) in rest {
         let kctx = format!("{ctx_tag} {key}");
+        if paving.parse(&key, &value, &kctx)? {
+            continue;
+        }
         let handled = parse_road_attrs(
             &key,
             &value,
@@ -4927,8 +5003,12 @@ fn finish_road(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec> {
             "smoothing" => spec.smoothing = values::parse_u32(&value, &kctx)?.min(6),
             "closed" => spec.closed = values::parse_bool(&value, &kctx)?,
             "edge-feather" => spec.edge_feather = values::parse_f32(&value, &kctx)?.clamp(0.0, 1.0),
+            // Read by grid paving (the ribbon has no rim wobble of its own).
+            "edge-noise" => spec.edge_noise = values::parse_f32(&value, &kctx)?.clamp(0.0, 1.0),
+            "base-color" => spec.base_color = values::parse_color(&value, &kctx)?,
+            "roughness" => spec.roughness = values::parse_f32(&value, &kctx)?,
             // Parsed-for-compat visuals (decal trails) — no native effect yet.
-            "edge-noise" | "end-feather-start" | "end-feather-end" | "normal-map-url" => ctx
+            "end-feather-start" | "end-feather-end" | "normal-map-url" => ctx
                 .warnings
                 .push(format!("{kctx}: accepted, no native effect yet")),
             other => ctx
@@ -4986,6 +5066,7 @@ fn finish_road(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec> {
     if let Some(s) = texture_scale {
         spec.texture_scale = s;
     }
+    spec.paving = paving.into_style();
     Ok(EntitySpec {
         prototype_instance: None,
         name: common.name,
@@ -5015,8 +5096,12 @@ fn finish_road_network(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec>
     let mut window: Option<f32> = None;
     let mut max_grade: Option<f32> = None;
     let mut texture_scale: Option<f32> = None;
+    let mut paving = PavingAttrs::default();
     for (key, value) in rest {
         let kctx = format!("{ctx_tag} {key}");
+        if paving.parse(&key, &value, &kctx)? {
+            continue;
+        }
         let handled = parse_road_attrs(
             &key,
             &value,
@@ -5035,11 +5120,16 @@ fn finish_road_network(node: &XmlNode, ctx: &mut ParseCtx) -> Result<EntitySpec>
         match key.as_str() {
             "default-width" => spec.default_width = values::parse_f32(&value, &kctx)?,
             "crossing-flare" => spec.crossing_flare = values::parse_bool(&value, &kctx)?,
+            // Inherited by every expanded segment (grid paving reads them).
+            "base-color" => spec.base_color = values::parse_color(&value, &kctx)?,
+            "roughness" => spec.roughness = values::parse_f32(&value, &kctx)?,
+            "edge-noise" => spec.edge_noise = values::parse_f32(&value, &kctx)?.clamp(0.0, 1.0),
             other => ctx
                 .warnings
                 .push(format!("{ctx_tag}: ignored attribute `{other}`")),
         }
     }
+    spec.paving = paving.into_style();
     if let Some(p) = profile {
         spec.default_profile = p;
     }

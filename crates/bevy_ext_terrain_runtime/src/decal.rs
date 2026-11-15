@@ -34,18 +34,21 @@ use bevy::math::Vec2;
 
 use super::brush::BrushGrid;
 use super::mesh::ChunkMeshData;
+use super::paving::{ON_PAVING_CEILING, ON_PAVING_LIFT, PavingStyle};
 
-/// Lift above the sampled ground (meters). Decals sit **below** the road
-/// ribbon so that where the two overlap the ribbon wins deterministically
-/// instead of z-fighting; see [`super::roads::RIBBON_LIFT`]. Overlapping
-/// decals start here and climb by [`stack_decal_lifts`].
+/// Lift above the sampled ground (meters) for a patch on bare terrain. Decals
+/// sit **below** the paved surface so that where the two overlap the paving
+/// wins deterministically instead of z-fighting; see [`DECAL_STACK_CEILING`].
+/// Overlapping decals start here and climb by [`stack_decal_lifts`].
 pub const DECAL_LIFT: f32 = 0.04;
 
-/// Headroom kept between the top of a decal stack and the road ribbon
-/// (meters). The ribbon's skirt dips below its surface, so the stack must not
-/// reach it; 4 mm also leaves the stack's own steps room to be visible to the
-/// depth test at the far plane.
-const DECAL_STACK_HEADROOM: f32 = 0.004;
+/// Top of the decal stack on the terrain (meters). Below
+/// [`super::paving::PAVING_LIFT`] on purpose: a decal that lands under the
+/// paving is simply covered by it, which is how "no two surfaces overlap" is
+/// kept without clipping anything. The paving's skirt does not dip below its
+/// own surface, and 10 mm also leaves the stack's steps room to be visible to
+/// the depth test at the far plane.
+pub const DECAL_STACK_CEILING: f32 = 0.052;
 /// Floor for the vertical step between two layers of the stack (meters). Only
 /// reached by pathological worlds with dozens of nested decals; the step is
 /// otherwise spread so the whole stack ends just under the ribbon.
@@ -93,6 +96,15 @@ pub struct GroundDecalSpec {
     pub roughness: f32,
     /// Lift above the sampled ground (meters).
     pub lift: f32,
+    /// Grid paving: when set, this patch is **not** drawn as an ellipse. Its
+    /// footprint rasterizes into the world's [`super::paving::PavingGrid`] and
+    /// the surface comes out of the merged lattice instead — one owner per
+    /// cell, corner-aware outline, one mesh per material.
+    pub paving: Option<PavingStyle>,
+    /// A patch authored *on top of* the paving (a tree pit, an inset patch).
+    /// Without this the patch is covered by the paving instead: see
+    /// [`DECAL_STACK_CEILING`].
+    pub on_paving: bool,
 }
 
 impl Default for GroundDecalSpec {
@@ -109,6 +121,8 @@ impl Default for GroundDecalSpec {
             base_color: [0.62, 0.60, 0.56],
             roughness: 0.9,
             lift: DECAL_LIFT,
+            paving: None,
+            on_paving: false,
         }
     }
 }
@@ -162,42 +176,78 @@ impl GroundDecalSpec {
 /// Raises each decal above the larger decals it overlaps, so overlapping
 /// patches stack in a deterministic order instead of sharing a plane.
 ///
-/// A decal's *depth* is one more than the deepest decal below it — the
-/// longest chain of larger cores it overlaps (equal areas break the tie by
-/// declaration order, earlier below). Sibling patches that all sit on the same
-/// floor share one level instead of each adding a step. The step is spread
-/// over the headroom between [`DECAL_LIFT`] and [`super::roads::RIBBON_LIFT`],
-/// so the whole stack ends just below the road ribbon whatever the depth — a
-/// plaza floor keeps 4 cm, a dirt pit on top of it sits a few millimetres
-/// higher, and the ribbon still wins over both.
+/// Decals live in **two independent bands**, and nothing crosses between them:
 ///
-/// Bigger means lower on purpose: a plaza floor is the base, the apron, wear
-/// trail or tree pit painted on it goes above. Authored `lift` values are
-/// kept as the starting point and only ever raised, clamped below the ribbon.
-pub fn stack_decal_lifts(decals: &mut [GroundDecalSpec]) {
-    let n = decals.len();
-    if n < 2 {
+/// * the **terrain** band, [`DECAL_LIFT`] up to [`DECAL_STACK_CEILING`] — every
+///   patch on bare ground. It ends below [`super::paving::PAVING_LIFT`], so a
+///   patch that lands under the paving is covered by it instead of z-fighting
+///   with it;
+/// * the **on-paving** band, [`ON_PAVING_LIFT`] up to [`ON_PAVING_CEILING`] —
+///   the insets on top of the paving (a tree pit, a worn patch). A patch whose
+///   centre the paving covers moves here **automatically** (`on-paving="1"`
+///   only forces it for a patch whose centre happens to fall off the
+///   pavement): the paving is a floor, and a decal authored on that floor is
+///   supposed to be seen, not swallowed.
+///
+/// Within a band a decal's *depth* is one more than the deepest decal below it
+/// — the longest chain of larger cores it overlaps (equal areas break the tie
+/// by declaration order, earlier below). Sibling patches that all sit on the
+/// same floor share one level instead of each adding a step. The step is spread
+/// over the band's headroom, so the whole stack ends at the ceiling whatever
+/// the depth. Bigger means lower on purpose: a plaza floor is the base, the
+/// apron, wear trail or tree pit painted on it goes above. Authored `lift`
+/// values are kept as the starting point and only ever raised.
+pub fn stack_decal_lifts(decals: &mut [GroundDecalSpec], paving: &super::paving::PavingGrid) {
+    let mut lower = Vec::new();
+    let mut upper = Vec::new();
+    for (i, decal) in decals.iter_mut().enumerate() {
+        // A paving decal does not render as a patch; it contributes cells.
+        if decal.paving.is_some() {
+            continue;
+        }
+        // Authored on the floor the lattice now draws: it belongs above it.
+        // Deciding here (and not per node) keeps every already-authored patch
+        // — a market apron, a wear trail, a tree pit — visible without
+        // touching a single `.bsn`.
+        if paving.covers(decal.at) {
+            decal.on_paving = true;
+        }
+        if decal.on_paving {
+            // Authored under the paving by accident (a default 0.04) would be
+            // hidden by it — an inset has to start above.
+            decal.lift = decal.lift.max(ON_PAVING_LIFT);
+            upper.push(i);
+        } else {
+            lower.push(i);
+        }
+    }
+    stack_band(decals, &lower, DECAL_LIFT, DECAL_STACK_CEILING);
+    stack_band(decals, &upper, ON_PAVING_LIFT, ON_PAVING_CEILING);
+}
+
+/// One band of [`stack_decal_lifts`]: `band` are the indices allowed to stack
+/// against each other, `base` the floor and `ceiling` the top of the band.
+fn stack_band(decals: &mut [GroundDecalSpec], band: &[usize], base: f32, ceiling: f32) {
+    if band.len() < 2 {
         return;
     }
     // Largest core first: every "below" decal (larger area, or equal area with
     // a smaller index) is already resolved when its turn comes, so one pass
     // gives the longest chain.
-    let mut order: Vec<usize> = (0..n).collect();
+    let mut order: Vec<usize> = band.to_vec();
     order.sort_by(|&a, &b| {
         decals[b]
             .area()
             .total_cmp(&decals[a].area())
             .then_with(|| a.cmp(&b))
     });
-    let mut depth = vec![0usize; n];
+    let mut depth = vec![0usize; decals.len()];
     for &i in &order {
         let mut below = 0;
         for &j in &order {
             if j == i {
                 continue;
             }
-            // `j` is below `i` only when it comes earlier in `order` (larger
-            // core, or the same core with a smaller index).
             let (mine, theirs) = (decals[i].area(), decals[j].area());
             let is_below = theirs > mine || (theirs == mine && j < i);
             if is_below && decals[j].overlaps(&decals[i]) {
@@ -206,18 +256,17 @@ pub fn stack_decal_lifts(decals: &mut [GroundDecalSpec]) {
         }
         depth[i] = below;
     }
-    let max_depth = depth.iter().copied().max().unwrap_or(0);
+    let max_depth = order.iter().map(|i| depth[*i]).max().unwrap_or(0);
     if max_depth == 0 {
         return;
     }
-    let ceiling = super::roads::RIBBON_LIFT - DECAL_STACK_HEADROOM;
-    let headroom = (ceiling - DECAL_LIFT).max(0.0);
+    let headroom = (ceiling - base).max(0.0);
     let step = (headroom / max_depth as f32).max(DECAL_STACK_MIN_STEP);
-    for (i, decal) in decals.iter_mut().enumerate() {
+    for &i in &order {
         if depth[i] == 0 {
             continue;
         }
-        decal.lift = (decal.lift + depth[i] as f32 * step).min(ceiling);
+        decals[i].lift = (decals[i].lift + depth[i] as f32 * step).min(ceiling);
     }
 }
 
@@ -510,7 +559,7 @@ mod tests {
         let (floor, pit) = plaza_and_pit();
         assert!(floor.overlaps(&pit), "the pit sits on the plaza rim");
         let mut decals = vec![floor, pit];
-        stack_decal_lifts(&mut decals);
+        stack_decal_lifts(&mut decals, &Default::default());
         assert_eq!(decals[0].lift, DECAL_LIFT, "the floor keeps the base lift");
         assert!(
             decals[1].lift > decals[0].lift,
@@ -519,7 +568,7 @@ mod tests {
         );
         for d in &decals {
             assert!(
-                d.lift < super::super::roads::RIBBON_LIFT,
+                d.lift <= super::super::decal::DECAL_STACK_CEILING,
                 "decal lift {} must stay under the ribbon",
                 d.lift
             );
@@ -532,7 +581,7 @@ mod tests {
     fn test_stacked_meshes_are_not_coplanar() {
         let (floor, pit) = plaza_and_pit();
         let mut decals = vec![floor, pit];
-        stack_decal_lifts(&mut decals);
+        stack_decal_lifts(&mut decals, &Default::default());
         let grid = test_grid();
         let high = ground_decal_mesh(&grid, &decals[1]);
         // The pit's hub (vertex 0) is the shared point; the floor's surface
@@ -555,7 +604,7 @@ mod tests {
         };
         assert!(!a.overlaps(&b));
         let mut decals = vec![a, b];
-        stack_decal_lifts(&mut decals);
+        stack_decal_lifts(&mut decals, &Default::default());
         assert!(decals.iter().all(|d| d.lift == DECAL_LIFT));
     }
 
@@ -572,10 +621,10 @@ mod tests {
                 ..GroundDecalSpec::default()
             })
             .collect();
-        stack_decal_lifts(&mut decals);
+        stack_decal_lifts(&mut decals, &Default::default());
         for (i, d) in decals.iter().enumerate() {
             assert!(
-                d.lift < super::super::roads::RIBBON_LIFT,
+                d.lift <= super::super::decal::DECAL_STACK_CEILING,
                 "layer {i} reaches the ribbon: {}",
                 d.lift
             );
@@ -601,12 +650,12 @@ mod tests {
             ..spec()
         };
         let mut decals = vec![a.clone(), b.clone()];
-        stack_decal_lifts(&mut decals);
+        stack_decal_lifts(&mut decals, &Default::default());
         assert_eq!(decals[0].lift, DECAL_LIFT);
         assert!(decals[1].lift > decals[0].lift);
 
         let mut swapped = vec![b, a];
-        stack_decal_lifts(&mut swapped);
+        stack_decal_lifts(&mut swapped, &Default::default());
         assert_eq!(swapped[0].lift, DECAL_LIFT);
         assert!(swapped[1].lift > swapped[0].lift);
     }
@@ -624,9 +673,9 @@ mod tests {
             ..GroundDecalSpec::default()
         };
         let mut a = vec![floor.clone(), pit.clone(), wear.clone()];
-        stack_decal_lifts(&mut a);
+        stack_decal_lifts(&mut a, &Default::default());
         let mut b = vec![wear, pit, floor];
-        stack_decal_lifts(&mut b);
+        stack_decal_lifts(&mut b, &Default::default());
         // Same area ⇒ same depth ⇒ same lift, regardless of slot.
         let by_area = |v: &Vec<GroundDecalSpec>| {
             let mut lifts: Vec<(u32, f32)> =

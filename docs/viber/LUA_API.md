@@ -506,7 +506,7 @@ aplica pós-frame.
 | `viber.attach(slot, url [, opts])` | prende um GLB a um osso do rig. `slot` lógico (`"weapon"`, `"helmet"`) substitui o que lá estiver; `opts = {bone="hand_r", id, x, y, z, rx, ry, rz (rad), scale}`. Primitiva genérica (volante, capacete, espada): a engine só encontra o osso |
 | `viber.detach(slot [, id])` | remove o que estiver no slot (default: herói) |
 | `viber.lantern(intensity)` | acende/reforça a lanterna do viajante (lúmenes; 0 = só a automática nocturna). A tocha do V usa 600000 — ilumina também de dia |
-| `viber.bone_offset(bone, rx, ry, rz)` | rotação ADITIVA (rad, XYZ local) num osso do herói, somada por cima da animação (idle/walk/run). Zeros limpam. Ex.: `viber.bone_offset("upperarm_r", 0.45, 0, 0)` inclina o braço à frente |
+| `viber.bone_offset(bone, rx, ry, rz)` | rotação ADITIVA (rad, XYZ local) num osso do rig da PRÓPRIA entidade (o herói, um NPC, um monstro com script), somada por cima da animação (idle/walk/run). Zeros limpam. Ex.: `viber.bone_offset("upperarm_r", 0.45, 0, 0)` inclina o braço à frente |
 | `viber.prompt(key, label)` | publica o prompt de mundo (o controller decide o alvo); `label` vazio limpa. Republicar por frame renova o TTL (0,25 s) |
 | `viber.localize(texto)` | resolve `@chave` do locale ativo (linha a linha) |
 

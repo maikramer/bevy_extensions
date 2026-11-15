@@ -76,6 +76,25 @@ comparam ausente ⇔ default do spec, bools por valor (`talus="1"` ==
 `"true"`), `"2.0"` == `"2"` e o `width`/`span` do arco são o mesmo attr. O
 Vael está todo migrado (âncora + 5 caves + 3 arcos + 14 cliffs).
 
+## 2026-11-15 — `bevy_skeleton_modifiers` (fork vendored) para o IK
+
+Adotado por **path-dep** no `bevy_ext_physics` (não registry): o upstream
+`jmwmulle/bevy_skeleton_modifiers` 0.1.1 (MIT, port dos `SkeletonModifier3D`
+do Godot 4.7.2) declara explicitamente que não migra para Bevy 0.20 — port
+local para bevy 0.20.1 + glam 0.33 em
+`../crates/bevy_ext_viber_engine/vendor/bevy_skeleton_modifiers/`
+(`VAEL_PATCH.md`; proveniência e gate no
+[`vendor/FORKS_020.md`](../crates/bevy_ext_viber_engine/vendor/FORKS_020.md)).
+Critérios: (1) compat Bevy — só via port, feita; (2) substitui o solver
+2-bone próprio do `ik.rs` e acrescenta o que faltava (look-at da cabeça,
+spring bones para criaturas) sem mudança visível de comportamento — A/B
+`VAEL_SKELETON_MODS=0` mantém o caminho velho durante a migração; (3) sem
+shaders/materiais — risco NV nulo; (4) upstream pequeno e recente, com suíte
+golden contra o Godot nativo (a prova do port). Scheduling idêntico ao
+`IkPlugin` velho: PostUpdate depois de `AnimationSystems`, antes da
+propagação de transforms — a pilha `ModifierCommon { active, influence,
+order }` do crate substitui o peso manual do foot IK.
+
 ## Adotados nesta ronda
 
 | Crate | Versão | Substitui | Notas |

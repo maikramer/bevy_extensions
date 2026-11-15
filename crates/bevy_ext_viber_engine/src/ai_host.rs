@@ -124,6 +124,7 @@ mod tests {
             deltas: Arc::new(DeltaGrid::default()),
             paint: Arc::new(PaintGrid::default()),
             splat_tuning: Default::default(),
+            paving: Default::default(),
         };
         let ground = TerrainGround {
             reader: runtime.reader(),

@@ -21,6 +21,7 @@ use super::cliffs::CliffSpec;
 use super::cut::{CutSpec, carve_cut};
 use super::decal::GroundDecalSpec;
 use super::pads::ResolvedPad;
+use super::paving::{PavingGrid, PavingSpec};
 use super::plateau::{PlateauSpec, carve_plateau};
 use super::roads::{RoadGuards, RoadNetworkSpec, RoadPath, RoadProfile, RoadSpec, carve_road};
 use super::spec::TerrainPadSpec;
@@ -50,6 +51,8 @@ pub struct TerrainFeatures {
     /// they become subtractive mods in the voxel field, which is the only
     /// representation that can put rock above the player's head.
     pub caves: Vec<crate::voxel::CaveSpec>,
+    /// World defaults for grid paving, from `<Terrain paving-cell=…>`.
+    pub paving_default: crate::paving::PavingStyle,
     /// Free-standing rock portals (`<Arch>`) — union solids in the voxel
     /// field, never a carve.
     pub arches: Vec<crate::voxel::ArchSpec>,
@@ -118,6 +121,10 @@ pub struct FeatureResult {
     pub road_junctions: Vec<super::roads::RoadJunction>,
     /// Ground decals to render, in declaration order.
     pub decals: Vec<GroundDecalSpec>,
+    /// The world's paved surface: one lattice, one owner per cell. Built from
+    /// the roads and decals authored with `paving`, which do **not** draw
+    /// their own geometry.
+    pub paving: PavingGrid,
 }
 
 /// Applies all features in the canonical order and returns the registries.
@@ -237,13 +244,42 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
             result.road_specs.push(spec.clone());
         }
     }
+    // 3.5 Grid paving — one lattice for the whole world. The roads that opted
+    //     in contribute their **carved** stations (already smoothed, resampled
+    //     and flared), the decals that opted in their footprint. Built after
+    //     every carve and before the decal stack, because it is the layer the
+    //     stack is measured against: a patch that lands under it is covered by
+    //     it, and one authored `on-paving` starts above it.
+    let mut paving_specs = Vec::new();
+    for (path, spec) in result.roads.iter().zip(&result.road_specs) {
+        if let Some(paved) = PavingSpec::from_road(path, spec) {
+            paving_specs.push(paved);
+        }
+    }
+    for decal in &features.decals {
+        if let Some(paved) = PavingSpec::from_decal(decal) {
+            paving_specs.push(paved);
+        }
+    }
+    for paved in &mut paving_specs {
+        paved.style.inherit_from(&features.paving_default);
+    }
+    result.paving = PavingGrid::build(&paving_specs);
+
     // 4. Ground decals — visual only, so they run after every carve and read
     //    the final heightfield. Overlapping patches (a tree pit on the plaza
     //    floor, a wear trail on the market apron) would be coplanar at the
     //    same lift and their meshes do not share a triangulation: stack them
     //    so the smaller patch wins deterministically instead of z-fighting.
-    result.decals = features.decals.clone();
-    super::decal::stack_decal_lifts(&mut result.decals);
+    //    A `paving` decal is not a patch any more — it became cells — so it
+    //    never reaches this list.
+    result.decals = features
+        .decals
+        .iter()
+        .filter(|d| d.paving.is_none())
+        .cloned()
+        .collect();
+    super::decal::stack_decal_lifts(&mut result.decals, &result.paving);
 
     // 5. Fusion discs, minus the ones a decal already hides. Stacking a disc
     //    under a plaza floor put two alpha-blended cobble layers at almost
@@ -254,6 +290,12 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
     for network in &features.networks {
         for junction in network.junction_points() {
             if result.decals.iter().any(|d| d.covers(junction.at)) {
+                continue;
+            }
+            // Same reasoning one layer up: the lattice already covers the
+            // crossing, and a blended disc over opaque paving would be a
+            // fifth layer over the street.
+            if result.paving.covers(junction.at) {
                 continue;
             }
             result.road_junctions.push(junction);
@@ -288,6 +330,7 @@ mod tests {
     fn sample_features() -> TerrainFeatures {
         TerrainFeatures {
             decals: Vec::new(),
+            paving_default: Default::default(),
             caves: Vec::new(),
             arches: Vec::new(),
             bridges: Vec::new(),
@@ -633,6 +676,183 @@ mod tests {
                 ..TerrainFeatures::default()
             }
             .is_empty()
+        );
+    }
+
+    /// A decal that opted into paving stops being a patch: its footprint
+    /// becomes lattice cells and it never reaches `result.decals`.
+    #[test]
+    fn test_paving_decal_becomes_cells_not_a_patch() {
+        let mut grid = test_grid();
+        let mut floor = GroundDecalSpec {
+            at: Vec2::ZERO,
+            half_extent: Vec2::splat(9.0),
+            ..GroundDecalSpec::default()
+        };
+        floor.paving = Some(crate::paving::PavingStyle::default());
+        let result = apply_features(
+            &mut grid,
+            &TerrainFeatures {
+                decals: vec![floor],
+                ..TerrainFeatures::default()
+            },
+        );
+        assert!(result.decals.is_empty(), "um decal pavimentado não desenha");
+        assert_eq!(result.paving.module(), 2.0);
+        assert!(result.paving.covers(Vec2::ZERO));
+        // 18 m centred on 0 spans −9..9; snapped outward to the lattice that
+        // is −10..10, i.e. ten 2 m cells a side.
+        assert_eq!(result.paving.len(), 10 * 10, "18 m em módulo 2 → 20 m");
+    }
+
+    /// The paving layer is the reference the decal stack is measured against:
+    /// a patch the lattice covers moves **above** it on its own (a market
+    /// apron painted on the plaza floor must stay visible), and a patch out on
+    /// bare ground keeps the terrain band, below the pavement.
+    #[test]
+    fn test_paving_lifts_the_patches_it_covers() {
+        let mut grid = test_grid();
+        let mut paving = GroundDecalSpec {
+            at: Vec2::ZERO,
+            half_extent: Vec2::splat(10.0),
+            ..GroundDecalSpec::default()
+        };
+        paving.paving = Some(crate::paving::PavingStyle::default());
+        // Centre inside the pavement: an apron painted on the plaza.
+        let on_floor = GroundDecalSpec {
+            at: Vec2::new(2.0, 0.0),
+            half_extent: Vec2::splat(4.0),
+            ..GroundDecalSpec::default()
+        };
+        // Centre outside: a wear patch on the grass beside it.
+        let off_floor = GroundDecalSpec {
+            at: Vec2::new(20.0, 0.0),
+            half_extent: Vec2::splat(3.0),
+            ..GroundDecalSpec::default()
+        };
+        let result = apply_features(
+            &mut grid,
+            &TerrainFeatures {
+                decals: vec![paving, on_floor, off_floor],
+                ..TerrainFeatures::default()
+            },
+        );
+        assert_eq!(result.decals.len(), 2);
+        let on_floor = &result.decals[0];
+        let off_floor = &result.decals[1];
+        assert!(
+            on_floor.on_paving && on_floor.lift > crate::paving::PAVING_LIFT,
+            "o decal que o pavimento cobre sobe acima dele: {}",
+            on_floor.lift
+        );
+        assert!(on_floor.lift <= crate::paving::ON_PAVING_CEILING);
+        assert!(
+            !off_floor.on_paving && off_floor.lift <= crate::decal::DECAL_STACK_CEILING,
+            "um decal fora do pavimento fica na faixa do terreno: {}",
+            off_floor.lift
+        );
+    }
+
+    /// A paved road keeps its carve and its `RoadPath` (nav pricing, grass
+    /// clearance, `isPointOnRoad`) — only the ribbon goes away, and that is
+    /// decided at spawn time by `RoadSpec::paving`.
+    #[test]
+    fn test_paving_road_keeps_its_road_path() {
+        let mut grid = test_grid();
+        let mut road = RoadSpec {
+            name: Some("paved".into()),
+            path: vec![Vec2::new(-30.0, 24.0), Vec2::new(30.0, 24.0)],
+            width: 4.0,
+            ..RoadSpec::default()
+        };
+        road.paving = Some(crate::paving::PavingStyle::default());
+        let result = apply_features(
+            &mut grid,
+            &TerrainFeatures {
+                roads: vec![road],
+                ..TerrainFeatures::default()
+            },
+        );
+        assert_eq!(result.roads.len(), 1, "o registo de estrada continua");
+        assert!(result.roads[0].is_on_road(Vec2::new(0.0, 24.0)));
+        assert!(
+            result.paving.covers(Vec2::new(0.0, 24.0)),
+            "e a superfície vem da treliça"
+        );
+        // 4 m of road on a 2 m lattice: two cell rows around z = 24.
+        let w = (-8..8).filter(|i| result.paving.covers(Vec2::new(*i as f32 * 2.0 + 1.0, 24.0))).count();
+        assert!(w >= 2, "largura pavimentada {w}");
+    }
+
+    /// A paved network draws no fusion discs: the lattice already covers the
+    /// crossing, and a blended disc over opaque paving would be a fifth layer.
+    #[test]
+    fn test_paving_suppresses_the_junction_disc() {
+        let net = RoadNetworkSpec {
+            default_width: 4.0,
+            ways: vec![
+                WaySpec {
+                    id: "hub".into(),
+                    at: Vec2::ZERO,
+                    width: None,
+                },
+                WaySpec {
+                    id: "n".into(),
+                    at: Vec2::new(0.0, 24.0),
+                    width: None,
+                },
+                WaySpec {
+                    id: "e".into(),
+                    at: Vec2::new(24.0, 0.0),
+                    width: None,
+                },
+                WaySpec {
+                    id: "s".into(),
+                    at: Vec2::new(0.0, -24.0),
+                    width: None,
+                },
+            ],
+            segments: vec![
+                SegmentSpec {
+                    a: "hub".into(),
+                    b: "n".into(),
+                    ..SegmentSpec::default()
+                },
+                SegmentSpec {
+                    a: "hub".into(),
+                    b: "e".into(),
+                    ..SegmentSpec::default()
+                },
+                SegmentSpec {
+                    a: "hub".into(),
+                    b: "s".into(),
+                    ..SegmentSpec::default()
+                },
+            ],
+            ..RoadNetworkSpec::default()
+        };
+        let bare = apply_features(
+            &mut test_grid(),
+            &TerrainFeatures {
+                networks: vec![net.clone()],
+                ..TerrainFeatures::default()
+            },
+        );
+        assert_eq!(bare.road_junctions.len(), 1, "sem pavimento o disco fica");
+
+        let paved = apply_features(
+            &mut test_grid(),
+            &TerrainFeatures {
+                networks: vec![RoadNetworkSpec {
+                    paving: Some(crate::paving::PavingStyle::default()),
+                    ..net
+                }],
+                ..TerrainFeatures::default()
+            },
+        );
+        assert!(
+            paved.road_junctions.is_empty(),
+            "com pavimento o disco era uma quinta camada"
         );
     }
 

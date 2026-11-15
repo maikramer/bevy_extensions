@@ -1133,6 +1133,7 @@ dependencies = [
  "bevy_ext_core",
  "bevy_ext_scene",
  "bevy_ext_terrain_runtime",
+ "bevy_skeleton_modifiers",
 ]
 
 [[package]]
@@ -2499,6 +2500,21 @@ dependencies = [
  "rand_distr",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "bevy_skeleton_modifiers"
+version = "0.1.1"
+dependencies = [
+ "bevy_app",
+ "bevy_curve",
+ "bevy_ecs",
+ "bevy_log",
+ "bevy_math",
+ "bevy_reflect",
+ "bevy_time",
+ "bevy_transform",
+ "glam 0.33.12",
 ]
 
 [[package]]

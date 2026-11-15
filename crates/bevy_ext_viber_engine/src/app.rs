@@ -733,8 +733,11 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // do monólito); o `PhysicsPlugin` acima é o do `bevy_ext_physics`.
     app.add_plugins(physics::TerrainCollidersPlugin);
     // Controller do herói (tnua) e step assist: no jogo, não no crate de
-    // colliders.
-    app.add_plugins(crate::player::HeroPhysicsPlugin);
+    // colliders. A engine standalone usa o `HeroScheme` próprio; o Vael
+    // regista o dele (`VaelHeroScheme`).
+    app.add_plugins(crate::player::HeroPhysicsPlugin::<crate::player::HeroScheme>::new(
+        crate::player::hero_config,
+    ));
     // Pós-processamento (exposição/bloom/SSAO) na câmara do mundo; os
     // `pp-*` das `<BiomeRegion>` conduzem-no. `VIBER_NO_POSTFX=1` desliga.
     app.add_plugins(postfx::PostFxPlugin);

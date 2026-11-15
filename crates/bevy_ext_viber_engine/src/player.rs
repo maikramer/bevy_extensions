@@ -487,8 +487,7 @@ pub fn player_movement(
         // segurava o fade no preto até ao timeout.
         let settling = match settle.as_deref_mut() {
             Some(state) if state.frames > 0 => {
-                state.frames -= 1;
-                if state.frames == 0 {
+                if state.tick(time.delta_secs()) {
                     commands.entity(entity).remove::<TeleportSettle>();
                 }
                 true
@@ -628,7 +627,7 @@ pub fn player_movement(
             )
         {
             // A altura do salto vive no `TnuaBuiltinJumpConfig` (um asset por
-            // herói, criado em `attach_hero_config`); a ação em si não leva
+            // herói, criado em `attach_hero_controller`); a ação em si não leva
             // parâmetros. Sem corpo (testes headless) mantém-se o impulso
             // direto em `vel_y`.
             let jumped = match controller.as_deref_mut() {
@@ -892,16 +891,24 @@ pub const HERO_SENSOR_RADIUS: f32 = HERO_RADIUS * 0.97;
 /// altura, por isso os pés continuam a [`HERO_FLOAT_HEIGHT`] do chão.
 pub const HERO_SENSOR_LIFT: f32 = 0.10;
 
-/// Ações do herói. O `Jump` usa `TnuaBuiltinJumpConfig::height` do asset;
-/// o knockback entra na `desired_motion` (ver `player_movement`).
+/// Ações do herói na ENGINE STANDALONE (o `player_movement` desta engine).
+///
+/// O jogo (Vael) traz o SEU próprio scheme: o [`HeroPhysicsPlugin`] é
+/// genérico sobre `TnuaScheme`, e as ações de gameplay (dash, crouch, paredes)
+/// vivem no jogo.
 #[derive(bevy_tnua::prelude::TnuaScheme)]
 #[scheme(basis = TnuaBuiltinWalk)]
 pub enum HeroScheme {
     Jump(TnuaBuiltinJump),
 }
 
-/// Corpo + controller do herói.
-pub fn hero_controller_bundle() -> impl Bundle {
+/// Corpo físico do herói — sem controller.
+///
+/// Cada app regista o seu scheme no [`HeroPhysicsPlugin`] e o
+/// [`attach_hero_controller`] insere o `TnuaController<S>` + `TnuaConfig<S>`
+/// (uma vez). O sensor de chão já entra aqui porque é independente de scheme
+/// e o tnua não quer frames sem ele.
+pub fn hero_body_bundle() -> impl Bundle {
     (
         avian3d::prelude::RigidBody::Dynamic,
         avian3d::prelude::LockedAxes::ROTATION_LOCKED,
@@ -913,7 +920,6 @@ pub fn hero_controller_bundle() -> impl Bundle {
         // O jogo desliga o controller na natação (conduz `LinearVelocity` à
         // mão); sem o componente o toggle não existia e não havia como parar.
         bevy_tnua::TnuaToggle::Enabled,
-        TnuaController::<HeroScheme>::default(),
         TnuaAvian3dSensorShape(hero_sensor_shape()),
     )
 }
@@ -928,10 +934,11 @@ pub fn hero_sensor_shape() -> avian3d::prelude::Collider {
     )])
 }
 
-/// Config do tnua para o herói. `speed: 1.0` faz `desired_motion` ser a
-/// velocidade em m/s (o `player_movement` calcula-a como antes).
-/// `jump_height` vem do [`Player`] do herói (o Vael usa 2.3 m; o default da
-/// engine é outro) — o asset é criado por altura em [`attach_hero_config`].
+/// Config do tnua para o herói (ENGINE STANDALONE). `speed: 1.0` faz
+/// `desired_motion` ser a velocidade em m/s. `jump_height` vem do [`Player`]
+/// do herói — o asset é criado por altura em [`attach_hero_controller`].
+/// O Vael tem a sua própria função (`vael_hero_config` em `src/player.rs`)
+/// com o mesmo tuning enquanto as duas apps não divergirem.
 pub fn hero_config(jump_height: f32) -> HeroSchemeConfig {
     HeroSchemeConfig {
         basis: TnuaBuiltinWalkConfig {
@@ -956,50 +963,81 @@ pub fn hero_config(jump_height: f32) -> HeroSchemeConfig {
     }
 }
 
-/// Insere o `TnuaConfig` no herói, uma vez. O asset guarda a altura de salto
-/// do `Player` (recriado se ela mudar).
-pub fn attach_hero_config(
+/// Fábrica do asset de config do scheme do herói, por altura de salto
+/// (cada app tem o seu tuning — o Vael e a engine standalone divergem).
+pub type HeroConfigFn<S> = fn(f32) -> <S as bevy_tnua::prelude::TnuaScheme>::Config;
+
+/// A fábrica registada pelo [`HeroPhysicsPlugin`], lida pelo
+/// [`attach_hero_controller`].
+#[derive(Resource)]
+pub struct HeroConfigSource<S: bevy_tnua::prelude::TnuaScheme>(pub HeroConfigFn<S>);
+
+/// Insere o controller do herói (`TnuaController<S>` + `TnuaConfig<S>`), uma
+/// vez. O corpo vem da receita `<PlayerGLTF>` (que não conhece scheme nenhum);
+/// o scheme é da app que regista o [`HeroPhysicsPlugin`]. O asset de config
+/// guarda a altura de salto do `Player` e é partilhado por altura.
+pub fn attach_hero_controller<S>(
+    source: Res<HeroConfigSource<S>>,
     mut commands: Commands,
-    mut configs: ResMut<Assets<HeroSchemeConfig>>,
-    mut shared: Local<Option<(f32, Handle<HeroSchemeConfig>)>>,
-    heroes: Query<(Entity, &Player), Without<TnuaConfig<HeroScheme>>>,
-) {
+    mut configs: ResMut<Assets<S::Config>>,
+    mut shared: Local<Option<(f32, Handle<S::Config>)>>,
+    heroes: Query<(Entity, &Player), (With<Player>, Without<TnuaController<S>>)>,
+) where
+    S: bevy_tnua::prelude::TnuaScheme<Basis = TnuaBuiltinWalk>,
+{
     for (entity, player) in &heroes {
         let height = player.jump_height;
         let handle = match shared.as_ref() {
             Some((cached, handle)) if (*cached - height).abs() < 1e-4 => handle.clone(),
             _ => {
-                let handle = configs.add(hero_config(height));
+                let handle = configs.add((source.0)(height));
                 *shared = Some((height, handle.clone()));
                 handle
             }
         };
         commands
             .entity(entity)
-            .insert(TnuaConfig::<HeroScheme>(handle));
+            .insert((TnuaController::<S>::default(), TnuaConfig::<S>(handle)));
     }
 }
 
-/// Registo do controller do herói (tnua) e dos seus sistemas.
+/// Registo do controller do herói (tnua) e dos seus sistemas, genérico sobre
+/// o scheme da app.
 ///
 /// Vive no jogo, **não** no `bevy_ext_physics`: o crate dos colliders não sabe
 /// quem é o herói. Cada app (o `vael` e a engine standalone) regista este
-/// plugin ao lado do `PhysicsPlugin`.
-pub struct HeroPhysicsPlugin;
+/// plugin ao lado do `PhysicsPlugin` com o SEU scheme e a SUA fábrica de
+/// config (`HeroPhysicsPlugin::<VaelHeroScheme>::new(vael_hero_config)`).
+pub struct HeroPhysicsPlugin<S: bevy_tnua::prelude::TnuaScheme> {
+    config: HeroConfigFn<S>,
+}
 
-impl bevy::app::Plugin for HeroPhysicsPlugin {
+impl<S> HeroPhysicsPlugin<S>
+where
+    S: bevy_tnua::prelude::TnuaScheme<Basis = TnuaBuiltinWalk>,
+{
+    pub fn new(config: HeroConfigFn<S>) -> Self {
+        Self { config }
+    }
+}
+
+impl<S> bevy::app::Plugin for HeroPhysicsPlugin<S>
+where
+    S: bevy_tnua::prelude::TnuaScheme<Basis = TnuaBuiltinWalk>,
+{
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<HeroStepPlan>()
+            .insert_resource(HeroConfigSource::<S>(self.config))
             // `FixedUpdate` = o mesmo horizonte do `PhysicsPlugins::default()`
             // (o `PhysicsSchedule` corre no `FixedPostUpdate`).
             .add_plugins((
-                bevy_tnua::prelude::TnuaControllerPlugin::<HeroScheme>::new(FixedUpdate),
+                bevy_tnua::prelude::TnuaControllerPlugin::<S>::new(FixedUpdate),
                 bevy_tnua_avian3d::prelude::TnuaAvian3dPlugin::new(FixedUpdate),
             ))
-            .add_systems(Update, attach_hero_config)
+            .add_systems(Update, attach_hero_controller::<S>)
             .add_systems(
                 FixedUpdate,
-                (probe_steps, apply_steps, recover_stuck_ground)
+                (probe_steps::<S>, apply_steps, recover_stuck_ground::<S>)
                     .chain()
                     .after(bevy_tnua::prelude::TnuaPipelineSystems::Logic),
             );
@@ -1020,7 +1058,7 @@ pub struct HeroStepPlan(pub Vec<(Entity, f32)>);
 /// encostado), exige um topo HORIZONTAL (senão "escadeia" rampas acima de
 /// `max_slope`) e confirma que a posição elevada está livre com um cast CURTO
 /// (o degrau seguinte está sempre a menos de um raio num lanço de escada).
-pub fn probe_steps(
+pub fn probe_steps<S>(
     spatial: SpatialQuery,
     mut plan: ResMut<HeroStepPlan>,
     query: Query<(
@@ -1028,10 +1066,12 @@ pub fn probe_steps(
         &Position,
         &LinearVelocity,
         &Collider,
-        &TnuaController<HeroScheme>,
+        &TnuaController<S>,
         Option<&bevy_tnua::TnuaToggle>,
     )>,
-) {
+) where
+    S: bevy_tnua::prelude::TnuaScheme<Basis = TnuaBuiltinWalk>,
+{
     plan.0.clear();
     for (entity, position, velocity, collider, controller, toggle) in &query {
         // Controller desligado (natação): a basis fica do último frame em terra
@@ -1116,16 +1156,18 @@ pub struct GroundRecovery(pub f32);
 /// airborne e a velocidade vertical é ~0, o solver está a segurá-lo: sobe-se a
 /// folga do `float_height` para o sensor voltar a ver o chão. O limiar de
 /// tempo evita disparar no apex do salto (|v| < 0.5 durante ~8 ms).
-pub fn recover_stuck_ground(
+pub fn recover_stuck_ground<S>(
     time: Res<Time>,
     mut query: Query<(
         &mut GroundRecovery,
         &mut Position,
         &LinearVelocity,
-        &TnuaController<HeroScheme>,
+        &TnuaController<S>,
         Option<&bevy_tnua::TnuaToggle>,
     )>,
-) {
+) where
+    S: bevy_tnua::prelude::TnuaScheme<Basis = TnuaBuiltinWalk>,
+{
     let dt = time.delta_secs().clamp(0.0, 0.05);
     for (mut timer, mut position, velocity, controller, toggle) in &mut query {
         if matches!(toggle, Some(bevy_tnua::TnuaToggle::Disabled)) {
@@ -1194,6 +1236,7 @@ mod tests {
             deltas: std::sync::Arc::new(crate::terrain::delta::DeltaGrid::default()),
             paint: std::sync::Arc::new(crate::terrain::paint::PaintGrid::default()),
             splat_tuning: Default::default(),
+            paving: Default::default(),
         }
     }
 

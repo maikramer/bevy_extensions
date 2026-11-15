@@ -49,6 +49,7 @@ pub mod mesh;
 pub mod pads;
 pub mod paint;
 pub mod paths;
+pub mod paving;
 pub mod plateau;
 pub mod plugin;
 pub mod profiling;

@@ -238,8 +238,6 @@ pub struct LuauRuntimeLocals<'w, 's> {
     pub players_speed: Query<'w, 's, &'static mut crate::player::Player, With<Player>>,
     /// Luz da tocha controlada pelo jogo (`viber.lantern`).
     pub lantern: Option<bevy::ecs::system::ResMut<'w, crate::ambient::TorchLightOverride>>,
-    /// Rotações aditivas por osso do herói (`viber.bone_offset`).
-    pub bone_offsets: Option<bevy::ecs::system::ResMut<'w, crate::ik::PlayerBoneOffsets>>,
     /// Prompt de mundo publicado por um controller (`viber.prompt`).
     pub ui_prompt: Option<bevy::ecs::system::ResMut<'w, crate::ui::UiPrompt>>,
 }

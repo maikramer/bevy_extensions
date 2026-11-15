@@ -6,8 +6,8 @@ use bevy::math::Rot2;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use bevy_ext_core::Player;
 use crate::camera::OrbitCamera;
+use bevy_ext_core::Player;
 use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
 
 /// The minimap player arrow (rotation mirrors the camera heading).

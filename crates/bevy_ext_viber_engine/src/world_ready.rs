@@ -198,18 +198,49 @@ pub fn world_loading(readiness: Option<Res<WorldReadiness>>) -> bool {
     readiness.is_some_and(|r| !r.ready)
 }
 
+/// O véu pausou o `Time<Virtual>` (e só ele o despausa ao fechar a época).
+#[derive(Resource, Default)]
+pub struct LoadingTimePause(pub bool);
+
+/// O loading é um momento CONGELADO: sem física, sem tempo a correr, sem
+/// IA/animação — o mundo assenta (colliders, GLB, texturas) e só então o
+/// jogo acorda, já com o herói colocado no chão pelo portão de spawn.
+/// O `Time<Real>` continua (a prontidão mede-se nele), e o render também:
+/// é o que permite carregar atrás do véu.
+fn freeze_time_while_loading(
+    readiness: Option<Res<WorldReadiness>>,
+    mut paused_by_us: ResMut<LoadingTimePause>,
+    mut time: ResMut<Time<bevy::time::Virtual>>,
+) {
+    let loading = readiness.is_some_and(|r| !r.ready);
+    if loading {
+        if !paused_by_us.0 {
+            time.pause();
+            paused_by_us.0 = true;
+        }
+    }
+    // Só despausa o que NÓS pausámos: o `pause` do debugger (`FrameStepper`)
+    // também mexe no `Time<Virtual>` e não pode ser desfeito pelo véu.
+    else if paused_by_us.0 {
+        time.unpause();
+        paused_by_us.0 = false;
+    }
+}
+
 pub struct WorldReadyPlugin;
 
 impl Plugin for WorldReadyPlugin {
     fn build(&self, app: &mut App) {
         let probe = GpuUploadProbe::default();
         app.init_resource::<WorldReadiness>()
+            .init_resource::<LoadingTimePause>()
             .register_type::<WorldReadiness>()
             .insert_resource(probe.clone())
             .add_systems(
                 PostUpdate,
                 (update_world_readiness, set_upload_budget).chain(),
-            );
+            )
+            .add_systems(bevy::app::Update, freeze_time_while_loading);
         if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render_app.insert_resource(probe).add_systems(
                 bevy::render::Render,
@@ -334,7 +365,13 @@ fn update_world_readiness(
         (Some(server), Some(gate)) => gate.ready(server),
         _ => true,
     };
-    let player_ready = players.iter().any(|(_, gated, settling)| !gated && !settling);
+    // O portão de spawn segura o herói ATÉ a época fechar (e o véu espera
+    // pelo portão), por isso um herói `gated` não é "ainda não pronto" —
+    // exigi-lo aqui embrulhava o véu num impasse. O que não pode é um
+    // `TeleportSettle` preso. Sem herói nenhum (a cena de menu por
+    // exemplo) não bloqueia: não há a quem assentar.
+    let player_ready = players.is_empty()
+        || players.iter().any(|(_, _gated, settling)| !settling);
     let spawn_groups_ready = groups
         .as_deref()
         .is_none_or(|g| g.groups.iter().all(|g| g.done));
@@ -359,7 +396,7 @@ fn update_world_readiness(
     // é a medição do que segura o véu.
     if r.elapsed_secs.floor() != ((now - r.started_at) as f32 - time.delta_secs()).floor() {
         debug!(
-            "carregamento t={:.1}s frame={} modelos {}/{} texturas={} herói={} spawn_groups={} gpu_fila={}",
+            "carregamento t={:.1}s frame={} modelos {}/{} texturas={} herói={} spawn_groups={} gpu_fila={} (players={} settling={} gated={})",
             r.elapsed_secs,
             frame.0,
             r.total_models.saturating_sub(pending_models),
@@ -367,7 +404,10 @@ fn update_world_readiness(
             textures_ready,
             player_ready,
             spawn_groups_ready,
-            gpu_uploading
+            gpu_uploading,
+            players.iter().count(),
+            players.iter().filter(|(_, _, s)| *s).count(),
+            players.iter().filter(|(_, g, _)| *g).count()
         );
     }
     let stage = 0.5 * r.progress_models_or_done()

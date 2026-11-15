@@ -289,7 +289,10 @@ mod tests {
     fn test_sfx_clip_from_str_is_case_insensitive_and_aliases() {
         assert_eq!(sfx_clip_from_str("HIT"), Some(SfxClip::Hit));
         assert_eq!(sfx_clip_from_str("level_up"), Some(SfxClip::LevelUp));
-        assert_eq!(sfx_clip_from_str("quest_complete"), Some(SfxClip::QuestDone));
+        assert_eq!(
+            sfx_clip_from_str("quest_complete"),
+            Some(SfxClip::QuestDone)
+        );
         assert_eq!(sfx_clip_from_str("inexistente"), None);
     }
 

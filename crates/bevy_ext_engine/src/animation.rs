@@ -264,7 +264,6 @@ pub fn profile_gates(profile: &LocomotionProfile) -> MotionGates {
     MotionGates::from_speeds(profile_speeds(profile))
 }
 
-
 /// Picks the animation state for a character from its own motion, with no
 /// memory of the previous state.
 ///
@@ -1025,9 +1024,13 @@ pub fn sync_clip_speed(
     }
 }
 
-
 pub fn drive_player_animation(
-    mut heroes: Query<(&Transform, &bevy_ext_core::Player, &mut CharacterAnimator)>,
+    mut heroes: Query<(
+        &Transform,
+        &bevy_ext_core::Player,
+        &mut CharacterAnimator,
+        Option<&bevy_ext_core::animation::AnimStateOverride>,
+    )>,
     mut players: PlayerQuery,
     handles: Query<&AnimationGraphHandle>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
@@ -1035,7 +1038,7 @@ pub fn drive_player_animation(
     time: Res<Time>,
 ) {
     let dt = time.delta_secs().max(1e-4);
-    for (transform, hero, mut animator) in &mut heroes {
+    for (transform, hero, mut animator, anim_override) in &mut heroes {
         // `advance_motion` zera o air_time no primeiro frame grounded, pelo que
         // o valor ANTES da chamada é o voo acumulado até à aterragem.
         let was_airborne = animator.air_time;
@@ -1077,6 +1080,11 @@ pub fn drive_player_animation(
             .is_some_and(|water_y| water_y - transform.translation.y >= SWIM_SUBMERSION);
         if let Some(water) = water_state(animator.speed, submerged) {
             state = water;
+        }
+        // Override do jogo (tnua): ações que o movimento medido não revela
+        // (FallSection do salto, dash, parede). `None` = decide o driver.
+        if let Some(Some(forced)) = anim_override.map(|o| o.0) {
+            state = forced;
         }
         let blended = animator.locomotion.is_some()
             && !animator.is_busy()
@@ -1187,7 +1195,14 @@ pub fn play_pending_gestures(
         if (gesture.speed - 1.0).abs() < 1e-3 {
             play_action(&mut animator, &mut players, node, blend, gesture.lock);
         } else {
-            play_action_scaled(&mut animator, &mut players, node, blend, gesture.lock, gesture.speed);
+            play_action_scaled(
+                &mut animator,
+                &mut players,
+                node,
+                blend,
+                gesture.lock,
+                gesture.speed,
+            );
         }
     }
 }
@@ -1205,7 +1220,10 @@ mod tests {
     fn water_state_picks_swim_or_float_only_when_submerged() {
         assert_eq!(water_state(2.3, true), Some(AnimState::Swim));
         assert_eq!(water_state(0.0, true), Some(AnimState::SwimIdle));
-        assert_eq!(water_state(SWIM_MOVE_GATE - 1e-3, true), Some(AnimState::SwimIdle));
+        assert_eq!(
+            water_state(SWIM_MOVE_GATE - 1e-3, true),
+            Some(AnimState::SwimIdle)
+        );
         assert_eq!(water_state(2.3, false), None);
         assert_eq!(water_state(0.0, false), None);
     }
@@ -1219,10 +1237,7 @@ mod tests {
         assert!(AnimState::Swim.candidates().contains(&"swim"));
         assert!(AnimState::SwimIdle.candidates().contains(&"swimidle"));
         assert_eq!(AnimState::Swim.fallbacks()[0], AnimState::SwimIdle);
-        assert_eq!(
-            AnimState::Swim.fallbacks().last(),
-            Some(&AnimState::Idle)
-        );
+        assert_eq!(AnimState::Swim.fallbacks().last(), Some(&AnimState::Idle));
     }
 
     /// O acumulador do Bevy (`w / (w_acc + w)`, idle → walk → run) nunca

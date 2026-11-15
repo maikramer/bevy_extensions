@@ -921,6 +921,7 @@ pub fn reset_scene_resources(world: &mut World) {
     world.remove_resource::<crate::worldsys::EngineConfigs>();
     world.remove_resource::<PrototypeLibrary>();
     world.remove_resource::<StaticWorld>();
+    world.remove_resource::<bevy_ext_terrain_runtime::host::StaticWorld>();
     world.remove_resource::<EditorGroups>();
     world.remove_resource::<crate::spawner::SpawnExclusions>();
     world.remove_resource::<crate::spawner::PendingSpawnGroups>();

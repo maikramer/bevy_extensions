@@ -34,9 +34,9 @@
 // do alias de compat em baixo o usa).
 extern crate self as viber;
 
-pub mod app;
 pub mod ambient;
 pub mod animation;
+pub mod app;
 pub mod camera;
 pub mod camera_glue;
 pub mod cinematic;
@@ -65,4 +65,3 @@ pub mod textures;
 pub mod vitals;
 pub mod water_ssr;
 pub mod worldsys;
-

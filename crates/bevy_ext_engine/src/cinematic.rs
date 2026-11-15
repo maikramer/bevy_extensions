@@ -35,8 +35,8 @@ use serde_json::{Value, json};
 
 // O XML do mundo vive no `bevy_ext_world` (o `crate::xml` do monólito é um
 // shim para ele).
-use bevy_ext_world::xml::values::parse_vec3;
 use bevy_ext_world::XmlNode;
+use bevy_ext_world::xml::values::parse_vec3;
 // Contratos extraídos (bevy_ext_core): os mesmos que `player`/`menus`/
 // `ambient` do monólito reexportam.
 use bevy_ext_core::{MenusOpen, Player, SfxEvent};

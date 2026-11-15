@@ -92,6 +92,11 @@ pub struct TerrainSpec {
     pub render_distance: Option<f32>,
     /// Height smoothing: `0.0` bilinear, `1.0` monotone Catmull-Rom.
     pub height_smoothing: f32,
+    /// Defaults do pavimento em grelha (`<Terrain paving-cell=…>`): o módulo da
+    /// treliça, o chanfro dos cantos convexos e o filete dos côncavos. Cada nó
+    /// pavimentado herda o que não sobrepor; o estilo por omissão é "auto"
+    /// (módulo 2 m, chanfro = meio módulo, filete = 0,35 do módulo).
+    pub paving: crate::paving::PavingStyle,
     /// Interruptor de colisão de terreno: `0` desliga os colliders; qualquer
     /// outro valor liga. (Já NÃO define geometria: o collider é o trimesh
     /// transvoxel da coluna ao passo do LOD — ver `physics.rs`.)
@@ -172,6 +177,7 @@ impl Default for TerrainSpec {
             resolution: DEFAULT_RESOLUTION,
             texture: None,
             texture_tile_size: 0.0,
+            paving: crate::paving::PavingStyle::default(),
             layers: Vec::new(),
             shore_width: 5.0,
             splat_texel: 0.0,

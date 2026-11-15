@@ -16,8 +16,8 @@ use bevy::prelude::*;
 use bevy_ext_core::animation::CharacterAnimator;
 // Contratos: estados do mundo com TypePath congelado no postfx (`env`), o
 // marcador das luzes autorais com sombra, o herói e o contrato de script.
-use bevy_ext_postfx::env::{AuthoredShadowLight, TravellerLantern};
 use bevy_ext_core::Player;
+use bevy_ext_postfx::env::{AuthoredShadowLight, TravellerLantern};
 // Câmara de editor deste crate (referenciada por path inteiro no
 // `light_budget_system`): quem orça as luzes é a câmara activa.
 
@@ -120,11 +120,8 @@ pub const LIGHT_BUDGET: usize = 12;
 /// Intervalo de refrescamento do orçamento de luzes (s).
 pub const LIGHT_BUDGET_INTERVAL: f32 = 1.0;
 
-
 /// Intervalo entre gestos idle de NPC (s, ±jitter).
 pub const GESTURE_MIN_INTERVAL: f32 = 7.0;
-
-
 
 /// Orçamento de SOMBRAS de PointLight — não de luz.
 ///
@@ -282,7 +279,11 @@ pub fn npc_gesture_system(
     time: Res<Time>,
     mut npcs: Query<
         (Entity, &mut CharacterAnimator),
-        (With<Name>, Without<Player>, Without<bevy_ext_core::LuaScriptRef>),
+        (
+            With<Name>,
+            Without<Player>,
+            Without<bevy_ext_core::LuaScriptRef>,
+        ),
     >,
     mut animation_players: crate::animation::PlayerQuery,
     mut timers: Local<HashMap<Entity, f32>>,
@@ -409,7 +410,6 @@ pub fn lantern_driver(
         *visibility = wanted;
     }
 }
-
 
 #[cfg(test)]
 mod tests {

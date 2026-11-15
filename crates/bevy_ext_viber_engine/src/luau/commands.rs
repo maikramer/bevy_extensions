@@ -60,9 +60,11 @@ pub enum ScriptCommand {
     /// (a tocha equipada ilumina mesmo de dia; 0 = só a automática nocturna).
     SetLantern(f32),
     /// `viber.bone_offset(bone, rx, ry, rz)` — rotação ADITIVA num osso do
-    /// herói, aplicada por cima de qualquer animação (idle/walk/run).
+    /// rig da entidade, aplicada por cima de qualquer animação
+    /// (idle/walk/run). `None` (ponte BMS do editor) = o herói, como sempre.
     /// `Quat::IDENTITY` remove a entrada.
     SetBoneOffset {
+        entity: Option<Entity>,
         bone: String,
         rotation: Quat,
     },

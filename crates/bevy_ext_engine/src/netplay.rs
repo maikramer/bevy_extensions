@@ -19,8 +19,8 @@ use bevy::prelude::*;
 
 // Contrato do core (TypePaths `viber::input_map` congelados lá): o mesmo
 // `ActionState` que o `gather_actions` do monólito reescreve por frame.
-use bevy_ext_core::input_map::ActionState;
 use bevy_ext_core::Player;
+use bevy_ext_core::input_map::ActionState;
 
 #[derive(Clone, Debug, Reflect)]
 #[type_path = "viber::netplay"]

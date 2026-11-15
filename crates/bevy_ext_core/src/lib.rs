@@ -214,6 +214,27 @@ impl Default for TeleportSettle {
     }
 }
 
+impl TeleportSettle {
+    /// Teto de frames de 60 Hz que um único frame consome: a tutela dura
+    /// sempre pelo menos 3 frames reais (o collider recém-assado entra no
+    /// step seguinte).
+    pub const MAX_STEP: u8 = 10;
+
+    /// Avança a tutela por um frame de `dt` segundos e devolve `true` no
+    /// frame em que acaba. Conta em frames EQUIVALENTES a 60 Hz: a 60 fps é
+    /// o mesmo que contar frames (30 ≈ 0,5 s), mas atrás do véu, com frames
+    /// de 100–250 ms, 30 frames reais eram 3–5 s de ecrã de loading só a
+    /// contar — com dezenas de passos de física já corridos sobre o chão.
+    pub fn tick(&mut self, dt: f32) -> bool {
+        if self.frames == 0 {
+            return true;
+        }
+        let step = (dt * 60.0).round().clamp(1.0, f32::from(Self::MAX_STEP)) as u8;
+        self.frames = self.frames.saturating_sub(step);
+        self.frames == 0
+    }
+}
+
 // ── física de efeitos (pura) ─────────────────────────────────────────────
 
 /// Decaimento exponencial do knockback (por segundo).
@@ -1094,3 +1115,25 @@ pub struct VoxelCollider;
 pub struct RagdollBodyOf(pub Entity);
 
 
+
+#[cfg(test)]
+mod teleport_settle_tests {
+    use super::TeleportSettle;
+
+    #[test]
+    fn a_60_fps_conta_um_por_frame() {
+        let mut settle = TeleportSettle::default();
+        let frames = (1..=40).find(|_| settle.tick(1.0 / 60.0)).unwrap();
+        assert_eq!(frames, 30);
+    }
+
+    #[test]
+    fn frames_lentos_acabam_mais_cedo_mas_nunca_antes_de_3() {
+        let mut settle = TeleportSettle::default();
+        let frames = (1..=40).find(|_| settle.tick(0.12)).unwrap();
+        assert_eq!(frames, 5);
+        let mut settle = TeleportSettle::default();
+        let frames = (1..=40).find(|_| settle.tick(2.5)).unwrap();
+        assert_eq!(frames, 3);
+    }
+}

@@ -902,7 +902,10 @@ pub fn physics_anchors(app: &mut App, schedule: impl bevy::ecs::schedule::Schedu
             schedule.clone(),
             physics_step_start.before(PhysicsSystems::StepSimulation),
         )
-        .add_systems(schedule, physics_step_end.after(PhysicsSystems::StepSimulation));
+        .add_systems(
+            schedule,
+            physics_step_end.after(PhysicsSystems::StepSimulation),
+        );
 }
 
 /// Lock partilhado pelos testes que tocam nos globais (anéis, acumulador,

@@ -23,7 +23,7 @@
 
 use bevy::prelude::*;
 use bevy_ext_core::{
-    a11y::shake_scale, GROUND_PROBE, InteriorSceneConfig, Player, LOOK_PIVOT_HEIGHT,
+    GROUND_PROBE, InteriorSceneConfig, LOOK_PIVOT_HEIGHT, Player, a11y::shake_scale,
 };
 use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
 
@@ -76,7 +76,7 @@ pub const AUTO_SETTLE_MAX_RATE: f32 = 60.0;
 // `camera_offset` e o componente `OrbitCamera` vivem no
 // [`crate::camera`] (onda exit2/hubs); re-exportados para o caminho
 // histórico `viber::camera::…` continuar a resolver para O MESMO tipo.
-pub use crate::camera::{camera_offset, DEFAULT_ORBIT_PIVOT_HEIGHT, OrbitCamera};
+pub use crate::camera::{DEFAULT_ORBIT_PIVOT_HEIGHT, OrbitCamera, camera_offset};
 
 /// Constante de tempo do salto entre salas da câmara de interior (s).
 ///
@@ -92,9 +92,7 @@ pub const INTERIOR_ROOM_LAG: f32 = 0.12;
 /// inteira, à maneira dos JRPG de 16 bits. A altura do alvo acompanha o
 /// herói (o soalho da sala), para uma sala num piso diferente não deixar o
 /// enquadramento no chão errado. Pura para teste.
-pub fn interior_camera_pose(scene: &InteriorSceneConfig,
-    player: Vec3,
-) -> (Vec3, Vec3) {
+pub fn interior_camera_pose(scene: &InteriorSceneConfig, player: Vec3) -> (Vec3, Vec3) {
     let [cx, cz] = scene.room_center(player.x, player.z);
     let look_at = Vec3::new(cx, player.y + 1.0, cz);
     let eye = look_at
@@ -645,7 +643,7 @@ pub fn third_person_camera(
                         // minTerrainDistance.
                         let min_y = if rt.in_field(desired.x, desired.z) {
                             rt.surface_below(desired.x, desired.z, desired.y + GROUND_PROBE)
-                            .unwrap_or(f32::NEG_INFINITY)
+                                .unwrap_or(f32::NEG_INFINITY)
                         } else {
                             f32::NEG_INFINITY
                         } + cam.min_terrain_distance;

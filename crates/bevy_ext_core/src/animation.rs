@@ -20,6 +20,16 @@ pub struct LocomotionBlendNodes {
     pub run: AnimationNodeIndex,
 }
 
+/// Override do estado escolhido pelo driver (`drive_player_animation`).
+///
+/// O jogo (Vael) escreve-o quando o tnua sabe algo que o movimento medido
+/// não revela: a ação de salto em `FallSection`, um dash em curso, um
+/// deslize de parede. `None` devolve a decisão ao driver (idle/walk/run/
+/// água seguem o deslocamento real). Atualizado por frame.
+#[derive(Debug, Clone, Copy, Default, Reflect, Component)]
+#[type_path = "viber::animation"]
+pub struct AnimStateOverride(pub Option<AnimState>);
+
 /// A gameplay animation state, independent of what the file calls its clips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Reflect)]
 #[type_path = "viber::animation"]

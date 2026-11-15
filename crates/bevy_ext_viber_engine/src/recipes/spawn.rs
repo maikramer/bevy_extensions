@@ -181,6 +181,10 @@ fn collect_walk(specs: &[EntitySpec], offset: Vec2, out: &mut PendingTerrain) {
                         "<Terrain translation>: ignored — native terrain centers at the origin"
                     );
                 }
+                // Paving defaults live on the terrain node (`<Terrain
+                // paving-cell=…>`); the feature pass applies them to every
+                // paved node that left the field at "inherit".
+                out.features.paving_default = terrain.paving.clone();
                 out.terrain = Some(terrain.clone());
             }
             EntityKind::TerrainPad { spec: pad } => {
@@ -497,6 +501,12 @@ fn spawn_parsed(world: &mut World, pending: PendingWorld, persistent: bool) {
     if !persistent {
         world.insert_resource(PrototypeLibrary(parsed.prototypes.clone()));
         world.insert_resource(StaticWorld(parsed.static_world));
+        // O bootstrap do terreno extraído lê o SEU `StaticWorld` (tipo do
+        // crate, mesmo type_path): sem este, o mundo estático era re-carvado
+        // e re-afiado em runtime (relevo ≠ `.ahgt` autorado, +1 s no arranque).
+        world.insert_resource(bevy_ext_terrain_runtime::host::StaticWorld(
+            parsed.static_world,
+        ));
     }
     if let Some([r, g, b]) = parsed.clear_color {
         world.insert_resource(ClearColor(Color::srgb(r, g, b)));
@@ -2203,9 +2213,11 @@ fn spawn_entity(
             entity.insert((
                 GltfScenePending::single(handle),
                 crate::player::Player::default(),
-                // Corpo dinâmico + tnua: o controller resolve o movimento
-                // contra os colliders estáticos (paredes, edifícios, props).
-                crate::player::hero_controller_bundle(),
+                // Corpo dinâmico + sensor do tnua: o controller resolve o
+                // movimento contra os colliders estáticos (paredes,
+                // edifícios, props). O `TnuaController<S>` insere-o a app
+                // (cada jogo tem o seu scheme) via `attach_hero_controller`.
+                crate::player::hero_body_bundle(),
                 crate::player::hero_collider(),
             ));
         }

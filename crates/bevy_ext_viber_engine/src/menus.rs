@@ -150,7 +150,10 @@ impl Plugin for MenusPlugin {
                     // NESTE frame (UiSet::Script).
                     mirror_ui_modals_open.after(crate::ui::UiSet::Script),
                     campfire_banner_system,
-                    loading_hide_system,
+                    // DEPOIS do portão de spawn: o frame que solta o herói
+                    // no chão é o frame em que o véu sai — o jogador nunca
+                    // vê a colocação.
+                    loading_hide_system.after(crate::spawn_gate::SpawnGateSet),
                 ),
             );
     }
@@ -479,6 +482,7 @@ struct LoadingBarFill;
 /// (`VIBER_LOADING_MAX_S`), não um temporizador fixo daqui.
 fn loading_hide_system(
     readiness: Option<Res<crate::world_ready::WorldReadiness>>,
+    gated: Query<(), With<crate::spawn_gate::SpawnGated>>,
     mut loading: Query<&mut Visibility, With<LoadingScreen>>,
     mut status: Query<&mut Text, With<LoadingStatus>>,
     mut fill: Query<&mut Node, With<LoadingBarFill>>,
@@ -488,7 +492,11 @@ fn loading_hide_system(
     };
     // Na troca de cena a prontidão só cai no `Swap` (já depois do fade a
     // preto) e o `Settle` espera por ela antes do fade de volta.
-    let show = !readiness.ready;
+    //
+    // E enquanto houver herói no PORTÃO de spawn o véu fica: o portão só o
+    // solta com a época fechada, e o jogador tem de ver o herói já no chão
+    // (este sistema corre depois do portão, no mesmo frame).
+    let show = !readiness.ready || !gated.is_empty();
     let target = if show {
         Visibility::Visible
     } else {

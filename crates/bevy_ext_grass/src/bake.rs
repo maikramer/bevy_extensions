@@ -142,8 +142,38 @@ pub fn bake_dynamic(
     plans: &[FieldPlan],
     statics: &StaticMaps,
 ) -> Vec<FieldData> {
-    let mut out = Vec::with_capacity(plans.len());
-    for plan in plans {
+    // Um campo por thread: os campos são independentes (só leem o terreno e a
+    // grelha estática) e em série custavam ~0,55 s cada no arranque.
+    if plans.len() <= 1 {
+        return plans
+            .iter()
+            .map(|plan| bake_field(terrain, config, plan, statics))
+            .collect();
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = plans
+            .iter()
+            .map(|plan| scope.spawn(move || bake_field(terrain, config, plan, statics)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("bevy_ext_grass: bake de campo entrou em pânico")
+            })
+            .collect()
+    })
+}
+
+/// Bake de um campo (alturas + máscara final).
+fn bake_field(
+    terrain: &dyn GrassTerrain,
+    config: &GrassBakeConfig,
+    plan: &FieldPlan,
+    statics: &StaticMaps,
+) -> FieldData {
+    {
         let cell_size = config.cell.max(0.25);
         let texels = plan.texels(cell_size);
         let w = texels.x as usize;
@@ -218,14 +248,13 @@ pub fn bake_dynamic(
         if std::env::var("GRASS_DEBUG").as_deref() == Ok("1") {
             dump_debug(plan.biome.0, texels, &heights, &mask);
         }
-        out.push(FieldData {
+        FieldData {
             plan: *plan,
             texels,
             heights,
             mask,
-        });
+        }
     }
-    out
 }
 
 /// Despeja máscara final e heightmap normalizada em PGM (`GRASS_DEBUG=1`).

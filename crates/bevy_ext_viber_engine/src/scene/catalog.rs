@@ -210,6 +210,30 @@ pub const TEMPLATES: &[NodeTemplate] = &[
     },
     NodeTemplate {
         group: TemplateGroup::Feature,
+        tag: "grounddecal",
+        label: "Paving area (praça/largo pavimentado em grelha)",
+        snippet: r##"<GroundDecal name="plaza" at="0 0" size="34 34" paving="1" feather="2" texture="/assets/textures/cobblestone_road/albedo.ktx2" texture-scale="3.5" base-color="#9d9891" roughness="0.9" />"##,
+    },
+    NodeTemplate {
+        group: TemplateGroup::Feature,
+        tag: "grounddecal",
+        label: "Paving inset (cova/remendo POR CIMA do pavimento)",
+        snippet: r#"<GroundDecal name="pit" at="13 11" radius="2.8" on-paving="1" feather="1.2" texture="/assets/textures/dirt/albedo.ktx2" texture-scale="2" />"#,
+    },
+    NodeTemplate {
+        group: TemplateGroup::Feature,
+        tag: "road",
+        label: "Road pavimentada (corredor vira células, sem ribbon)",
+        snippet: r#"<Road path="0 0 60 0 60 40" width="6" flatten="0" paving="1" edge-noise="0.3" texture-url="/assets/textures/cobblestone_road/albedo.ktx2" texture-scale="4" />"#,
+    },
+    NodeTemplate {
+        group: TemplateGroup::Feature,
+        tag: "roadnetwork",
+        label: "RoadNetwork pavimentada (rede inteira em grelha)",
+        snippet: r#"<RoadNetwork default-width="4" flatten="0" paving="1" texture-url="/assets/textures/cobblestone_road/albedo.ktx2" texture-scale="4"><Way id="plaza" xz="0 0" /><Way id="gate" xz="40 0" /><Way id="cross" xz="40 40" /><Segment a="plaza" b="gate" /><Segment a="gate" b="cross" /></RoadNetwork>"#,
+    },
+    NodeTemplate {
+        group: TemplateGroup::Feature,
         tag: "vegetation",
         label: "Vegetation (flores/erva densa instanciada)",
         snippet: r#"<Vegetation meshes="/assets/meshes/vegetation/plant_flatShort.glb" density-per-km2="8000" seed="21" region-min="-60 0 -60" region-max="60 0 60" />"#,

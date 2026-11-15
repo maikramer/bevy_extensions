@@ -115,6 +115,7 @@ pub fn gather_actions(
         interact_just: just(Action::Interact),
         lock_just: just(Action::Lock),
         menu_just: just(Action::Menu),
+        crouch_held: held(Action::Crouch),
     };
 }
 
