@@ -942,9 +942,29 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
             (ui::UiSet::Collect, ui::UiSet::Build, ui::UiSet::Bind).before(luau::luau_update),
         );
     }
-    app.add_systems(bevy::app::Startup, spawn::startup);
+    // O spawn do mundo junta-se ao set do contrato do nav crate: o NavPlugin
+    // aplica a `<NavMesh>` e cria o arquipélago DEPOIS dele (Startup). O
+    // handle do terreno (`nav::publish_nav_ground`) sai a seguir ao spawn.
+    app.add_systems(
+        bevy::app::Startup,
+        (spawn::startup, nav::publish_nav_ground)
+            .chain()
+            .in_set(nav::WorldSpawned),
+    );
     // Trocas de cena (`crate::scene_loader`): o mesmo spawn, num schedule re-executável.
-    app.add_systems(crate::scene_loader::SceneLoad, spawn::startup);
+    // O nav crate registra o par tag+arquipélago no `SceneLoad` do core — o
+    // runtime do Viber corre o SEU schedule (um tipo só, `bevy_ext_engine`),
+    // por isso a reaplicação entra aqui, a seguir ao spawn e ao handle.
+    app.add_systems(
+        crate::scene_loader::SceneLoad,
+        (
+            spawn::startup,
+            nav::publish_nav_ground,
+            nav::apply_navmesh_tag,
+            nav::spawn_archipelago,
+        )
+            .chain(),
+    );
     app.add_plugins(crate::scene_loader::SceneLoaderPlugin);
     // Câmara livre de editor (`--camera free`, src/editor_camera.rs): a
     // navegação orbit/pan/zoom de edição via bridge (`viber.camera.*`).

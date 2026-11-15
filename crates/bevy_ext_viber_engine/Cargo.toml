@@ -71,6 +71,10 @@ bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
 # BGM driver extraído (shim `src/music.rs`); os TypePaths `viber::music`
 # estão congelados no crate de áudio.
 bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
+# Navegação extraída (shim `src/nav/mod.rs`); os TypePaths `viber::nav` estão
+# congelados no crate. O mesmo `bevy_rerecast` do monólito — o `[patch]` do
+# vendor/rerecast aplica-se ao workspace inteiro.
+bevy_ext_nav = { version = "0.1.0", path = "../bevy_ext_nav" }
 # Terreno volumétrico extraído (shim `pub use … as terrain` em `lib.rs`); os
 # TypePaths `viber::terrain::…` estão congelados no crate.
 bevy_ext_terrain_runtime = { version = "0.1.0", path = "../bevy_ext_terrain_runtime" }

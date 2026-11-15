@@ -731,6 +731,18 @@ fn spawn_parsed(world: &mut World, pending: PendingWorld, persistent: bool) {
             list: pending_worldsys.biomes.clone(),
         });
     }
+    // A `<NavMesh>` vai ao contrato do crate extraído (`bevy_ext_nav`); uma
+    // cena SEM a tag remove o recurso — a anterior não pode vaziar para esta.
+    match pending_worldsys
+        .configs
+        .iter()
+        .find(|c| c.tag == "navmesh")
+    {
+        Some(navmesh) => world.insert_resource(crate::nav::NavMeshTag(navmesh.attrs.clone())),
+        None => {
+            world.remove_resource::<crate::nav::NavMeshTag>();
+        }
+    }
     world.insert_resource(crate::worldsys::EngineConfigs {
         list: pending_worldsys.configs,
     });

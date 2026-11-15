@@ -282,14 +282,10 @@ pub fn drive_ragdolls(
     }
 }
 
-/// Corpo de ragdoll ligado ao cadáver que o originou. Se o cadáver for
-/// despawnado antes dos 2,5 s (corpse lifetime 1,4 s, troca de cena), o
-/// `RagdollActive` desaparecia com ele e os corpos ficavam para sempre no
-/// mundo da física.
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-#[type_path = "viber::ragdoll"]
-pub struct RagdollBodyOf(pub Entity);
+// Contrato movido ao `bevy_ext_core` (com o consumidor `bevy_ext_nav`, que
+// filtra obstáculos pelo MESMO tipo que a física insere); o TypePath
+// `viber::ragdoll` fica congelado no core.
+pub use bevy_ext_core::RagdollBodyOf;
 
 /// Recolhe corpos cujo dono já não tem ragdoll ativo.
 pub fn reap_orphan_ragdoll_bodies(

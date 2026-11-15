@@ -413,7 +413,12 @@ pub fn reset_for_scene(world: &mut World) {
 
 /// Creates the single archipelago and its single island, and prices the two
 /// node types.
-fn spawn_archipelago(mut commands: Commands, config: Res<NavConfig>) {
+///
+/// `pub` para o anfitrião que corre o PRÓPRIO schedule de troca de cena (o
+/// runtime do Viber corre o do `bevy_ext_engine`, não o `SceneLoad` do core)
+/// voltar a registar o par tag+arquipélago nesse schedule — o par NÃO é
+/// idempotente, registe-o em UM schedule que corra mesmo.
+pub fn spawn_archipelago(mut commands: Commands, config: Res<NavConfig>) {
     let mut options = ArchipelagoOptions::from_agent_radius(config.agent_radius);
     // The default sampling window is sized for a navmesh authored around the
     // agent (10 cm horizontally, 25 cm above). A character on carved voxel
@@ -499,7 +504,9 @@ fn on_navmesh_ready(ready: On<bevy_rerecast::prelude::NavmeshReady>, mut tile: R
 /// The world spawn keeps the tag as raw data in [`NavMeshTag`]; this reads it
 /// once, before the archipelago is built, so the agent radius the world asked
 /// for is the one the archipelago is priced with.
-fn apply_navmesh_tag(mut config: ResMut<NavConfig>, declared: Option<Res<NavMeshTag>>) {
+/// `pub` para o anfitrião registar a reaplicação no SEU schedule de troca de
+/// cena (idempotente; ver [`spawn_archipelago`]).
+pub fn apply_navmesh_tag(mut config: ResMut<NavConfig>, declared: Option<Res<NavMeshTag>>) {
     let Some(declared) = declared else {
         return;
     };

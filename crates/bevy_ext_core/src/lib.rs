@@ -810,6 +810,26 @@ impl AiLocomotion {
     pub fn goal(&self) -> Option<Vec2> {
         self.goal
     }
+
+    /// The one-frame look-at direction, when a producer asked for one.
+    ///
+    /// O consumidor só a honra abaixo de `FACING_MOVE_SPEED` — acima disso o
+    /// corpo aponta para onde vai.
+    pub fn facing(&self) -> Option<Vec2> {
+        self.facing
+    }
+
+    /// The desire has been consumed: clears ask, driver, facing and goal.
+    ///
+    /// É o fecho do contrato de um frame — o consumidor único chama-o depois
+    /// de integrar o passo; o frame seguinte começa parado a menos que um
+    /// produtor volte a pedir.
+    pub fn consume(&mut self) {
+        self.desired = Vec2::ZERO;
+        self.driven = false;
+        self.facing = None;
+        self.goal = None;
+    }
 }
 
 /// Behaviour state of one `EnemyCreature`.

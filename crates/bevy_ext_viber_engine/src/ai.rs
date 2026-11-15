@@ -47,176 +47,10 @@ pub const FACING_MOVE_SPEED: f32 = 0.25;
 /// not creep forever on a vanishing remainder.
 pub const STOP_EPSILON: f32 = 0.02;
 
-/// Velocity-space locomotion shared by the Rust FSM ([`enemy_ai`]) and the
-/// Luau scripts (`viber.move_towards` / `move_by` / `face_towards`).
-///
-/// Producers state a *desire* for the frame ([`Self::drive`], [`Self::look_at`])
-/// and [`apply_ai_locomotion`] is the single consumer that turns it into
-/// movement: it ramps the velocity toward the desire at the profile's
-/// acceleration, steps the transform, snaps Y to the carved surface and turns
-/// the yaw at the profile's turn rate. Before this existed both producers wrote
-/// `Transform::translation` and `Transform::rotation` outright — full speed on
-/// the first frame and a hard 180° snap on every retarget.
-///
-/// The desire is a *one-frame* contract: the consumer clears it. A producer
-/// that stops asking decelerates to a stop instead of freezing mid-stride.
-#[derive(Debug, Clone, Copy, Component, Default, Reflect)]
-#[reflect(Component, Default)]
-pub struct AiLocomotion {
-    /// Current planar velocity (m/s). Integrated, never assigned by producers.
-    pub velocity: Vec2,
-    /// Desired planar velocity (m/s) for this frame.
-    desired: Vec2,
-    /// A producer asked for something this frame (distinguishes "stand still"
-    /// from "nobody is driving me").
-    driven: bool,
-    /// One-frame look-at direction (XZ), honoured only below
-    /// [`FACING_MOVE_SPEED`].
-    facing: Option<Vec2>,
-    /// Where the producer is actually trying to GO, when it knows.
-    ///
-    /// The desired velocity alone is not enough for a pathfinder: projecting it
-    /// forward only ever names a point on the straight line the character
-    /// cannot take, which is precisely the line the wall is on. `viber.move_towards`
-    /// and the FSM both know their destination, so they say it, and the
-    /// navigation bridge paths to the real thing.
-    goal: Option<Vec2>,
-}
-
-impl AiLocomotion {
-    /// Asks for a planar velocity (m/s) this frame, with no stated destination.
-    ///
-    /// Use [`Self::drive_to`] whenever the destination IS known: without it the
-    /// navigation bridge can only guess where the character is heading.
-    pub fn drive(&mut self, desired: Vec2) {
-        self.desired = desired;
-        self.driven = true;
-        self.goal = None;
-    }
-
-    /// Asks to travel toward `goal` at `speed` (m/s), from `here`.
-    ///
-    /// Never asks for more speed than closes the remaining gap this frame, so
-    /// arrival is the same as it always was.
-    pub fn drive_to(&mut self, here: Vec2, goal: Vec2, speed: f32, dt: f32) {
-        let offset = goal - here;
-        if offset.length_squared() <= 1e-8 || speed <= 0.0 {
-            self.halt();
-            self.goal = Some(goal);
-            return;
-        }
-        let reach = offset.length() / dt.max(1e-4);
-        self.desired = offset.normalize() * speed.min(reach);
-        self.driven = true;
-        self.goal = Some(goal);
-    }
-
-    /// Asks to stand still this frame (decelerating, not freezing).
-    pub fn halt(&mut self) {
-        self.desired = Vec2::ZERO;
-        self.driven = true;
-        self.goal = None;
-    }
-
-    /// Asks to look toward a direction, if the character is slow enough to be
-    /// allowed to (see [`FACING_MOVE_SPEED`]).
-    pub fn look_at(&mut self, dir: Vec2) {
-        if dir.length_squared() > 1e-8 {
-            self.facing = Some(dir.normalize());
-        }
-    }
-
-    /// Current planar speed (m/s).
-    pub fn speed(&self) -> f32 {
-        self.velocity.length()
-    }
-
-    /// The velocity asked for this frame, before the acceleration ramp.
-    ///
-    /// The navigation bridge reads it to know where the character *wants* to
-    /// go, replaces it with a navigated answer, and hands it back — which is
-    /// why the scripts never learn that pathfinding exists.
-    pub fn desired(&self) -> Vec2 {
-        self.desired
-    }
-
-    /// A producer asked for something this frame.
-    pub fn is_driven(&self) -> bool {
-        self.driven
-    }
-
-    /// Where the producer is trying to go, when it said so.
-    pub fn goal(&self) -> Option<Vec2> {
-        self.goal
-    }
-}
-
-/// Behaviour state of one [`EnemyCreature`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
-pub enum EnemyState {
-    /// Patrol around `home`; the [`Default`].
-    #[default]
-    Wander,
-    /// Viu ou ouviu: vira-se para o ponto, ainda sem correr.
-    Alert,
-    /// Run at the player while it can see them.
-    Chase,
-    /// Perdeu o alvo: vai ao último ponto e desiste.
-    Search,
-}
-
-impl EnemyState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Wander => "wander",
-            Self::Alert => "alert",
-            Self::Chase => "chase",
-            Self::Search => "search",
-        }
-    }
-
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "wander" => Some(Self::Wander),
-            "alert" => Some(Self::Alert),
-            "chase" => Some(Self::Chase),
-            "search" => Some(Self::Search),
-            _ => None,
-        }
-    }
-}
-
-/// A spawned creature: authored stats plus its current behaviour state.
-///
-/// `Default` is Wander with `home` unset — [`enemy_ai`] latches the real home
-/// to the spawn position on the first tick.
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component, Default)]
-pub struct EnemyCreature {
-    /// Chase speed in m/s (wander runs at [`WANDER_SPEED_FRACTION`] × this).
-    pub speed: f32,
-    /// Player distance that flips Wander → Chase.
-    pub aggro_radius: f32,
-    /// Chase stops (attack range) once this close to the player.
-    pub attack_radius: f32,
-    /// Patrol anchor (XZ); `None` until [`enemy_ai`] latches it to the spawn
-    /// position on the first tick — um sentinela `Vec2::ZERO` re-latchava o
-    /// home a cada tick em criaturas spawnadas em (0,0) (patrulha derivava).
-    pub home: Option<Vec2>,
-    pub state: EnemyState,
-}
-
-impl Default for EnemyCreature {
-    fn default() -> Self {
-        Self {
-            speed: 2.0,
-            aggro_radius: 18.0,
-            attack_radius: 2.2,
-            home: None,
-            state: EnemyState::Wander,
-        }
-    }
-}
+// Contratos movidos ao `bevy_ext_core` (com o consumidor `bevy_ext_nav`, cuja
+// ponte lê e escreve O MESMO componente que o FSM e os scripts produzem); os
+// TypePaths `viber::ai` ficam congelados no core.
+pub use bevy_engine_core::{AiLocomotion, AiLocomotionSystems, EnemyCreature, EnemyState};
 
 /// Patrol bookkeeping for one wanderer, auto-inserted by [`enemy_ai`].
 #[derive(Debug, Clone, Component, Default, Reflect)]
@@ -273,12 +107,6 @@ pub fn enemy_ai(world: &mut World) {
     crate::senses::sense_ai(world);
 }
 
-/// System set of [`apply_ai_locomotion`], so anything that has to write the
-/// locomotion ask (the navigation bridge) can order itself before the single
-/// consumer without naming the function.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AiLocomotionSystems;
-
 /// The single consumer of [`AiLocomotion`]: ramps velocity, steps the
 /// transform, snaps Y to the carved surface and turns the yaw.
 ///
@@ -329,13 +157,13 @@ pub fn apply_ai_locomotion(
         // Nobody drove this frame: coast to a stop rather than hold the last
         // velocity forever (a script whose `on_update` was skipped by the AI
         // LOD must not keep walking).
-        if !loco.driven {
-            loco.desired = Vec2::ZERO;
+        if !loco.is_driven() {
+            loco.halt();
         }
-        let delta = loco.desired - loco.velocity;
+        let delta = loco.desired() - loco.velocity;
         let max_change = profile.accel * dt;
         loco.velocity += delta.clamp_length_max(max_change);
-        if loco.desired == Vec2::ZERO && loco.velocity.length() < STOP_EPSILON {
+        if loco.desired() == Vec2::ZERO && loco.velocity.length() < STOP_EPSILON {
             loco.velocity = Vec2::ZERO;
         }
 
@@ -383,7 +211,7 @@ pub fn apply_ai_locomotion(
         let target_dir = if loco.speed() > FACING_MOVE_SPEED {
             Some(loco.velocity.normalize())
         } else {
-            loco.facing
+            loco.facing()
         };
         if let Some(dir) = target_dir {
             let target = crate::player::facing_rotation(Vec3::new(dir.x, 0.0, dir.y));
@@ -397,10 +225,7 @@ pub fn apply_ai_locomotion(
         }
 
         // One-frame contract: the desire has been consumed.
-        loco.desired = Vec2::ZERO;
-        loco.driven = false;
-        loco.facing = None;
-        loco.goal = None;
+        loco.consume();
     }
 }
 
