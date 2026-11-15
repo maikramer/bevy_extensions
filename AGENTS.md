@@ -12,6 +12,17 @@ não Unity/three.js.
 > arquivo dos docs antigos está em [`docs/viber/`](docs/viber/); a política de
 > crates em [`docs/CRATES.md`](docs/CRATES.md).
 
+## Crates extraídos
+
+- **`crates/bevy_ext_water`** — água independente do jogo (só `bevy` + `avian3d`):
+  corpos lago/rio (`WaterBody`), espelhos CPU do swell, solver iWave em compute,
+  material de dois passes, FX de contacto/esteira e flutuação (`FloatingBody`,
+  integrador próprio + adapter avian). O monólito consome-a por
+  `WaterPlugin::<TerrainRuntime>`; os adaptadores do jogo (carve/fonte do
+  terreno, colliders avian→`WaterObstacles`, partículas, `WaterBodied`) vivem em
+  `crates/bevy_ext_viber_engine/src/terrain/water_bridge.rs`. Os caminhos
+  históricos `viber::terrain::water*` são shims (`pub use`) — não duplicar tipos.
+
 ## Mundos estáticos + edição por agentes (2026-10-13) — LER PRIMEIRO
 
 O Viber é feito para ser construído por **agentes de IA**; a UI de autoria do jogo
@@ -260,7 +271,7 @@ project:                     # config.yaml — sem este bloco o mundo é de uma 
 | Travel & wayfinding | `src/travel.rs` | A Nota [F], viagem rápida [G], registry de hostis (alimenta `viber.alive_in_region`) |
 | Mundo vivo | `src/worldsys.rs`, `src/ambient.rs`, `src/sky.rs`, `src/postfx.rs`, `src/animation.rs`, `src/music.rs` | DayCycle/Weather/WorldBorder/BiomeRegion como recursos; fog/tint/gestos de NPC/SFX; céu WGSL especializado por mundo; exposure/bloom/SSAO; clips glTF; BGM crossfade |
 | DLSS (upscaling NGX) | `src/dlss.rs` (+ ramo no attach do `src/postfx.rs`) | feature cargo `dlss` (NÃO-default; SDK da NVIDIA em build — secção "DLSS Super Resolution" abaixo); troca o TAA, gate `VIBER_DLSS`/config.yaml `dlss:`, modo ao vivo na REPL `viber.debug.dlss(...)` |
-| Física | `src/physics.rs`, `src/physics_fx.rs` | Rapier (`bevy_rapier3d`): `collider`/`rigidbody` declarativos; knockback cinemático (o do herói passa pelo character controller — não atravessa paredes) + destrutíveis |
+| Física | `src/physics.rs`, `src/player.rs`, `src/physics_fx.rs` | Avian (`avian3d 0.8`) + `bevy-tnua` no herói: `collider`/`rigidbody` declarativos (contrato DSL intacto); o herói é um corpo dinâmico com sensor de chão, autostep próprio (`probe_steps`) e natação por `TnuaToggle`; knockback/lunge na `desired_motion` + destrutíveis |
 | IA sem script | `src/ai.rs` | wander/chase determinístico p/ criaturas de `DynamicSpawner` sem script + respawn |
 | Debug bridge + REPL Luau | `src/bridge/` | `mod.rs` (métodos BRP `viber.*`), `lua.rs` (método `viber.lua` + API `viber.debug.*`), `client.rs` (cliente std-only), `logs.rs` (layer de tracing); QA headless via `viber debug …` |
 | Sessão partilhada de QA | `src/session.rs` | lease atómico por mundo (`create_new` + TTL) + `engine.json`; comandos `viber session …`; protocolo obrigatório na secção "Sessão partilhada de QA" |
@@ -293,6 +304,33 @@ continua a ganhar ao preset (a bissecção de QA não perdeu nada). Medido no
 de frame — o `desempenho` é o preset dos 60 fps. Fonte:
 [`src/graphics.rs`](src/graphics.rs); números e o que NÃO funcionou em
 [`docs/PERFORMANCE.md`](docs/viber/PERFORMANCE.md).
+
+### Relva GPU (`bevy_ext_grass`)
+
+A relva é o crate reutilizável [`crates/bevy_ext_grass`](crates/bevy_ext_grass)
+sobre o `bevy_grass` (0.20.6): o jogo implementa `GrassTerrain` (altura,
+regras de sítio, bioma) e `GrassFieldLayout`, e o crate faz o bake, os
+estilos, o vento e o trampling avian3d. O Vael tem só o adaptador em
+[`../Vael/src/grass.rs`](../Vael/src/grass.rs). Os talos nascem em
+**compute shader por câmara**, com LOD/fade próprios, prepass (SSAO/TAA), sombra do sol e trampling
+por collider. Cinco campos: quatro quadrados rodados 45° com um vértice na
+origem tilelam o mundo sem buracos nem sobreposição, e um campo central do Vale
+cobre o buraco irregular dos polígonos à volta da vila; cada campo leva o estilo
+do seu bioma (MEADOW/FOREST_FLOOR/DRY_SAVANNA/REED_MARSH/FROSTED_MEADOW com a
+paleta do Vael por cima). As máscaras RG (densidade/altura) e os heightmaps
+saem do `TerrainRuntime` num bake assíncrono a 2 m; as regras estáticas (água,
+estrada, pad, teto fino, falésia, exclusão, bioma) ficam numa grelha a 4 m
+reutilizada entre rebakes. O bake refaz-se por cena (`SceneEpoch`) ou por
+edição viva (`DeltaGrid::revision`, debounce 0,6 s).
+
+Knobs no Vael: `VIBER_GRASS=0`, `VIBER_GRASS_DENSITY=<f32>`,
+`GRASS_DEBUG=1` (logs do bake + PGMs das máscaras em `/tmp`). O tier segue
+`graphics:` (alto=High, equilibrado=Medium, desempenho=Low); no equilibrado as
+sombras são `Near` e no desempenho ficam `Off`. Sem compute/indirect
+execution o crate avisa uma vez e não desenha nada — não há fallback de malha
+fundida. O toggle "relva" do profiler é registado pelo `VaelGrassPlugin`, e a
+extensão `extensions/bevy_ext_grass_jackdaw` dá o painel "Relva" no editor
+(settings/paletas em `world/settings/grass.bsn`).
 
 > **Ao medir performance:** a janela tem de estar VISÍVEL. Ocluída, o
 > compositor estrangula a apresentação e o `render.prepare_views` salta de 8
@@ -375,7 +413,7 @@ curso a limpeza salta-se inteira (o cargo ancestral de `cargo run` é
 excluído); binários em execução de dentro do perfil a limpar são poupados.
 `viber prune [--debug]` dispara a mesma limpeza sem abrir janela.
 
-**`viber run` corre em RELEASE por omissão.** O motor é Bevy + Rapier: com o
+**`viber run` corre em RELEASE por omissão.** O motor é Bevy + Avian: com o
 perfil dev o `simple-rpg` media **8 fps**, com release **~90 fps** na mesma
 GPU. `--debug` volta ao perfil dev (compila mais depressa, joga muito pior) e
 existe para iterar em código, não para jogar. O `Cargo.toml` também passou a
@@ -636,7 +674,7 @@ API de debug `viber.debug.*` (além de toda a `viber.*` dos scripts):
 | `pos(id)`, `distance(a,b)` → x,y,z / metros | `hide/show/toggle_vis(id)`, `disable/enable(id)` (componente `Disabled`), `despawn(id)` |
 | `player()` → `{id,x,y,z,hp,max_hp,xp,xp_next,speed}` | `heal/damage(n)`, `set_hp(n)`, `kill(id)` (HP a zero, sem i-frames), `xp(n)`, `give(item,n)` (vault), `set_speed(n)` |
 | `time_scale()`, `fps()`, `prof()` → snapshot do profiler | `set_time_scale(n)` (slow-mo/pausa), `face(x,z)`, `toast(msg)` |
-| `stats()` → agregados do mundo (meshes/colliders/luzes/shadows/rigidbodies/emitters/scripts/fps); `physics()` → tempos do último step do Rapier (step/collision/solver/ccd ms) | `colliders([raio])`, `lights([raio])` → dumps (cap 256); `around(raio, limite?)` → resumo compacto de TUDO perto do player (cap 128, mais perto 1.º) |
+| `stats()` → agregados do mundo (meshes/colliders/luzes/shadows/rigidbodies/emitters/scripts/fps); `physics()` → tempo do último step de física (as fases por estágio ficam a zero: o Avian não expõe os contadores do pipeline) | `colliders([raio])`, `lights([raio])` → dumps (cap 256); `around(raio, limite?)` → resumo compacto de TUDO perto do player (cap 128, mais perto 1.º) |
 | `camera()` → `{x,y,z,distance,pitch,yaw,target?}` | `set_camera{distance=?, pitch=?, target=?}` (OrbitCamera — enquadra screenshots) |
 | `clock()` → `{minute,dawn,dusk,minutes_per_real_second}` | `set_clock(minute)` (0–1440 — noite p/ screenshots: 1380); `set_window(w, h)` redimensiona a janela p/ QA responsivo (`@media`, `vw/vh`) |
 | `ground_state()` → tuning de splat + pele das paredes correntes | **Sol e chão AO VIVO** (sem rebuild): `sun{yaw=?, pitch=?, illuminance=?, shadows=?}` roda a DirectionalLight E o sol do shader do terreno; `ground{moss=?, vale_soft=?, streaks=?, rock_darken=?, tri_slope=?, tri_soft=?, strata_strength=?, patchiness=?, gravel=?, dirt=?, forest=?, shore_width=?}` — paredes ao vivo + re-cozedura dos splats (manchas, cascalho, praia); knobs acumulam entre chamadas |
@@ -690,7 +728,7 @@ for _, luz in ipairs(l) do if luz.shadows then n = n + 1 end end return n'  # lu
 
 **Limites honestos do profiling:** o Bevy não expõe tempos POR sistema
 nem POR entidade de render (os executores já não emitem spans tracing). O que
-existe de real: `physics()` (contadores do último step do Rapier), `prof()`
+existe de real: `physics()` (tempo do último step de física), `prof()`
 (frame ms/fps/scripts/chunks) e os PROXIES de composição em `stats()` — nº de
 luzes com sombras, colliders trimesh, emissores, scripts ativos. Para caçar
 regressões: comparar `stats()`/`prof()` antes e depois da mudança suspeita.
@@ -753,7 +791,7 @@ viber session release --owner qa-sky
 **P** abre o painel do profiler — agora na stack declarativa (`src/ui`), com
 as mesmas 5 abas do profiler do motor TS (`?profiler=1`): **Sistemas** (timings por
 sistema + grupos + scripts Luau por ficheiro), **Mundo** (player/câmara/
-entidades próximas com tags), **Física** (Rapier: corpos/colisores/sono/step),
+entidades próximas com tags), **Física** (Avian: corpos/colisores/sono/step),
 **Áudio** (buses/layers/sinks) e **Extras** (toggles: wireframe de colisores,
 relva, sombras do sol, sombras das lanternas, pausar física). Cada aba tem **COPIAR** (JSON completo → clipboard) e
 **EXPORTAR** (ficheiro em `$TMPDIR/viber-profiles/`).
@@ -836,7 +874,7 @@ isso, voltar de um interior para a vila largava-o no ar sobre colunas ainda
 por assar e ele atravessava o mundo (y ≈ −150). No mesmo lote,
 `TerrainCollisionStatus.ready` passou a significar mesmo "há collider SOB os
 pés" (era "há collider a menos de 192 m") e o snap analítico cancela a queda
-pendente no CCT — escrever só o `Transform` não chega, o Rapier aplicava o
+pendente no solver — escrever só o `Transform` não chega, o motor aplicava o
 `motion.y` logo a seguir.
 
 ### Terreno vivo — edições em runtime (`viber.terrain.*`, `src/terrain/delta.rs`)
@@ -1127,7 +1165,7 @@ Atributos universais: `name`, `tag`, `script` (Luau — ver **Scripts Luau**),
 `euler`; com **3 valores é euler em RADIANOS** — convenção herdada),
 `scale`, `collider` (`none`/`auto`/box/sphere/cylinder/capsule/mesh/precompute —
 `auto` numa PRIMITIVA dá colisor exato derivado da forma, com a escala
-aplicada UMA vez pelo Rapier; num GLTF é a caixa das bounds renderizadas da
+aplicada UMA vez pelo motor; num GLTF é a caixa das bounds renderizadas da
 cena INTEIRA — toda a subárvore, no referencial local da entidade;
 `trigger: true` ou `sensor: true` torna o volume um sensor — mesmas formas,
 não bloqueia, hooks `on_trigger_*`; sem a flag é collider sólido e
@@ -1364,7 +1402,7 @@ ciclo de vida é top-level na ativação + `on_update`).
   10 loops (combate/feedback, quests 21 JSON, economia/vault, UI & menus,
   travel/A Nota, save/load, skills, mundo vivo, física-fx) com os 38 scripts
   de `../Vael/scripts/`.
-- **Fase 3 (física ✅):** Rapier via `bevy_rapier3d` — colliders/rigidbodies
+- **Fase 3 (física ✅):** Avian via `avian3d 0.8` (+ `bevy-tnua` no herói) — migrado de Rapier a 2026-11-14 — colliders/rigidbodies
   declarativos (`collider`/`rigidbody`), character controller cinemático,
   knockback + destrutíveis (`src/physics_fx.rs`); consome `collision-resolution`
   do terreno.

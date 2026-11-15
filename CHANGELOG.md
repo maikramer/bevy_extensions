@@ -2,6 +2,13 @@
 
 ## Não publicado
 
+- New `bevy_ext_grass`: GPU grass fields over `bevy_grass` with a
+  game-provided `GrassTerrain`/`GrassFieldLayout`, async mask/heightmap baking
+  (static 4 m rules + 2 m dynamic slope/altitude), authored
+  `GrassSettingsSpec`/`GrassStyleSpec` components (Jackdaw-ready) and avian3d
+  trampling (`GrassTrampler`). Companion editor extension
+  `extensions/bevy_ext_grass_jackdaw` adds the "Relva" panel and inspector
+  category.
 - New `bevy_ext_world` optional feature `terrain` (dep `bevy_ext_terrain`):
   the BSN loader renders `VoxelTerrain`/`VoxelCave`/`VoxelArch`/
   `VoxelBridge`/`VoxelCliff` components back into the DSL view (`<Terrain>`

@@ -12,6 +12,7 @@ for compressed/quantized assets, a voxel/SDF terrain layer, the world format
 | [`bevy_voxel_terrain`](crates/bevy_voxel_terrain) | voxel/SDF terrain core: CSG mods, caves, arches, bridges and Transvoxel LOD meshing | 0.1.0 |
 | [`bevy_ext_terrain`](crates/bevy_ext_terrain) | Bevy scene contract for the voxel terrain: `.ahgt` heightfield adapter and feature components | 0.1.0 |
 | [`bevy_ext_save`](crates/bevy_ext_save) | save envelope, slots and atomic JSON I/O | 0.1.0 |
+| [`bevy_ext_grass`](crates/bevy_ext_grass) | GPU grass over `bevy_grass`: terrain-driven mask baking, per-biome styles and avian3d trampling | 0.1.0 |
 
 `bevy_ext_gltf` and `bevy_voxel_terrain` are the flagship packages: the stock
 Bevy 0.20 loader does not decode meshopt/quantized GLBs, and there is no

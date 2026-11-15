@@ -32,6 +32,7 @@ como app/fachada transitória até o Vael deixar de o usar.
 | `bevy_voxel_terrain` | `VoxelField`, mods CSG, caves/arches/bridges, `ModIndex`, Transvoxel, `HeightField` | bevy, `transvoxel` |
 | `bevy_ext_terrain` | contrato de cena do voxel: `VoxelTerrain`/features, adapter `.ahgt` | `bevy_voxel_terrain` |
 | `bevy_ext_save` | `SaveGame`, slots, paths, IO atómico e migração legacy | `bevy_ext_world` |
+| `bevy_ext_grass` | relva GPU sobre `bevy_grass`: contrato `GrassTerrain`/`GrassFieldLayout`, bake de máscaras, `GrassSettingsSpec`/`GrassStyleSpec`, trampling avian3d | bevy, `bevy_grass`, `avian3d` |
 
 `bevy_ext_world` tem uma feature opcional `terrain` (dep `bevy_ext_terrain`):
 o loader devolve os componentes `VoxelTerrain`/`VoxelCave`/`VoxelArch`/
@@ -63,8 +64,9 @@ de `.bsn`, saves e clientes BRP.
 
 - Versão lockstep de toda a família (`0.1.0`).
 - Bevy 0.20.1; MSRV 1.97.1. Subir Bevy é breaking da família.
-- Ordem: `bevy_ext_core` → `bevy_ext_world` → `bevy_ext_gltf` →
-  `bevy_voxel_terrain` → `bevy_ext_terrain` → `bevy_ext_save`.
+- Ordem: `bevy_ext_core` → `bevy_ext_grass` → `bevy_ext_world` →
+  `bevy_ext_gltf` → `bevy_voxel_terrain` → `bevy_ext_terrain` →
+  `bevy_ext_save`.
 - `tools/publish.sh` faz a ordem, espera pelo índice e suporta `--dry-run`.
 - Os nomes `bevy_ext_*`/`bevy_voxel_terrain` estão livres no crates.io a
   2026-11-12; reservar/publicar 0.1.0 antes de anunciar.

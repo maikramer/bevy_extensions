@@ -456,8 +456,10 @@ refazer o layout do painel de HUD em todos os frames.
 **NÃO mexido, e porquê:** `physics::stream_voxel_colliders` escreve
 `status.ready` incondicionalmente, mas `player.rs:307` lê o campo **sem filtro
 de `Changed`** — não há cascata nenhuma a cortar, e o campo é a autoridade de
-"há chão carregado?" para o herói. `grass.rs` não é um problema: a relva é
-**malha fundida por tile** (não uma entidade por lâmina).
+"há chão carregado?" para o herói. A relva já não é **malha fundida por tile**:
+é o crate `bevy_ext_grass` sobre `bevy_grass` (o adaptador do Vael vive em `../Vael/src/grass.rs`) e o custo passou
+a ser do tier em `graphics:` — mede-se com `GrassStats`/`VIBER_GRASS_DEBUG=1`,
+não com estes toggles.
 
 **Gate novo para A/B:** `VIBER_VOLUMETRIC_STEPS` (default **64**, o valor de
 sempre). O passe volumétrico é full-res e não tem knob de resolução interna, e

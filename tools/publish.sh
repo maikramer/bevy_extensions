@@ -70,6 +70,7 @@ wait_for() {
 }
 
 publish bevy_ext_core
+publish bevy_ext_grass
 publish bevy_ext_world
 publish bevy_ext_gltf
 publish bevy_voxel_terrain

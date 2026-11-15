@@ -197,11 +197,12 @@ e `VertexOutput.instance_index` com `@interpolate(flat)`, como no
   chamada interrompe TAMBÉM código JIT — `test_infinite_loop_is_interrupted_by_the_cpu_budget`
   passa com a feature ligada (67/67 testes luau verdes).
 * **Re-upload de uniforms de materiais custom: CONTINUA PARTIDO** — o motivo
-  de o vento da relva/céu/água viverem em consts no fonte do shader foi
-  re-verificado ao vivo (sonda `#[uniform(100)]` da `GrassExtension` mutada em
-  onda quadrada por `Assets::get_mut`, 28 tiles de relva vivos no campo da
-  câmara): a relva NÃO respondeu ao longo de 2 períodos — só o upload inicial
-  chega à GPU. Veredicto anotado em `src/grass.rs` (`configure_shader`).
+  de o vento do céu/água viver em consts no fonte do shader foi re-verificado
+  ao vivo (sonda `#[uniform(100)]` mutada em onda quadrada por
+  `Assets::get_mut`): o material NÃO respondeu ao longo de 2 períodos — só o
+  upload inicial chega à GPU. A relva deixou de depender disto: vive no crate `bevy_ext_grass`
+  (`crates/bevy_ext_grass`), com o `GrassWind` do `bevy_grass` em buffers
+  próprios; o Vael só tem o adaptador `src/grass.rs`.
 * **SIGSEGV bindless: ENCERRADO** — o crash de `vkCreatePipelineLayout`
   (`libnvidia-gpucomp`) com materiais custom não-bindless + `#[texture]`
   JÁ NÃO REPRODUZ no bevy 0.20 + wgpu 30 + driver NV 615.71.09 (o gatilho era

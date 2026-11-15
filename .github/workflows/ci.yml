@@ -43,6 +43,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The crates without internal version-deps can be verified fully.
       - run: cargo publish --dry-run --locked -p bevy_ext_core
+      - run: cargo publish --dry-run --locked -p bevy_ext_grass
       - run: cargo publish --dry-run --locked -p bevy_ext_world
       - run: cargo publish --dry-run --locked -p bevy_ext_gltf
       - run: cargo publish --dry-run --locked -p bevy_voxel_terrain
