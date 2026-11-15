@@ -32,6 +32,9 @@ pub mod components;
 pub mod contacts;
 pub mod ctx;
 pub mod decision;
+// Escrita genérica por reflexão (`patch_component`): a maquinaria que
+// `set_scale`/`set_visible`/`set_position` usam. A TABELA `viber.ecs` e o
+// espelho por frame morreram (0 usos no jogo) — só o patcher fica.
 pub mod ecs;
 pub mod entity;
 pub mod events;
@@ -77,17 +80,12 @@ use std::path::PathBuf;
 pub struct LuauScriptPlugin {
     /// Directory scripts load from: `<world_dir>/scripts`.
     pub scripts_dir: PathBuf,
-    /// Reconstrói o espelho de `viber.ecs` por frame. Desligado, o sistema
-    /// exclusivo não corre; `viber.ecs` continua disponível para o bridge
-    /// através de `build_mirror_live` (custo só quando alguém o pede).
-    pub ecs_mirror: bool,
 }
 
 impl Default for LuauScriptPlugin {
     fn default() -> Self {
         Self {
             scripts_dir: PathBuf::from("scripts"),
-            ecs_mirror: true,
         }
     }
 }
@@ -96,31 +94,6 @@ impl bevy::app::Plugin for LuauScriptPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         let mut host = LuaScriptHost::new(self.scripts_dir.clone())
             .expect("failed to initialize Luau VM (LuaScriptHost)");
-        // `viber.ecs`: o registo de tipos da app (a whitelist é validada
-        // contra ele) e o pool de entidades vazias para `viber.ecs.spawn`.
-        // O `Arc` do registo é partilhado: o `ReflectPlugin` pode registar
-        // mais tipos depois deste plugin ser construído.
-        if let Some(registry) = app
-            .world()
-            .get_resource::<bevy::ecs::reflect::AppTypeRegistry>()
-        {
-            host.set_ecs_registry(registry.0.clone());
-        }
-        let spawn_queue = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        host.set_ecs_pool(spawn_queue.clone());
-        app.insert_resource(ecs::EcsSpawnPool::new(spawn_queue));
-        app.init_resource::<ecs::EcsMirror>();
-        if self.ecs_mirror {
-            app.add_systems(
-                Update,
-                // Antes de qualquer `on_update`: o espelho é o snapshot que
-                // `viber.ecs.get/query` leem no frame. Exclusivo (precisa do
-                // `&mut World` para a travessia por arquétipo/reflexão).
-                timed(Group::Scripts, ecs::mirror_system)
-                    .before(luau_on_add)
-                    .run_if(crate::app::scripts_enabled),
-            );
-        }
         // Garante o clock mesmo sem TimePlugin (plugin autossuficiente em apps mínimos).
         app.init_resource::<Time>();
         // Input para `viber.interacted` + evento de toasts de script.

@@ -117,12 +117,6 @@ pub struct AppOptions {
     /// Profiler (overlay F3, recursos e âncoras de render). O `timed(...)` dos
     /// sistemas mede sempre (rings em processo) — sem o plugin só ninguém lê.
     pub profiler: bool,
-    /// Espelho por frame de `viber.ecs` (travessia refletida de todos os
-    /// componentes da whitelist). Jogos que não usam `viber.ecs` podem
-    /// desligá-lo: o sistema exclusivo deixa de bloquear o `Update` e de
-    /// alocar um snapshot completo por frame. O bridge continua a construir
-    /// um espelho ao vivo quando precisa (`build_mirror_live`).
-    pub ecs_mirror: bool,
     /// Configura o grupo [`bevy::DefaultPlugins`] imediatamente antes de ele
     /// entrar na App. Um jogo que precise de o envolver — o Vael usa o PIE
     /// do Jackdaw em modo *windowless* — passa o wrapper aqui; `None` mantém
@@ -149,7 +143,6 @@ impl Default for AppOptions {
             external_save: false,
             ui: true,
             profiler: true,
-            ecs_mirror: true,
             default_plugins: None,
         }
     }
@@ -272,7 +265,6 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         external_save,
         ui,
         profiler,
-        ecs_mirror,
         default_plugins,
     } = opts;
     // Modo Edit: o editor in-process é dono da navegação, do input e da janela — câmara
@@ -727,6 +719,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     app.add_plugins(physics::PhysicsPlugin {
         debug: std::env::var_os("VIBER_PHYSICS_DEBUG").is_some(),
     });
+    // Controller do herói (tnua) e step assist: no jogo, não no crate de
+    // colliders.
+    app.add_plugins(crate::player::HeroPhysicsPlugin);
     // Pós-processamento (exposição/bloom/SSAO) na câmara do mundo; os
     // `pp-*` das `<BiomeRegion>` conduzem-no. `VIBER_NO_POSTFX=1` desliga.
     app.add_plugins(postfx::PostFxPlugin);
@@ -765,8 +760,7 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     if scripts == ScriptsMode::Compat {
         app.add_plugins(luau::LuauScriptPlugin {
             scripts_dir: config.scripts_dir_on(&world_dir),
-            ecs_mirror,
-        });
+            });
     }
 
     // Serviços de engine que o movimento, o som e o HUD leem.

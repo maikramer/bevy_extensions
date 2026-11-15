@@ -2091,11 +2091,6 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
     }
 
     let view = build_view(world);
-    // `viber.ecs` na REPL: espelho ao vivo desta chamada (o bridge tem
-    // `&mut World`, ao contrário das closures de script) e ids livres para
-    // `viber.ecs.spawn` — o mesmo pool que o `luau_update` reabastece.
-    let ecs_mirror = crate::luau::ecs::build_mirror_live(world);
-    crate::luau::ecs::refill_spawn_pool(world);
     let elapsed = world.resource::<Time>().elapsed_secs_f64();
     let mut warnings: Vec<String> = Vec::new();
     // `viber.ground_below` na REPL: handle de leitura do terreno, lido
@@ -2112,7 +2107,7 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
         })
     });
 
-    let (ok, result, error, ops, ecs_ops) = {
+    let (ok, result, error, ops) = {
         let host = world.resource_mut::<LuaScriptHost>();
         // Self = player: a API `viber.*` dos scripts funciona na REPL (log,
         // quest_*, toast, heal_player, teleport_player…). dt = 1.0 para que
@@ -2137,9 +2132,6 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
             // `viber.interacted` com o alcance de outra entidade.
             ctx.interaction_range = None;
             ctx.surfaces = surfaces;
-            // Espelho refletido DESTA chamada (`viber.ecs.get/query`); no
-            // jogo é semeado pelo `luau_update` no início do frame.
-            ctx.ecs_mirror = Some(ecs_mirror);
         }
         host.lua.set_app_data(view);
         host.lua.set_app_data(DebugOps::default());
@@ -2190,27 +2182,6 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
         // crescia sem fim. As leituras já falham com "sem snapshot"; as
         // escritas passam a falhar com a mesma causa em vez do no-op mudo.
         host.lua.remove_app_data::<DebugOps>();
-        // `viber.ecs.*` também enfileira `ScriptCommand::Ecs`. Na REPL não há
-        // `luau_update` a drenar no mesmo frame (e a fila de um script de jogo
-        // não pode ser roubada): retiram-se SÓ as ops ECS e aplicam-se já,
-        // mantendo as restantes para o runtime.
-        let ecs_ops: Vec<crate::luau::ecs::EcsOp> = host
-            .lua
-            .app_data_mut::<crate::luau::ScriptCtx>()
-            .map(|mut ctx| {
-                let ops: Vec<crate::luau::ecs::EcsOp> = ctx
-                    .commands
-                    .iter()
-                    .filter_map(|command| match command {
-                        crate::luau::ScriptCommand::Ecs(op) => Some(op.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                ctx.commands
-                    .retain(|command| !matches!(command, crate::luau::ScriptCommand::Ecs(_)));
-                ops
-            })
-            .unwrap_or_default();
         // Limpa o snapshot: uma closure de SCRIPT DE JOGO que chamasse
         // viber.debug veria dados podres da última REPL — melhor falhar.
         // REMOVER (e não substituir por `DebugView::default()`): com um
@@ -2218,16 +2189,9 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
         // devolviam dados ocos (lista de entidades vazia, player nil) em vez
         // do erro "sem snapshot — só dentro de viber.lua".
         host.lua.remove_app_data::<DebugView>();
-        (ok, result, error, ops, ecs_ops)
+        (ok, result, error, ops)
     };
 
-    // `viber.ecs` primeiro: as ops de debug seguintes podem ler o componente
-    // que o chunk acabou de escrever.
-    for op in ecs_ops {
-        if let Err(error) = crate::luau::ecs::apply_op(world, &op) {
-            warnings.push(format!("viber.ecs: {error}"));
-        }
-    }
     let applied = apply_ops(world, ops, &mut warnings);
     let mut response = json!({ "ok": ok, "applied": applied, "warnings": warnings });
     if let Some(result) = result {

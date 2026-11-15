@@ -250,9 +250,6 @@ pub struct LuauRuntimeLocals<'w, 's> {
     pub bone_offsets: Option<bevy::ecs::system::ResMut<'w, crate::ik::PlayerBoneOffsets>>,
     /// Prompt de mundo publicado por um controller (`viber.prompt`).
     pub ui_prompt: Option<bevy::ecs::system::ResMut<'w, crate::ui::UiPrompt>>,
-    /// Espelho refletido do frame (`viber.ecs.get/query`) — reconstruído por
-    /// [`super::ecs::mirror_system`] antes deste sistema no mesmo schedule.
-    pub ecs_mirror: Option<bevy::ecs::system::Res<'w, super::ecs::EcsMirror>>,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -517,13 +514,6 @@ pub fn luau_update(
             ctx.scene_ids = std::sync::Arc::new(index.ids.clone());
         }
         ctx.surfaces = locals.surfaces.clone();
-        // Espelho refletido do frame para `viber.ecs.get/query` — o `Arc` é
-        // trocado por um inteiro; as leituras do script vêem o estado do
-        // INÍCIO do frame (uma escrita de `viber.ecs.set` aparece no
-        // seguinte, como todo o snapshot da API).
-        if let Some(mirror) = locals.ecs_mirror.as_ref() {
-            ctx.ecs_mirror = Some(mirror.0.clone());
-        }
         // Snapshots de nomes e HP para `viber.find`/`entity_hp` — início de
         // frame: entidades novas são vistas no frame seguinte (como tudo).
         // SEM cap: o `.take(4096)` antigo cortava por ordem arbitrária de
@@ -1814,16 +1804,9 @@ pub fn luau_update(
                     }
                 });
             }
-            // `viber.ecs.*`: a escrita genérica por reflexão. O erro (campo
-            // inválido, entidade sem o componente) vira warn — a validação
-            // da chamada já aconteceu na closure Lua.
-            ScriptCommand::Ecs(op) => {
-                commands.queue(move |world: &mut World| {
-                    if let Err(error) = super::ecs::apply_op(world, &op) {
-                        warn!(target: "viber::luau", "viber.ecs: {error}");
-                    }
-                });
-            }
+            // `viber.ecs.*` (a tabela Lua) morreu: a escrita genérica por
+            // reflexão sobrevive só nas primitivas (`set_scale`/`set_visible`
+            // /`set_position` via `patch_component`).
         }
     }
 

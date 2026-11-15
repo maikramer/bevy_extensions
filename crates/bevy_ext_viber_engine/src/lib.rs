@@ -53,7 +53,6 @@ pub use bevy_ext_engine::config as config;
 pub use bevy_ext_physics::corpse;
 pub mod decal_fx;
 pub mod dialogue;
-pub mod dlss;
 pub mod draw_diag;
 // Câmara de editor movida ao `bevy_ext_engine` (onda exit2/hubs); o
 // `EditorCameraPlugin` é o MESMO tipo no jogo.

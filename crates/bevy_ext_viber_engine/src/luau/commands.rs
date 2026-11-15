@@ -374,14 +374,4 @@ pub enum ScriptCommand {
         pos: Vec3,
         loudness: f32,
     },
-    /// Escrita ECS genérica (`viber.ecs.set/insert/remove/spawn/despawn`).
-    /// Aplicada pós-frame com `&mut World` (reflexão); a variante única
-    /// substitui os comandos por conceito à medida que migram.
-    ///
-    /// TODO(migration): os verbos genéricos `SetVisible`/`SetScale`/`SetPose`
-    /// já passam por `crate::luau::ecs`; `EntitySetMaxHp`/`EntityDamage`/
-    /// `EntityHeal` mantêm-se até o BRP/reflexão provar o caminho de escrita
-    /// (semântica de `Kill`, sombra de HP criado no frame e i-frames do
-    /// herói vivem aqui, não no componente).
-    Ecs(crate::luau::ecs::EcsOp),
 }
