@@ -1758,6 +1758,24 @@ pub struct TorchLightBase {
     pub intensity: f32,
 }
 
+/// Marca uma PointLight cuja intensidade é de OUTRO dono: o
+/// [`torch_pool_drive`] não lhe toca.
+///
+/// O ganho nocturno daqui é uma compensação de AUTORIA (o valor do `.bsn` foi
+/// calibrado para uma exposição ~10 stops mais clara). Uma luz que nasce a 0
+/// porque um sistema a vai acender — a `TravellerLantern` e as luzes do pool
+/// de luzes práticas do jogo — não tem autoria nenhuma: o drive capturava a
+/// base 0 no primeiro frame e escrevia `0 × ganho` para sempre.
+///
+/// A `TravellerLantern` tem um salto próprio por ser sempre a mesma; este
+/// marcador serve qualquer sistema (o Vael põe-no nas `PoolLight` do
+/// `bevy_lights`) sem a engine depender dele. Quem o usa compõe a noite por
+/// conta própria (as funções [`torch_pool_gain`]/[`warm_fill_gain`] são
+/// públicas de propósito).
+#[derive(Debug, Clone, Copy, Component, Reflect)]
+#[reflect(Component)]
+pub struct NightGainExempt;
+
 /// Multiplicador de uma tocha (sombra autoral) pela fração de noite: 1 de
 /// dia (o valor authored fica EXACTAMENTE como estava),
 /// [`TORCH_POOL_NIGHT_GAIN`] na noite plena, rampa linear no meio.
@@ -1806,6 +1824,7 @@ fn torch_pool_drive(
         Option<&TorchLightBase>,
         Option<&crate::ambient::AuthoredShadowLight>,
         Option<&crate::ambient::TravellerLantern>,
+        Option<&NightGainExempt>,
     )>,
 ) {
     let torch = torch_pool_gain(atmosphere.night);
@@ -1813,13 +1832,19 @@ fn torch_pool_drive(
     if (torch - 1.0).abs() < 1e-4 && (fill - 1.0).abs() < 1e-4 {
         return;
     }
-    for (entity, mut light, base, torch_authored, traveller_lantern) in &mut lights {
+    for (entity, mut light, base, torch_authored, traveller_lantern, exempt) in &mut lights {
         // A lanterna do viajante conduz a PRÓPRIA intensidade (`night` ×
         // LANTERN_MAX_INTENSITY) e nasce a 0. Sem esta saída, o pool
         // capturava a base 0 no primeiro frame e escrevia 0 × ganho para
         // sempre — a luz do herói ficava morta. O `lantern_driver` é a única
         // fonte deste valor.
         if traveller_lantern.is_some() {
+            continue;
+        }
+        // O mesmo vale para qualquer luz conduzida por fora (as `PoolLight`
+        // do pool de luzes práticas): base 0 no nascimento, e o dono compõe
+        // a noite. Ver [`NightGainExempt`].
+        if exempt.is_some() {
             continue;
         }
         if !torch_pool_is_warm(light.color.to_linear()) {
@@ -3929,6 +3954,18 @@ mod tests {
                 crate::ambient::TravellerLantern,
             ))
             .id();
+        // Luz de outro dono (as `PoolLight` do pool de luzes práticas): nasce
+        // a 0 e teria o mesmo destino da lanterna sem o marcador.
+        let pooled = world
+            .spawn((
+                bevy::light::PointLight {
+                    intensity: 0.0,
+                    color: Color::srgb(1.0, 0.70, 0.39),
+                    ..Default::default()
+                },
+                NightGainExempt,
+            ))
+            .id();
         // Primeira passada: captura a base (via Commands); a segunda compõe.
         world.run_system_once(torch_pool_drive).unwrap();
         world.clear_trackers();
@@ -3967,6 +4004,15 @@ mod tests {
         assert!(
             world.get::<TorchLightBase>(lantern).is_none(),
             "a lanterna não ganha base do pool"
+        );
+        let pooled_light = world.get::<bevy::light::PointLight>(pooled).unwrap();
+        assert_eq!(
+            pooled_light.intensity, 0.0,
+            "luz isenta fica intacta (o dono compõe a noite)"
+        );
+        assert!(
+            world.get::<TorchLightBase>(pooled).is_none(),
+            "a luz isenta nem ganha base"
         );
 
         // Dia (night = 0): o drive é no-op (early-out do ganho 1).
