@@ -1,33 +1,30 @@
-//! Drivers do mundo extraídos do `worldsys` do monólito: relógio
-//! (`daycycle_drive`), sol/lua (`sun_drive`), clima (`weather_drive`),
-//! atmosfera (`atmosphere_drive`) e interior (`interior_lighting_*`).
+//! Drivers do mundo: relógio (`daycycle_drive`), sol/lua (`sun_drive`),
+//! clima (`weather_drive` + scheduler do ciclo), atmosfera
+//! (`atmosphere_drive`), interior (`interior_lighting_*`), frontier
+//! (`world_border_clamp`), seating/`place` no terreno (`seat_statics_once`,
+//! `resolve_pending_place`) e o acumulador de pedidos do loader
+//! (`PendingWorldSystems`).
 //!
 //! Os tipos de contrato de sala/fronteira (`WorldBorderConfig`,
-//! `InteriorSceneConfig`, `InteriorLighting`, `INTERIOR_FLOOR_Y`) já vivem no
-//! `bevy_ext_core` e são reexportados aqui. Os tipos de estado dos drivers
-//! (`DayCycleState`, `WeatherState`, `AtmosphereState`, `SunState`) migraram
-//! COM os sistemas: são a sua superfície de leitura/escrita. Os tipos de
-//! bioma (`BiomeRegionData`/`BiomeRegions`) continuam no monólito durante a
-//! transição (o scene loader é quem os insere); o mesmo para
-//! `TerrainRuntime`.
+//! `InteriorSceneConfig`, `InteriorLighting`) vivem no `bevy_ext_core` e são
+//! reexportados. Os ESTADOS que a lente (`bevy_ext_postfx::env`) lê por
+//! frame (`AtmosphereState`/`WeatherState`/`DayCycleState`/`SunState`/
+//! `SunLightBase`/biomas/configs) têm dono ÚNICO no `bevy_ext_postfx::env`
+//! — reexportados aqui; os DRIVES deste módulo são quem os publica.
 //!
 //! TypePath históricos preservados com `#[type_path = "viber::worldsys"]`.
 
+#[cfg(test)]
+use std::sync::Arc;
+
+use bevy::math::Affine3A;
+use bevy::math::Quat;
+use bevy::math::Vec3;
 use bevy::prelude::*;
 pub use bevy_ext_core::{
     INTERIOR_CAMERA_DISTANCE, INTERIOR_CAMERA_PITCH_DEG, INTERIOR_FLOOR_Y, InteriorLighting,
     InteriorSceneConfig, WorldBorderConfig,
 };
-// RNG determinístico da engine ("mesma seed, mesmo mundo") — o mesmo
-// SplitMix64 que o `spawner` do monólito reexporta do core.
-use bevy_ext_core::rng::Rng;
-use bevy_ext_core::Player as PlayerMarker;
-// Amostragem de terreno (runtime de terreno), biomas com TypePath congelado
-// no postfx, o mesmo `point_in_polygon` e o ganho do IBL (neste crate).
-use bevy_ext_postfx::env::point_in_polygon;
-use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
-use crate::ibl::IBL_INTENSITY;
-pub use bevy_ext_postfx::env::BiomeRegions;
 
 /// Como o `<DayCycle>` conduz o VISUAL (sol, céu, névoa, grade).
 ///
@@ -309,22 +306,18 @@ pub fn daylight_factor(minute: f32, dawn: f32, dusk: f32) -> f32 {
     let fade_in = 1.0 - (DAY - since_dawn) / RAMP;
     fade_out.max(fade_in).clamp(0.0, 1.0)
 }
+
 /// `<Weather>` wind/cloud/rain config.
 ///
-/// `rain` é INTENSIDADE CONTÍNUA 0..1 (não bool): 0 = seco, 1 = tempestade.
-/// Com `cycle` a falso é estática como autorada (backwards compat); com
-/// `cycle` a verdadeiro o [`weather_drive`] rola novos alvos e faz o lerp
-/// de [`WEATHER_TRANSITION_SECS`].
-#[derive(Debug, Clone, Resource, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::worldsys"]
-pub struct WeatherState {
-    pub wind: [f32; 2],
-    pub wind_strength: f32,
-    pub clouds: f32,
-    pub rain: f32,
-    pub cycle: bool,
-}
+// ── Contratos partilhados com o pós-processamento ────────────────────────
+// Movidos ao `bevy_ext_postfx::env` (exit3/wave-c): o crate de postfx lê
+// ESTES recursos no grading/keys/tochas — um só tipo no jogo, os TypePaths
+// `viber::worldsys` ficam congelados no crate. Os DRIVES (quem publica os
+// estados) continuam AQUI — o dono único da condução fica para a wave G.
+pub use bevy_ext_postfx::env::{
+    AtmosphereState, BiomeRegionData, BiomeRegions, EngineConfigData, EngineConfigs,
+    MOONLIGHT_RATIO, MOON_COLOR, SunLightBase, SunState, WeatherState, point_in_polygon,
+};
 
 /// Período do ciclo de weather (`<Weather cycle>`) em segundos.
 ///
@@ -390,7 +383,7 @@ impl WeatherScheduler {
 /// raiz daria o oposto, ~0.67) mas preserva tempestades ocasionais (r → 1
 /// só quando o uniforme chega perto de 1).
 pub fn weather_cycle_target(seed: u64, index: u64) -> f32 {
-    let mut rng = Rng::new((seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
+    let mut rng = bevy_ext_core::rng::Rng::new((seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
     let u = rng.next_f32();
     u * u
 }
@@ -417,9 +410,9 @@ pub fn weather_drive(
     mut commands: Commands,
     weather: Option<ResMut<WeatherState>>,
     scheduler: Option<ResMut<WeatherScheduler>>,
-    runtime: Option<Res<TerrainRuntime>>,
+    runtime: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
     regions: Option<Res<BiomeRegions>>,
-    players: Query<&GlobalTransform, With<PlayerMarker>>,
+    players: Query<&GlobalTransform, With<bevy_ext_core::Player>>,
 ) {
     let Some(mut weather) = weather else {
         return;
@@ -456,9 +449,26 @@ pub fn rain_scale_at(regions: Option<&BiomeRegions>, x: f32, z: f32) -> Option<f
         .list
         .iter()
         .filter(|r| r.rain_scale.is_some())
-        .find(|r| point_in_polygon(x, z, &r.polygon))
+        .find(|r| bevy_ext_postfx::env::point_in_polygon(x, z, &r.polygon))
         .and_then(|r| r.rain_scale)
 }
+
+// `BiomeRegionData`/`BiomeRegions`/`EngineConfigData`/`EngineConfigs` vivem
+// no re-export do contrato lá em cima (bevy_ext_postfx::env).
+
+/// Deferred world-system requests collected while spawning entities.
+#[derive(Debug, Resource, Default, Reflect)]
+#[reflect(Resource)]
+#[type_path = "viber::worldsys"]
+pub struct PendingWorldSystems {
+    pub day_cycle: Option<DayCycleState>,
+    pub weather: Option<WeatherState>,
+    pub border: Option<WorldBorderConfig>,
+    pub interior_scene: Option<InteriorSceneConfig>,
+    pub biomes: Vec<BiomeRegionData>,
+    pub configs: Vec<EngineConfigData>,
+}
+
 /// Intensidade do env map (IBL) dentro de um interior.
 ///
 /// O cubemap do céu é a razão pela qual a sala ficava AZUL à noite mesmo com
@@ -502,7 +512,7 @@ pub fn interior_lighting_apply(
             }
         }
         for mut probe in &mut probes {
-            probe.intensity = IBL_INTENSITY;
+            probe.intensity = crate::ibl::IBL_INTENSITY;
         }
         *was_active = false;
     }
@@ -547,7 +557,7 @@ pub const INTERIOR_AMBIENT_COLOR: [f32; 3] = [1.0, 0.96, 0.90];
 pub fn interior_lighting_drive(
     mut state: ResMut<InteriorLighting>,
     scene: Option<Res<InteriorSceneConfig>>,
-    players: Query<&bevy::prelude::GlobalTransform, With<PlayerMarker>>,
+    players: Query<&bevy::prelude::GlobalTransform, With<bevy_ext_core::Player>>,
 ) {
     let inside = match (scene.as_deref(), players.iter().next()) {
         (Some(scene), Some(player)) => {
@@ -558,10 +568,424 @@ pub fn interior_lighting_drive(
     };
     state.active = inside;
 }
-/// Iluminância da luz direcional à noite, como fração da que o mundo
-/// autorou (`<DirectionalLight illuminance>`): a **lua**. Baixa o bastante
-/// para uma tocha valer a pena, alta o bastante para o chão continuar a ler-se.
-pub const MOONLIGHT_RATIO: f32 = 0.06;
+
+impl PendingWorldSystems {
+    /// Take all deferred requests out (leaving the accumulator empty).
+    pub fn consume(&mut self) -> PendingWorldSystems {
+        std::mem::take(self)
+    }
+}
+
+/// Marks entities authored at y≈0 that must sit on the terrain surface once
+/// the carved world exists (the original engine seated statics via CCT).
+#[derive(Debug, Component, Reflect)]
+#[reflect(Component)]
+#[type_path = "viber::worldsys"]
+pub struct SeatOnTerrain;
+
+/// Marcador de "assenta como UNIDADE": em cima de [`SeatOnTerrain`], força o
+/// seating pelo centro do conteúdo MESMO quando o span passa o limiar
+/// [`SEAT_CENTER_MAX_EXTENT_M`] — é o contrato das `<Composition>` (um
+/// objeto inteiro nunca é partido em partes para assentar; uma caixa de
+/// 240 m continua a subir em bloco).
+#[derive(Debug, Component, Reflect)]
+#[reflect(Component)]
+#[type_path = "viber::worldsys"]
+pub struct SeatAsUnit;
+
+/// One-shot: seat authored groups on the carved terrain surface.
+///
+/// Only the OUTERMOST seatable group of each subtree is seated as a whole
+/// (seating a nested group would add the ground height a second time on top
+/// of an ancestor that had already been raised to it — `simple-rpg` nests the
+/// city two deep, which used to float the whole village ~49 m).
+///
+/// WHERE the ground is sampled matters: `SeatOnTerrain` groups are authored
+/// at `translation="0 0 0"` and their content is placed in *world* coords on
+/// the children, so the origin of the group is often NOT where the content
+/// lives (biome landmark groups, the interiors grid at 859,281…). Sampling at
+/// the group origin seated a forest landmark at the plaza height (~24.6 m),
+/// burying or floating it by tens of metres. Instead the AABB of the direct
+/// children decides:
+///
+/// - content co-located (AABB span ≤ [`SEAT_CENTER_MAX_EXTENT_M`]) → sample
+///   at the AABB centre, so a group whose content sits away from its origin
+///   lands at the height of the place the content actually is (the village
+///   keeps seating at the plaza pad);
+/// - content spread across the map (span above the threshold: landmark
+///   groups, lantern rows, frontier ridges) → the group itself stays put and
+///   each direct child is seated individually at its own XZ (group children
+///   recurse through the same rule, plain props lift straight to their local
+///   ground).
+///
+/// World XZ of a child is approximated as `group translation + child local
+/// translation` (identity rotation/scale — every authored group in practice).
+/// The lift is upward-only: authored elevated content keeps its offset.
+///
+/// Runs once the terrain runtime exists; later spawns (spawn groups) are
+/// already placed by [`crate::spawner::compute_placements`].
+pub fn seat_statics_once(
+    mut done: Local<bool>,
+    runtime: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
+    mut transforms: Query<(Entity, &mut Transform)>,
+    parents: Query<(Entity, &ChildOf)>,
+    seated: Query<(), With<SeatOnTerrain>>,
+    unit: Query<(), With<SeatAsUnit>>,
+    placed: Query<(), With<PendingPlace>>,
+) {
+    if *done {
+        return;
+    }
+    let Some(runtime) = runtime else {
+        return;
+    };
+    // Índice pai → filhos: um passe sobre todas as relações de hierarquia.
+    // Filhos com `place` explícito ficam de fora: vão para o seu `at` (não
+    // estão onde o XZ autoral diz, por isso enviesavam o centro do grupo) e
+    // o `resolve_pending_place` define-lhes a cota exata a seguir.
+    let mut children_of: std::collections::HashMap<Entity, Vec<Entity>> =
+        std::collections::HashMap::new();
+    for (child, parent) in &parents {
+        if !placed.contains(child) {
+            children_of.entry(parent.parent()).or_default().push(child);
+        }
+    }
+    let roots: Vec<Entity> = transforms
+        .iter()
+        .map(|(e, _)| e)
+        .filter(|e| seated.contains(*e) && !has_seated_ancestor(*e, &parents, &seated))
+        .collect();
+    for root in roots {
+        seat_group(
+            root,
+            &runtime,
+            &children_of,
+            &seated,
+            &unit,
+            &mut transforms,
+            &parents,
+        );
+    }
+    *done = true;
+}
+
+/// Extensão máxima (m, lado maior do AABB XZ do conteúdo direto) para sentar
+/// um grupo pelo CENTRO do conteúdo. Acima disto o grupo espalha conteúdo
+/// pelo mapa inteiro (landmarks de bioma, lanternas, cristas) e o centro não
+/// fica em cima de nenhum deles — cada filho é então sentado à sua própria
+/// cota local.
+const SEAT_CENTER_MAX_EXTENT_M: f32 = 60.0;
+
+/// Senta `entity` (grupo com `SeatOnTerrain`) pelo seu conteúdo, ver
+/// [`seat_statics_once`].
+#[allow(clippy::too_many_arguments)]
+fn seat_group(
+    entity: Entity,
+    runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
+    children_of: &std::collections::HashMap<Entity, Vec<Entity>>,
+    seated: &Query<(), With<SeatOnTerrain>>,
+    unit: &Query<(), With<SeatAsUnit>>,
+    transforms: &mut Query<(Entity, &mut Transform)>,
+    parents: &Query<(Entity, &ChildOf)>,
+) {
+    let Ok((_, group_transform)) = transforms.get(entity) else {
+        return;
+    };
+    let group_translation = group_transform.translation;
+    let mut kid_xz: Vec<(Entity, Vec2)> = Vec::new();
+    if let Some(kids) = children_of.get(&entity) {
+        for kid in kids {
+            if let Ok((_, t)) = transforms.get(*kid) {
+                kid_xz.push((*kid, Vec2::new(t.translation.x, t.translation.z)));
+            }
+        }
+    }
+    let Some((_, first)) = kid_xz.first() else {
+        // Grupo sem conteúdo transformado (ex.: só spawners, que não spawmam
+        // entidades): comportamento antigo — amostra no próprio XZ.
+        seat_at(
+            entity,
+            group_translation.x,
+            group_translation.z,
+            runtime,
+            transforms,
+            parents,
+        );
+        return;
+    };
+    let (mut min, mut max) = (*first, *first);
+    for (_, xz) in &kid_xz {
+        min = min.min(*xz);
+        max = max.max(*xz);
+    }
+    let extent = (max.x - min.x).max(max.y - min.y);
+    if extent <= SEAT_CENTER_MAX_EXTENT_M || unit.contains(entity) {
+        // Conteúdo co-localizado: senta pelo CENTRO do AABB do conteúdo.
+        let center = (min + max) * 0.5;
+        seat_at(
+            entity,
+            group_translation.x + center.x,
+            group_translation.z + center.y,
+            runtime,
+            transforms,
+            parents,
+        );
+        return;
+    }
+    // Conteúdo espalhado pelo mapa: o grupo não se move como bloco; cada
+    // filho fica à cota do seu próprio sítio.
+    for (kid, xz) in kid_xz {
+        if seated.contains(kid) {
+            seat_group(kid, runtime, children_of, seated, unit, transforms, parents);
+        } else {
+            seat_at(
+                kid,
+                group_translation.x + xz.x,
+                group_translation.z + xz.y,
+                runtime,
+                transforms,
+                parents,
+            );
+        }
+    }
+}
+
+/// Soma dos Y locais dos ancestrais de `entity` (sem contar a própria). O
+/// seat escreve a cota do chão como Y LOCAL; dentro de um grupo elevado ou de
+/// um `<Include translation>`, escrever o Y mundo somava o offset do pai (a
+/// cena subia uma segunda vez).
+///
+/// ASSUNÇÃO: hierarquia só com TRANSLATION (rotação/escala identidade) — a
+/// convenção de todos os grupos autorais. Por isso se somam os
+/// `Transform::translation.y` locais e não se lê `GlobalTransform`: o seat
+/// escreve os `Transform` no mesmo frame (a propagação ainda não correu) e
+/// um `TransformHelper` colidiria com o `&mut Transform` desta query. Com
+/// rotação/escala, o offset certo seria `parent_global * local`, não a soma
+/// dos Y.
+fn ancestor_world_y(
+    entity: Entity,
+    parents: &Query<(Entity, &ChildOf)>,
+    transforms: &Query<(Entity, &mut Transform)>,
+) -> f32 {
+    let mut y = 0.0;
+    let mut current = entity;
+    for _ in 0..64 {
+        let Ok((_, parent)) = parents.get(current) else {
+            break;
+        };
+        current = parent.parent();
+        if let Ok((_, transform)) = transforms.get(current) {
+            y += transform.translation.y;
+        }
+    }
+    y
+}
+
+/// Levanta `entity` até ao solo amostrado em (`x`, `z`) — só para cima:
+/// conteúdo autoral elevado (tectos, tochas penduradas) mantém a cota.
+fn seat_at(
+    entity: Entity,
+    x: f32,
+    z: f32,
+    runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
+    transforms: &mut Query<(Entity, &mut Transform)>,
+    parents: &Query<(Entity, &ChildOf)>,
+) {
+    // O Transform é LOCAL: a cota do chão é mundo, por isso desconta-se o Y
+    // acumulado dos ancestrais (um grupo sob um `<Include translation>` ou
+    // outro grupo elevado subia a segunda vez).
+    let parent_y = ancestor_world_y(entity, parents, transforms);
+    let Ok((_, mut transform)) = transforms.get_mut(entity) else {
+        return;
+    };
+    // Fora da pegada do heightmap não há chão para onde assentar: sem esta
+    // guarda, o `column` saturado na orla levantava uma cena de interior
+    // inteira (ou cada filho dela) à cota da borda do mundo.
+    if !runtime.in_field(x, z) {
+        return;
+    }
+    // Levantar um static afundado até ao topo do SPAN em que ele está: um
+    // static correctamente pousado sob um overhang não é puxado através da
+    // rocha (o topo do mundo ali é teto), e um static enterrado sobe até à
+    // primeira superfície acima de si. Spans chegam top-down.
+    let y = parent_y + transform.translation.y;
+    let spans = runtime.column(x, z);
+    let ground = spans
+        .iter()
+        .rev()
+        .map(|span| span.top)
+        .find(|&top| top <= y + 0.25)
+        .unwrap_or_else(|| {
+            // Spans chegam top-down: o fallback tem de ser o MAIS BAIXO
+            // (chão), não `first()` (o teto de um arco/caverna), senão um
+            // static enterrado saltava para o telhado.
+            spans
+                .last()
+                .map(|span| span.top)
+                .unwrap_or(f32::NEG_INFINITY)
+        });
+    if y < ground - 0.25 {
+        transform.translation.y = ground - parent_y;
+    }
+}
+
+/// True when any ancestor of `entity` also carries [`SeatOnTerrain`].
+fn has_seated_ancestor(
+    entity: Entity,
+    parents: &Query<(Entity, &ChildOf)>,
+    seated: &Query<(), With<SeatOnTerrain>>,
+) -> bool {
+    let mut current = entity;
+    // Depth guard: worlds compose with `<Include>` and could nest deeply, but
+    // a cycle would hang the startup frame.
+    for _ in 0..64 {
+        let Ok((_, parent)) = parents.get(current) else {
+            return false;
+        };
+        if seated.get(parent.parent()).is_ok() {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// `<Composition place="at: x z; …">` — colocação EXPLÍCITA no terreno,
+/// resolvida uma única vez quando o terreno existe (o mesmo gatilho do
+/// seating). Diferenças para [`SeatOnTerrain`]:
+///
+/// - o ponto de amostragem é `at` (mundo), não o centro do conteúdo;
+/// - a cota é definida exatamente (sobe E desce), não apenas para cima;
+/// - `align-to-terrain` orienta o +Y do objeto à normal do terreno
+///   (yaw autoral preservado) — cadeiras numa ladeira assentam na ladeira.
+#[derive(Debug, Clone, Component, Reflect)]
+#[reflect(Component)]
+#[type_path = "viber::worldsys"]
+pub struct PendingPlace {
+    /// Ponto de amostragem em XZ mundo.
+    pub at: Vec2,
+    /// Orientar o objeto à normal do terreno.
+    pub align_to_terrain: bool,
+    /// Somado em Y após a amostragem.
+    pub base_y_offset: f32,
+}
+
+/// One-shot: resolve todos os [`PendingPlace`] quando o terreno existe.
+///
+/// O XZ do objeto é REESCRITO para `at` (a composição vai PARA onde o autor
+/// pediu — semântica do `place`) e a cota do solo é MUNDO: a pose
+/// pretendida é convertida para o referencial do pai. Aninhado num grupo que
+/// o [`seat_statics_once`] acabou de levantar (corre antes, no mesmo frame —
+/// daí o [`TransformHelper`] em vez do `GlobalTransform` ainda velho), o Y
+/// local já desconta a subida do pai; escrever a cota mundo como Y local
+/// somava a altura do chão duas vezes. Só altera a pose uma vez; depois o
+/// componente sai da entidade.
+pub fn resolve_pending_place(
+    mut done: Local<bool>,
+    runtime: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
+    pending: Query<(Entity, &PendingPlace, Option<&ChildOf>)>,
+    mut poses: ParamSet<(
+        bevy::transform::helper::TransformHelper,
+        Query<&mut Transform>,
+    )>,
+    mut commands: Commands,
+) {
+    if *done {
+        return;
+    }
+    let Some(runtime) = runtime else {
+        return;
+    };
+    let parents: Vec<(Entity, PendingPlace, Affine3A)> = pending
+        .iter()
+        .map(|(entity, place, parent)| {
+            let parent_world = parent
+                .and_then(|p| poses.p0().compute_global_transform(p.parent()).ok())
+                .map(|g| g.affine())
+                .unwrap_or(Affine3A::IDENTITY);
+            (entity, place.clone(), parent_world)
+        })
+        .collect();
+    let mut transforms = poses.p1();
+    for (entity, place, parent_world) in parents {
+        commands.entity(entity).remove::<PendingPlace>();
+        let Ok(mut transform) = transforms.get_mut(entity) else {
+            continue;
+        };
+        if let Some(local) = placed_local_transform(&runtime, &place, parent_world, *transform) {
+            *transform = local;
+        }
+    }
+    *done = true;
+}
+
+/// Pose LOCAL (referencial do pai `parent_world`) de um objeto com `place`:
+/// XZ mundo = `at`, Y mundo = solo + `base-y-offset`, rotação alinhada à
+/// normal quando pedido. `None` quando o pai tem escala nula (sem inversa).
+fn placed_local_transform(
+    runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
+    place: &PendingPlace,
+    parent_world: Affine3A,
+    local: Transform,
+) -> Option<Transform> {
+    if parent_world.matrix3.determinant().abs() < 1e-12 {
+        return None;
+    }
+    let (_, parent_rotation, _) = parent_world.to_scale_rotation_translation();
+    let authored_world_y = parent_world.transform_point3(local.translation).y;
+    let ground = place_ground_y(runtime, place.at.x, place.at.y, authored_world_y);
+    let world = Vec3::new(place.at.x, ground + place.base_y_offset, place.at.y);
+    let mut out = local;
+    out.translation = parent_world.inverse().transform_point3(world);
+    if place.align_to_terrain {
+        let normal = terrain_normal(runtime, place.at.x, place.at.y);
+        let world_rotation = align_up_to(normal, parent_rotation * local.rotation);
+        out.rotation = (parent_rotation.inverse() * world_rotation).normalize();
+    }
+    Some(out)
+}
+
+/// Cota do solo para colocação explícita: o topo do span em que o objeto
+/// está (mesma regra do `seat_at` — um `place` sob um saliente não teleporta
+/// para cima do teto), caindo para o primeiro span.
+fn place_ground_y(
+    runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime,
+    x: f32,
+    z: f32,
+    authored_y: f32,
+) -> f32 {
+    let spans = runtime.column(x, z);
+    spans
+        .iter()
+        .rev()
+        .map(|span| span.top)
+        .find(|&top| top <= authored_y + 0.25)
+        .or_else(|| spans.last().map(|span| span.top))
+        .unwrap_or(authored_y)
+}
+
+/// Normal do terreno por diferenças finitas do sampler de alturas.
+fn terrain_normal(runtime: &bevy_ext_terrain_runtime::runtime::TerrainRuntime, x: f32, z: f32) -> Vec3 {
+    const EPS: f32 = 0.5;
+    let hl = runtime.sample(x - EPS, z);
+    let hr = runtime.sample(x + EPS, z);
+    let hd = runtime.sample(x, z - EPS);
+    let hu = runtime.sample(x, z + EPS);
+    Vec3::new(hl - hr, 2.0 * EPS, hd - hu).normalize_or(Vec3::Y)
+}
+
+/// Quaternion que orienta +Y à normal do terreno, preservando o heading
+/// autoral (a rotação de inclinação aplica-se ANTES — em mundo).
+pub fn align_up_to(normal: Vec3, authored: Quat) -> Quat {
+    let n = normal.normalize_or(Vec3::Y);
+    if (n - Vec3::Y).length_squared() < 1e-6 {
+        return authored;
+    }
+    Quat::from_rotation_arc(Vec3::Y, n) * authored
+}
+
+// `MOONLIGHT_RATIO`/`MOON_COLOR`/`SunLightBase`/`SunState` vivem no re-export
+// do contrato lá em cima (bevy_ext_postfx::env).
 /// Elevação mínima (graus) da luz direcional.
 ///
 /// O sol real desce a −25° à noite; apontar a luz direcional para lá
@@ -572,30 +996,6 @@ pub const MOONLIGHT_RATIO: f32 = 0.06;
 pub const MIN_LIGHT_ELEVATION_DEG: f32 = 8.0;
 /// Elevação da lua (graus) — alta, para banhar o chão em vez de o rasar.
 pub const MOON_ELEVATION_DEG: f32 = 52.0;
-/// Cor linear da luz da lua (azul frio).
-pub const MOON_COLOR: [f32; 3] = [0.40, 0.54, 0.86];
-
-/// Iluminância/cor que o mundo autorou para uma `DirectionalLight`, capturada
-/// antes de [`sun_drive`] começar a escrevê-las.
-#[derive(Debug, Clone, Copy, Component, Reflect)]
-#[reflect(Component)]
-#[type_path = "viber::worldsys"]
-pub struct SunLightBase {
-    pub illuminance: f32,
-    pub color: Color,
-}
-
-/// Posição do sol (e estado dia/noite) calculada a partir do relógio.
-#[derive(Debug, Clone, Copy, Resource, Default, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::worldsys"]
-pub struct SunState {
-    /// Direção PARA o sol, normalizada (mundo, Y-up).
-    pub dir: Vec3,
-    pub elevation_deg: f32,
-    /// 0 = dia pleno, 1 = noite plena.
-    pub night: f32,
-}
 
 /// Elevação (graus) do sol para o minuto do dia: sobe `max_elevation` ao
 /// meio-dia e desce abaixo do horizonte à noite.
@@ -831,6 +1231,7 @@ pub fn sun_drive(
         light.color = mix_linear(MOON_COLOR, base.color, day);
     }
 }
+
 // ── Atmosfera: paleta única partilhada por céu, fog e grading ───────────
 //
 // O gap contra o BOTW não era "faltam nuvens" — era **perspetiva aérea**.
@@ -894,53 +1295,8 @@ const SUN_TINT_HIGH: Rgb = [1.0, 0.96, 0.88];
 const SUN_TINT_LOW: Rgb = [1.0, 0.46, 0.14];
 const MOON_TINT: Rgb = [0.62, 0.72, 1.0];
 
-/// Paleta atmosférica da hora corrente — publicada por [`atmosphere_drive`].
-#[derive(Debug, Clone, Copy, Resource, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::worldsys"]
-pub struct AtmosphereState {
-    /// Direção PARA o sol (mundo, Y-up) — a astronómica, pode estar abaixo.
-    pub sun_dir: Vec3,
-    /// Direção PARA a lua (oposta ao sol, elevada).
-    pub moon_dir: Vec3,
-    /// `1` dia pleno, `0` noite plena (rampa pela elevação do sol).
-    pub day: f32,
-    /// `1` noite plena.
-    pub night: f32,
-    /// Pico quando o sol raspa o horizonte (hora dourada / crepúsculo).
-    pub golden: f32,
-    /// Cor do céu no zénite / no horizonte (linear).
-    pub zenith: Rgb,
-    pub horizon: Rgb,
-    /// Cor da névoa de distância (linear) — o horizonte, ligeiramente
-    /// dessaturado, é o que dá a perspetiva aérea.
-    pub fog: Rgb,
-    /// Cor do inscattering do sol na névoa (o lado do mundo virado ao sol
-    /// fica dourado ao pôr-do-sol; é o que faltava nas "paredes cinzentas").
-    pub sun_tint: Rgb,
-    /// Multiplicador de exposição sugerido (1 = base do mundo).
-    pub exposure_scale: f32,
-    /// Reforço de bloom sugerido (fontes quentes à noite / sol rasante).
-    pub bloom_boost: f32,
-}
-
-impl Default for AtmosphereState {
-    fn default() -> Self {
-        Self {
-            sun_dir: Vec3::Y,
-            moon_dir: -Vec3::Y,
-            day: 1.0,
-            night: 0.0,
-            golden: 0.0,
-            zenith: ZENITH_DAY,
-            horizon: HORIZON_DAY,
-            fog: HORIZON_DAY,
-            sun_tint: SUN_TINT_HIGH,
-            exposure_scale: 1.0,
-            bloom_boost: 0.0,
-        }
-    }
-}
+// `AtmosphereState` vive no re-export do contrato lá em cima
+// (bevy_ext_postfx::env) — o Default usa a MESMA paleta do dia pleno.
 
 /// Resolve a paleta atmosférica para uma elevação solar (graus).
 ///
@@ -1081,6 +1437,66 @@ fn mix_linear(night: [f32; 3], day: Color, t: f32) -> Color {
     ))
 }
 
+/// Keep the player inside the world disc (radius − margin).
+#[allow(clippy::needless_pass_by_value)]
+pub fn world_border_clamp(
+    border: Option<Res<WorldBorderConfig>>,
+    scene: Option<Res<InteriorSceneConfig>>,
+    mut players: Query<&mut Transform, With<bevy_ext_core::Player>>,
+    mut logged: Local<bool>,
+) {
+    let Some(border) = border else {
+        return;
+    };
+    let limit = border.radius - border.margin;
+    // radius <= margin (ex.: radius="0") não tem disco interior: o scale
+    // negativo espelhava o herói para o lado oposto do mundo.
+    if limit <= 0.0 {
+        return;
+    }
+    for mut transform in &mut players {
+        let pos = transform.translation;
+        // Dentro da bolsa o herói está declaradamente fora do mundo: o clamp
+        // devolvê-lo-ia ao vale a meio da visita.
+        if scene.as_deref().is_some_and(|s| s.contains(pos.x, pos.z)) {
+            continue;
+        }
+        let dist_sq = pos.x * pos.x + pos.z * pos.z;
+        if dist_sq > limit * limit {
+            let scale = limit / dist_sq.sqrt();
+            transform.translation.x = pos.x * scale;
+            transform.translation.z = pos.z * scale;
+            // Uma vez por sessão: colado ao limite logava 60×/s e enchia o
+            // ring de 1000 entradas da bridge.
+            if !*logged {
+                *logged = true;
+                bevy::log::info!("world border: player returned inside r={limit}");
+            }
+        } else {
+            *logged = false;
+        }
+    }
+}
+
+/// Point-in-polygon test on XZ (ray cast) for biome regions.
+pub fn point_in_biome(polygon: &[[f32; 2]], x: f32, z: f32) -> bool {
+    let mut inside = false;
+    let n = polygon.len();
+    if n < 3 {
+        return false;
+    }
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, zi) = (polygon[i][0], polygon[i][1]);
+        let (xj, zj) = (polygon[j][0], polygon[j][1]);
+        if ((zi > z) != (zj > z)) && (x < (xj - xi) * (z - zi) / (zj - zi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 // ── plugin ──────────────────────────────────────────────────────────────
 
 /// Wiring dos drivers do mundo. A ordem replicada é a do `app.rs` do
@@ -1088,9 +1504,8 @@ fn mix_linear(night: [f32; 3], day: Color, t: f32) -> Color {
 /// interior aplica DEPOIS do sol; o clima rola ANTES da atmosfera (a chuva
 /// do frame entra na paleta no mesmo tick).
 ///
-/// Sem o `timed(Group::World, …)` do profiler do monólito — quem quiser os
-/// tempos por sistema registra os wrappers por cima; os sistemas são
-/// públicos e a ordem não muda.
+/// O jogo do Vael mantém o wiring manual no `app.rs` dele (com os wrappers
+/// `timed` do profiler) — este plugin é a forma autónoma do crate.
 pub struct WorldsysPlugin;
 
 impl Plugin for WorldsysPlugin {
@@ -1115,11 +1530,8 @@ impl Plugin for WorldsysPlugin {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use bevy_ext_postfx::env::BiomeRegionData;
 
     /// Câmara de interior: o alvo é o CENTRO DA SALA, quantizado pela grelha
     /// — é o que faz o enquadramento saltar de sala em sala (JRPG 16 bits) em
@@ -1133,10 +1545,13 @@ mod tests {
             room_origin: [2600.0, 2600.0],
             ..InteriorSceneConfig::default()
         };
+        // As salas estão nos NÓS da grelha (2600/2660/2720 em x): duas
+        // posições dentro da mesma sala dão o mesmo centro (sem follow).
         let a = scene.room_center(2596.0, 2604.0);
         let b = scene.room_center(2612.0, 2620.0);
         assert_eq!(a, [2600.0, 2600.0]);
         assert_eq!(a, b);
+        // Passar para a sala seguinte muda o enquadramento de uma vez só.
         let c = scene.room_center(2650.0, 2604.0);
         assert_eq!(c, [2660.0, 2600.0]);
         assert_ne!(a, c);
@@ -1154,6 +1569,7 @@ mod tests {
         assert_eq!(scene.room_center(5.0, 5.0), [50.0, 40.0]);
         assert_eq!(scene.room_center(95.0, 75.0), [50.0, 40.0]);
     }
+    use super::*;
 
     #[test]
     fn test_daylight_factor_ramps() {
@@ -1332,8 +1748,7 @@ mod tests {
     /// O lerp de chuva aproxima-se à velocidade constante, sem overshoot.
     #[test]
     fn test_rain_scale_at_picks_the_region_under_the_point() {
-        let region = |id: &str, polygon: Vec<[f32; 2]>, rain_scale: Option<f32>| {
-            BiomeRegionData {
+        let region = |id: &str, polygon: Vec<[f32; 2]>, rain_scale: Option<f32>| BiomeRegionData {
             id: id.into(),
             display_name: String::new(),
             polygon,
@@ -1341,8 +1756,7 @@ mod tests {
             tint: None,
             pp_exposure: None,
             pp_bloom_strength: None,
-                rain_scale,
-            }
+            rain_scale,
         };
         let regions = BiomeRegions {
             list: vec![
@@ -1424,6 +1838,7 @@ mod tests {
             assert_eq!(a.tick(3.0), b.tick(3.0));
         }
     }
+
     /// A chuva fecha exposição no [`atmosphere_drive`] (×(1−0.08·rain)).
     #[test]
     fn test_atmosphere_drive_couples_rain_to_exposure() {
@@ -1449,6 +1864,330 @@ mod tests {
         assert!(
             (wet - dry * 0.92).abs() < 1e-5,
             "tempestade fecha 8 % da exposição: {wet} vs base {dry}"
+        );
+    }
+
+    #[test]
+    fn test_point_in_biome() {
+        let square = vec![[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]];
+        assert!(point_in_biome(&square, 0.0, 0.0));
+        assert!(!point_in_biome(&square, 50.0, 50.0));
+    }
+
+    /// A `<Group>` nested inside another must not be seated twice.
+    ///
+    /// Regression: `SeatOnTerrain` is on every group and writes a *local* Y,
+    /// so seating a child on top of an already-seated parent added the ground
+    /// height again. `simple-rpg` nests its city two deep, which put the plaza
+    /// at 2x the terrain height and its props at 3x — the whole village
+    /// floated ~49 m over the ground the hero walks on.
+    ///
+    /// With content-centre seating this fixture is the degenerate case: the
+    /// outer group's single direct child sits at (0,0), so the AABB centre is
+    /// the group origin and the outer group still seats exactly there.
+    #[test]
+    fn test_seat_statics_only_moves_the_outermost_group() {
+        use bevy_ext_terrain_runtime::brush::BrushGrid;
+        use bevy_ext_terrain_runtime::heightmap::HeightMapU16;
+        use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+        use bevy_ext_terrain_runtime::spec::TerrainSpec;
+
+        let spec = TerrainSpec {
+            world_size: 64.0,
+            max_height: 100.0,
+            ..TerrainSpec::default()
+        };
+        // Flat field at half of `max_height` → ground sits at 50 m.
+        let map = HeightMapU16 {
+            width: 33,
+            depth: 33,
+            data: vec![u16::MAX / 2; 33 * 33],
+        };
+        let grid = BrushGrid::from_height_map(&map, spec.world_size, spec.max_height, 0.0)
+            .expect("grid builds");
+        let ground = grid.sample(0.0, 0.0);
+        assert!(ground > 40.0, "fixture ground is well above zero: {ground}");
+
+        let mut app = bevy::app::App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.insert_resource(TerrainRuntime {
+            spec,
+            grid: Arc::new(grid),
+            water: Vec::new(),
+            roads: Vec::new(),
+            pads: Vec::new(),
+            voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::paint::PaintGrid::default()),
+            splat_tuning: Default::default(),
+        });
+        app.add_systems(bevy::app::Update, seat_statics_once);
+
+        let outer = app
+            .world_mut()
+            .spawn((Transform::default(), SeatOnTerrain))
+            .id();
+        let inner = app
+            .world_mut()
+            .spawn((Transform::default(), SeatOnTerrain, ChildOf(outer)))
+            .id();
+        // A prop that is not itself a group still rides the hierarchy.
+        let prop = app
+            .world_mut()
+            .spawn((Transform::from_xyz(1.0, 0.0, 1.0), ChildOf(inner)))
+            .id();
+
+        app.update();
+
+        let local_y =
+            |app: &bevy::app::App, e| app.world().get::<Transform>(e).unwrap().translation.y;
+        assert!(
+            (local_y(&app, outer) - ground).abs() < 0.5,
+            "the outermost group is seated on the ground"
+        );
+        assert_eq!(
+            local_y(&app, inner),
+            0.0,
+            "the nested group keeps its authored local Y"
+        );
+        assert_eq!(local_y(&app, prop), 0.0, "props keep their authored offset");
+    }
+
+    /// A group whose content sits AWAY from its own origin must sample the
+    /// ground at the content, not at the group origin.
+    ///
+    /// Regression: biome landmark groups are authored at `translation="0 0 0"`
+    /// with children placed in world coords, so seating at the group origin
+    /// landed every landmark at the plaza height (~24.6 m) — forest landmarks
+    /// buried up to +65 m, desert ones floating −6..−20 m.
+    #[test]
+    fn test_seat_statics_samples_the_content_centre_not_the_origin() {
+        use bevy_ext_terrain_runtime::brush::BrushGrid;
+        use bevy_ext_terrain_runtime::heightmap::HeightMapU16;
+        use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+        use bevy_ext_terrain_runtime::spec::TerrainSpec;
+
+        let spec = TerrainSpec {
+            world_size: 64.0,
+            max_height: 100.0,
+            ..TerrainSpec::default()
+        };
+        // Ramp along the grid rows → ground(x,z) grows with z.
+        let map = HeightMapU16 {
+            width: 33,
+            depth: 33,
+            data: (0..33 * 33)
+                .map(|i| ((i / 33) as u16).saturating_mul(1900))
+                .collect(),
+        };
+        let grid = BrushGrid::from_height_map(&map, spec.world_size, spec.max_height, 0.0)
+            .expect("grid builds");
+        let at_origin = grid.sample(0.0, 0.0);
+        let at_content = grid.sample(30.0, 30.0);
+        assert!(
+            (at_content - at_origin).abs() > 5.0,
+            "fixture ramp separates the two sample points: {at_origin} vs {at_content}"
+        );
+
+        let mut app = bevy::app::App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.insert_resource(TerrainRuntime {
+            spec,
+            grid: Arc::new(grid),
+            water: Vec::new(),
+            roads: Vec::new(),
+            pads: Vec::new(),
+            voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::paint::PaintGrid::default()),
+            splat_tuning: Default::default(),
+        });
+        app.add_systems(bevy::app::Update, seat_statics_once);
+
+        let outer = app
+            .world_mut()
+            .spawn((Transform::default(), SeatOnTerrain))
+            .id();
+        app.world_mut()
+            .spawn((Transform::from_xyz(30.0, 0.0, 30.0), ChildOf(outer)));
+
+        app.update();
+
+        let outer_y = app.world().get::<Transform>(outer).unwrap().translation.y;
+        assert!(
+            (outer_y - at_content).abs() < 0.1,
+            "the group is seated at the height of its content ({at_content}), got {outer_y}"
+        );
+    }
+
+    /// A group whose content is spread across the whole map must NOT be
+    /// seated by its content centre (the centre represents nothing); each
+    /// direct child is seated at its own XZ instead, and nested seatable
+    /// groups recurse through the same rule.
+    #[test]
+    fn test_seat_statics_spread_group_seats_each_child_individually() {
+        use bevy_ext_terrain_runtime::brush::BrushGrid;
+        use bevy_ext_terrain_runtime::heightmap::HeightMapU16;
+        use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+        use bevy_ext_terrain_runtime::spec::TerrainSpec;
+
+        let spec = TerrainSpec {
+            world_size: 200.0,
+            max_height: 100.0,
+            ..TerrainSpec::default()
+        };
+        let map = HeightMapU16 {
+            width: 33,
+            depth: 33,
+            data: (0..33 * 33)
+                .map(|i| ((i / 33) as u16).saturating_mul(1900))
+                .collect(),
+        };
+        let grid = BrushGrid::from_height_map(&map, spec.world_size, spec.max_height, 0.0)
+            .expect("grid builds");
+        let at_a = grid.sample(0.0, 0.0);
+        let at_b = grid.sample(0.0, 70.0);
+        assert!(
+            (at_b - at_a).abs() > 5.0,
+            "fixture ramp separates the two sample points: {at_a} vs {at_b}"
+        );
+        // The nested group seats by ITS content centre: inner translation
+        // (0,35) + inner prop offset (2,37) → (2,72).
+        let at_inner = grid.sample(2.0, 72.0);
+
+        let mut app = bevy::app::App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.insert_resource(TerrainRuntime {
+            spec,
+            grid: Arc::new(grid),
+            water: Vec::new(),
+            roads: Vec::new(),
+            pads: Vec::new(),
+            voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::paint::PaintGrid::default()),
+            splat_tuning: Default::default(),
+        });
+        app.add_systems(bevy::app::Update, seat_statics_once);
+
+        let huge = app
+            .world_mut()
+            .spawn((Transform::default(), SeatOnTerrain))
+            .id();
+        let prop_a = app
+            .world_mut()
+            .spawn((Transform::from_xyz(0.0, 0.0, 0.0), ChildOf(huge)))
+            .id();
+        let prop_b = app
+            .world_mut()
+            .spawn((Transform::from_xyz(0.0, 0.0, 70.0), ChildOf(huge)))
+            .id();
+        // Nested seatable group, 70+ m away from the first prop: the span
+        // blows past the centre threshold, so the children seat alone.
+        let inner = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 35.0),
+                SeatOnTerrain,
+                ChildOf(huge),
+            ))
+            .id();
+        let inner_prop = app
+            .world_mut()
+            .spawn((Transform::from_xyz(2.0, 0.0, 37.0), ChildOf(inner)))
+            .id();
+
+        app.update();
+
+        let local_y =
+            |app: &bevy::app::App, e| app.world().get::<Transform>(e).unwrap().translation.y;
+        assert_eq!(
+            local_y(&app, huge),
+            0.0,
+            "the spread group itself stays put"
+        );
+        assert!(
+            (local_y(&app, prop_a) - at_a).abs() < 0.1,
+            "prop A seats at its own local ground {at_a}"
+        );
+        assert!(
+            (local_y(&app, prop_b) - at_b).abs() < 0.1,
+            "prop B seats at its own local ground {at_b}"
+        );
+        assert!(
+            (local_y(&app, inner) - at_inner).abs() < 0.1,
+            "the nested group seats at its own content centre {at_inner}"
+        );
+        assert_eq!(
+            local_y(&app, inner_prop),
+            0.0,
+            "the nested group's prop keeps its authored local offset"
+        );
+    }
+
+    /// O seat escreve Y LOCAL: um grupo sob um pai elevado (um `<Include
+    /// translation>` vira um Group com pose) tem de descontar o Y do pai. Sem
+    /// isto a cena subia o offset do include MAIS a cota do chão.
+    #[test]
+    fn test_seat_statics_discounts_the_parent_y_offset() {
+        use bevy_ext_terrain_runtime::brush::BrushGrid;
+        use bevy_ext_terrain_runtime::heightmap::HeightMapU16;
+        use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+        use bevy_ext_terrain_runtime::spec::TerrainSpec;
+
+        let spec = TerrainSpec {
+            world_size: 64.0,
+            max_height: 100.0,
+            ..TerrainSpec::default()
+        };
+        let map = HeightMapU16 {
+            width: 33,
+            depth: 33,
+            data: vec![u16::MAX / 2; 33 * 33],
+        };
+        let grid = BrushGrid::from_height_map(&map, spec.world_size, spec.max_height, 0.0)
+            .expect("grid builds");
+        let ground = grid.sample(0.0, 0.0);
+        assert!(ground > 40.0, "fixture ground well above zero: {ground}");
+
+        let mut app = bevy::app::App::new();
+        app.add_plugins(bevy::MinimalPlugins);
+        app.insert_resource(TerrainRuntime {
+            spec,
+            grid: Arc::new(grid),
+            water: Vec::new(),
+            roads: Vec::new(),
+            pads: Vec::new(),
+            voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::paint::PaintGrid::default()),
+            splat_tuning: Default::default(),
+        });
+        app.add_systems(bevy::app::Update, seat_statics_once);
+
+        // Pai NÃO seatável com o offset de um `<Include translation="0 30 0">`.
+        let wrapper = app
+            .world_mut()
+            .spawn(Transform::from_xyz(0.0, 30.0, 0.0))
+            .id();
+        let group = app
+            .world_mut()
+            .spawn((Transform::default(), SeatOnTerrain, ChildOf(wrapper)))
+            .id();
+        app.world_mut()
+            .spawn((Transform::from_xyz(1.0, 0.0, 1.0), ChildOf(group)));
+
+        app.update();
+
+        let world_y = |app: &bevy::app::App, e| {
+            let local = app.world().get::<Transform>(e).unwrap().translation.y;
+            let parent = 30.0; // wrapper
+            local + parent
+        };
+        assert!(
+            (world_y(&app, group) - ground).abs() < 0.5,
+            "grupo na cota do chão em mundo (get {}, esperado {ground})",
+            world_y(&app, group)
         );
     }
 
@@ -1569,7 +2308,155 @@ mod tests {
             "moonlight travels downwards onto the ground, got {travel:?}"
         );
     }
-    /// A bolsa só isenta do clamp DENTRO do retângulo — e um retângulo
+}
+
+/// Helpers puros do `place` de `<Composition>`: cota do solo e alinhamento
+/// à normal.
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    #[test]
+    fn test_align_up_to_identity_when_normal_is_up() {
+        let authored = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert_eq!(align_up_to(Vec3::Y, authored), authored);
+    }
+
+    #[test]
+    fn test_align_up_to_tilts_preserving_yaw() {
+        // Normal a 45° no plano XZ+Y (ladeira suave).
+        let normal = Vec3::new(0.0, 1.0, 1.0).normalize();
+        let yaw = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let aligned = align_up_to(normal, yaw);
+        // O +Y local do resultado aponta na direção da normal.
+        let up = aligned * Vec3::Y;
+        assert!((up - normal).length() < 1e-4, "up={up:?} normal={normal:?}");
+        // O heading (projeção XZ do forward) continua a apontar para o yaw
+        // autoral — a inclinação não roda o objeto à volta de Y.
+        let forward_world = aligned * Vec3::NEG_Z;
+        let forward_yaw = yaw * Vec3::NEG_Z;
+        let angle = |v: Vec3| v.z.atan2(v.x);
+        let d = (angle(forward_world) - angle(forward_yaw)).rem_euclid(std::f32::consts::TAU);
+        assert!(
+            d < 0.2 || d > std::f32::consts::TAU - 0.2,
+            "yaw preservado: {d} rad de desvio"
+        );
+    }
+
+    fn flat_runtime() -> bevy_ext_terrain_runtime::runtime::TerrainRuntime {
+        use bevy_ext_terrain_runtime::brush::BrushGrid;
+        use bevy_ext_terrain_runtime::heightmap::HeightMapU16;
+        use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
+        use bevy_ext_terrain_runtime::spec::TerrainSpec;
+        use std::sync::Arc;
+
+        let spec = TerrainSpec {
+            world_size: 64.0,
+            max_height: 100.0,
+            ..TerrainSpec::default()
+        };
+        let map = HeightMapU16 {
+            width: 33,
+            depth: 33,
+            data: vec![u16::MAX / 2; 33 * 33],
+        };
+        let grid = BrushGrid::from_height_map(&map, spec.world_size, spec.max_height, 0.0)
+            .expect("grid builds");
+        TerrainRuntime {
+            spec,
+            grid: Arc::new(grid),
+            water: Vec::new(),
+            roads: Vec::new(),
+            pads: Vec::new(),
+            voxel: Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
+            deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::delta::DeltaGrid::default()),
+            paint: std::sync::Arc::new(bevy_ext_terrain_runtime::paint::PaintGrid::default()),
+            splat_tuning: Default::default(),
+        }
+    }
+
+    #[test]
+    fn test_place_ground_y_uses_flat_fixture() {
+        let runtime = flat_runtime();
+        let ground = runtime.sample(0.0, 0.0);
+        // `place` define a cota EXATA (sobe e desce), ao contrário do seating.
+        assert_eq!(place_ground_y(&runtime, 0.0, 0.0, 0.0), ground);
+        assert_eq!(place_ground_y(&runtime, 0.0, 0.0, 80.0), ground);
+    }
+
+    /// `place` aninhado num grupo já levantado ao chão: a cota do solo é
+    /// MUNDO — o Y local desconta a subida do pai (antes somava-a outra vez
+    /// e a composition flutuava à altura do chão acima dele).
+    #[test]
+    fn test_place_under_a_lifted_parent_lands_on_the_ground() {
+        let runtime = flat_runtime();
+        let ground = runtime.sample(4.0, -6.0);
+        let parent = Affine3A::from_translation(Vec3::new(10.0, ground, 2.0));
+        let place = PendingPlace {
+            at: Vec2::new(4.0, -6.0),
+            align_to_terrain: false,
+            base_y_offset: 0.5,
+        };
+        let local =
+            placed_local_transform(&runtime, &place, parent, Transform::default()).expect("placed");
+        let world = parent.transform_point3(local.translation);
+        assert!(
+            (world - Vec3::new(4.0, ground + 0.5, -6.0)).length() < 1e-4,
+            "world {world}"
+        );
+        assert!(
+            (local.translation.y - 0.5).abs() < 1e-4,
+            "local y {}",
+            local.translation.y
+        );
+    }
+
+    /// Seating + place no MESMO frame: o grupo sobe, a composition filha com
+    /// `place` fica no chão (não à altura do chão acima dele) e não enviesa
+    /// o centro de amostragem do grupo.
+    #[test]
+    fn test_seat_then_place_in_the_same_frame() {
+        let mut app = bevy::app::App::new();
+        app.insert_resource(flat_runtime());
+        app.add_systems(
+            bevy::app::Update,
+            (
+                seat_statics_once,
+                resolve_pending_place.after(seat_statics_once),
+            ),
+        );
+        let ground = flat_runtime().sample(0.0, 0.0);
+        let group = app
+            .world_mut()
+            .spawn((Transform::default(), SeatOnTerrain))
+            .id();
+        app.world_mut()
+            .spawn((Transform::from_xyz(1.0, 0.0, 1.0), ChildOf(group)));
+        let placed = app
+            .world_mut()
+            .spawn((
+                Transform::default(),
+                PendingPlace {
+                    at: Vec2::new(3.0, -2.0),
+                    align_to_terrain: false,
+                    base_y_offset: 0.0,
+                },
+                ChildOf(group),
+            ))
+            .id();
+        app.update();
+        let group_y = app.world().get::<Transform>(group).unwrap().translation.y;
+        assert!((group_y - ground).abs() < 1e-3, "group seated: {group_y}");
+        let local = app.world().get::<Transform>(placed).unwrap().translation;
+        let world = Vec3::new(local.x, local.y + group_y, local.z);
+        assert!(
+            (world - Vec3::new(3.0, ground, -2.0)).length() < 1e-3,
+            "placed world {world}"
+        );
+        assert!(app.world().get::<PendingPlace>(placed).is_none());
+    }
+
+    /// A bolsa só isenta do clamp/DENTRO do retângulo — e um retângulo
     /// degenerado (min == max) não isenta nada.
     #[test]
     fn test_interior_scene_contains() {
@@ -1582,6 +2469,7 @@ mod tests {
         assert!(scene.contains(2564.0, 2570.0), "canto (inclusivo)");
         assert!(!scene.contains(2563.0, 2656.0), "fora por x");
         assert!(!scene.contains(2658.0, 2743.0), "fora por z");
+        // O mundo (world-size 4000) fica longe: a bolsa é mesmo fora.
         assert!(!scene.contains(0.0, 0.0));
         assert!(!scene.contains(860.0, 780.0), "o Alto de Vael não é bolsa");
     }

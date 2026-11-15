@@ -152,8 +152,15 @@ pub mod time_fx;
 pub mod ui;
 pub mod vinst;
 pub mod water_ssr;
-pub mod worldsys;
 pub mod xml;
+
+// Drivers do mundo movidos ao `bevy_ext_engine` (exit5/G-2): relógio/sol/
+// clima/atmosfera/interior + seating/`place` no terreno + `PendingWorldSystems`
+// (o acumulador que o loader alimenta). O caminho `viber::worldsys` reexporta
+// o módulo e os TypePaths `viber::worldsys::` ficam congelados no crate; os
+// ESTADOS que a lente lê (`AtmosphereState`/`WeatherState`/`SunState`/biomas)
+// têm o dono único no `bevy_ext_postfx::env` desde a exit3/wave-c.
+pub use bevy_ext_engine::worldsys as worldsys;
 
 /// Checkout do jogo Vael, irmão deste repo.
 ///
