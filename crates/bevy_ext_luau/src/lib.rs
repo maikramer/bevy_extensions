@@ -3860,17 +3860,34 @@ mod tests {
     #[test]
     fn interacted_le_a_tecla_pressionada_do_frame() {
         let (lua, globals, _store) = vm();
-        globals
-            .write()
-            .expect("globals")
-            .input
-            .keys_pressed
-            .insert(KeyCode::KeyE);
+        // O contrato do foco (uma tecla, um alvo): esta ENTIDADE é a vencedora
+        // do [E] no frame — sem foco publicado, o fallback é o alcance ao
+        // herói (aqui sem player publicado, nada dispara).
+        let entity = Entity::from_bits(7u64);
+        lua.set_app_data(ScriptEntity(Some(entity)));
+        {
+            let mut globals = globals.write().expect("globals");
+            globals.input.keys_pressed.insert(KeyCode::KeyE);
+            globals
+                .interaction_focus
+                .insert(KeyCode::KeyE, entity.to_bits() as i64);
+            // Outra entidade é a vencedora do [J]: esta não dispara.
+            globals
+                .interaction_focus
+                .insert(KeyCode::KeyJ, Entity::from_bits(9u64).to_bits() as i64);
+        }
         let ok: bool = lua
             .load("return viber.interacted('e') and not viber.interacted('j')")
             .eval()
             .expect("interacted");
         assert!(ok);
+        // Sem foco publicado para a tecla (e a entidade longe do herói
+        // inexistente): o fallback de alcance não dispara.
+        let fora: bool = lua
+            .load("return viber.interacted('q') == false")
+            .eval()
+            .expect("sem foco");
+        assert!(fora);
         let erro: bool = lua
             .load("return not pcall(function() viber.interacted('meta-1') end)")
             .eval()
