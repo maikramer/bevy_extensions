@@ -243,6 +243,11 @@ impl Loader {
             return self.expand_include(ast, &attrs, origin, current_path);
         }
 
+        // Os componentes tipados são a forma canónica dos atributos: aplicam-se
+        // antes de derivar o nome. Um `id` migrado para `BiomeRegionSpec`
+        // mudava o nome derivado e o loader acrescentava um `name` que o
+        // documento não tinha (o `bsn_equiv` acusava a migração).
+        crate::bsn::specs::apply_specs(ast, patches_entity, &origin, &mut attrs);
         // O emissor dá sempre um `#Name` (derivado quando o XML não tinha
         // `name`); só um nome diferente do derivado é autoral.
         if let Some(name) = ast.get_name(patches_entity)
@@ -251,7 +256,6 @@ impl Loader {
             set_attr(&mut attrs, "name", name.to_string());
         }
         apply_transform_and_previews(ast, patches_entity, &tag, world.pose, &mut attrs);
-        crate::bsn::specs::apply_specs(ast, patches_entity, &origin, &mut attrs);
         crate::bsn::specs::record_native(ast, patches_entity, &origin);
         #[cfg(feature = "terrain")]
         crate::bsn::terrain::apply_terrain(ast, patches_entity, &tag, &mut attrs);

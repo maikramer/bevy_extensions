@@ -15,10 +15,14 @@ use bevy::prelude::*;
 
 pub mod nodes;
 pub mod primitives;
+pub mod world_nodes;
 
 pub use nodes::{
     AuthoredProp, AuthoredProps, FloraStation, ModelLod, ParticleEmitter, ParticleSpec, PortalSpec,
     ScriptRef, SpawnExclusionSpec,
+};
+pub use world_nodes::{
+    AudioMixerSpec, BiomeRegionSpec, CameraSpec, InteriorSceneSpec, MusicLayerSpec,
 };
 
 /// Conversão sem perdas entre um componente e atributos do DSL.
@@ -36,6 +40,9 @@ pub trait AttrSpec: Sized {
 
 /// Lê `T` de `attrs` só se a volta (`to_attrs`) devolver exatamente os
 /// mesmos pares que o tipo absorve. Devolve também as chaves consumidas.
+///
+/// Números comparam-se por valor: `"1.0"` e `"1"` são o mesmo `f32` e a forma
+/// canónica do componente escreve `num()` — o texto muda, o valor não.
 pub fn lift<T: AttrSpec>(attrs: &[(String, String)]) -> Option<(T, Vec<&'static str>)> {
     let present: Vec<(&'static str, &str)> = T::KEYS
         .iter()
@@ -61,7 +68,31 @@ pub fn lift<T: AttrSpec>(attrs: &[(String, String)]) -> Option<(T, Vec<&'static 
         present.iter().map(|(k, v)| (*k, v.to_string())).collect();
     back.sort();
     want.sort();
-    (back == want).then(|| (value, present.iter().map(|(k, _)| *k).collect()))
+    same_pairs(&back, &want).then(|| (value, present.iter().map(|(k, _)| *k).collect()))
+}
+
+/// Pares na mesma ordem com o mesmo valor (números por valor, o resto texto).
+fn same_pairs(left: &[(&'static str, String)], right: &[(&'static str, String)]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|((left_key, left), (right_key, right))| {
+                left_key == right_key && same_value(left, right)
+            })
+}
+
+/// O mesmo número (inclusive listas de números), ou o mesmo texto.
+fn same_value(left: &str, right: &str) -> bool {
+    let numbers = |text: &str| -> Option<Vec<f32>> {
+        text.split_whitespace()
+            .map(|part| part.parse::<f32>().ok())
+            .collect()
+    };
+    match (numbers(left), numbers(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 /// Pares `chave: valor` de uma string de componente (`a: 1; b: x`).
@@ -513,6 +544,11 @@ pub struct NodeSpecs {
     pub particle: Option<ParticleSpec>,
     pub exclusion: Option<SpawnExclusionSpec>,
     pub portal: Option<PortalSpec>,
+    pub camera: Option<CameraSpec>,
+    pub interior: Option<InteriorSceneSpec>,
+    pub mixer: Option<AudioMixerSpec>,
+    pub music_layer: Option<MusicLayerSpec>,
+    pub biome: Option<BiomeRegionSpec>,
 }
 
 impl NodeSpecs {
@@ -528,11 +564,16 @@ impl NodeSpecs {
             && self.particle.is_none()
             && self.exclusion.is_none()
             && self.portal.is_none()
+            && self.camera.is_none()
+            && self.interior.is_none()
+            && self.mixer.is_none()
+            && self.music_layer.is_none()
+            && self.biome.is_none()
     }
 }
 
 /// Caminhos de tipo dos componentes deste crate (para o loader e o editor).
-pub const TYPE_PATHS: [&str; 11] = [
+pub const TYPE_PATHS: [&str; 16] = [
     "bevy_ext_scene::ColliderSpec",
     "bevy_ext_scene::BodySpec",
     "bevy_ext_scene::Destructible",
@@ -544,6 +585,11 @@ pub const TYPE_PATHS: [&str; 11] = [
     "bevy_ext_scene::ParticleSpec",
     "bevy_ext_scene::SpawnExclusionSpec",
     "bevy_ext_scene::PortalSpec",
+    "bevy_ext_scene::CameraSpec",
+    "bevy_ext_scene::InteriorSceneSpec",
+    "bevy_ext_scene::AudioMixerSpec",
+    "bevy_ext_scene::MusicLayerSpec",
+    "bevy_ext_scene::BiomeRegionSpec",
 ];
 
 /// Regista os tipos para reflexão (jogo, loader e editor).
@@ -573,6 +619,11 @@ pub fn register_types(registry: &mut bevy::reflect::TypeRegistry) {
     registry.register::<ParticleSpec>();
     registry.register::<SpawnExclusionSpec>();
     registry.register::<PortalSpec>();
+    registry.register::<CameraSpec>();
+    registry.register::<InteriorSceneSpec>();
+    registry.register::<AudioMixerSpec>();
+    registry.register::<MusicLayerSpec>();
+    registry.register::<BiomeRegionSpec>();
     registry.register::<Option<ParticleEmitter>>();
     registry.register::<Vec<AuthoredProp>>();
     registry.register::<Option<u32>>();

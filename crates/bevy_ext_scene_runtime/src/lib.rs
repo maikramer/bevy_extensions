@@ -46,7 +46,6 @@ pub mod streaming;
 //   config       → `GameConfig` (bgm/texturas), `load` (testes)
 //   editor_camera→ `EditorCamState` (o editor nunca adormece conteúdo)
 //   foliage      → `FoliageCandidate` (batch de vegetação)
-//   grass        → `GrassField` (reset por cena)
 //   hud          → `spawn_hud`, `HudAssets`
 //   interact     → `InteractionFocus` (reset + vencedor do portal),
 //                  `scaled_range`
@@ -78,7 +77,7 @@ pub mod streaming;
 //   worldsys     → dia/tempo/fronteira/interior/biomas (`EngineConfigs`, …)
 //   xml          → IR XML (`XmlNode`, `NodeOrigin`, `include::load_world*`)
 pub use viber::{
-    ambient, animation, app, camera, cinematic, config, editor_camera, foliage, grass, hud,
+    ambient, animation, app, camera, cinematic, config, editor_camera, foliage, hud,
     interact, luau, menus, meshopt, music, nav, particles, physics, physics_fx, player, project,
     prop_tint, ragdoll, render_lod, scene, sky, spawner, terrain, textures, ui, vinst, vitals,
     worldsys, xml,

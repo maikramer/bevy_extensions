@@ -341,6 +341,100 @@ fn componentes_tipados_migram_sem_perdas() {
     assert!(same.is_ok(), "{same:?}\n{migrated}");
 }
 
+/// Câmara/áudio/bioma migram pela tag: `at`, `size` e `id` também existem
+/// noutras tags e um lift global mudava o significado do atributo.
+#[test]
+fn camaras_audio_e_biomas_migram_por_tag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml = dir.path().join("world.xml");
+    fs::write(
+        &xml,
+        r##"<world static="true">
+  <Entity name="cam"><OrbitCamera distance="3.3" height="1.55" pitch="18.3" fov="64" follow-lag="0.18" turn-lag="0.38" min-terrain-distance="1" /></Entity>
+  <Entity name="sala"><InteriorScene at="0 0" size="60 55" camera-distance="16" camera-pitch="58" camera-yaw="0" /></Entity>
+  <Entity name="mix"><AudioMixer master="1" music="0.7" sfx="0.8" voice="0.9" ambience="0.7" /></Entity>
+  <Entity name="mus"><MusicLayer layer="explore" sound="bgm-explore" base-volume="0.18" /></Entity>
+  <Entity name="bioma"><BiomeRegion id="dark-forest" display-name="Floresta Sombria" polygon="[-56,56;56,56]" tint="#1a3320" fog-density="0.0008" /></Entity>
+  <Entity name="zona"><SpawnExclusion at="140 360" radius="18" /></Entity>
+</world>"##,
+    )
+    .expect("xml");
+    let text = emit_file(&xml, dir.path(), EmitOptions::default()).expect("emit");
+    let (migrated, report) = bevy_ext_world::bsn::specs::migrate_text(&text);
+    assert_eq!(report.nodes, 6, "{migrated}");
+    for component in [
+        "bevy_ext_scene::CameraSpec",
+        "bevy_ext_scene::InteriorSceneSpec",
+        "bevy_ext_scene::AudioMixerSpec",
+        "bevy_ext_scene::MusicLayerSpec",
+        "bevy_ext_scene::BiomeRegionSpec",
+        "bevy_ext_scene::SpawnExclusionSpec",
+    ] {
+        assert!(migrated.contains(component), "falta {component}:\n{migrated}");
+    }
+    // O `at`/`radius` da exclusão não foram para a câmara nem o contrário.
+    assert!(!migrated.contains("key: \"camera-distance\""));
+    assert!(!migrated.contains("key: \"polygon\""));
+    assert_eq!(
+        bevy_ext_world::bsn::specs::migrate_text(&migrated).0,
+        migrated
+    );
+
+    let before = dir.path().join("before.bsn");
+    fs::write(&before, &text).expect("before");
+    let after = dir.path().join("after.bsn");
+    fs::write(&after, &migrated).expect("after");
+    let a = load_bsn_world(&before).expect("load before");
+    let b = load_bsn_world(&after).expect("load after");
+    let same =
+        bevy_ext_world::bsn::worlds_equivalent(&a.root_attrs, &a.nodes, &b.root_attrs, &b.nodes);
+    assert!(same.is_ok(), "{same:?}\n{migrated}");
+}
+
+/// Um `<Entity>` com `radius` e `at` (como o `SpawnExclusion` usa) NÃO é
+/// câmara: o lift continua a ser por tag.
+#[test]
+fn atributos_partilhados_nao_migram_fora_da_tag() {
+    let attrs = vec![
+        ("at".to_string(), "1 2".to_string()),
+        ("radius".to_string(), "6".to_string()),
+    ];
+    let lifted = bevy_ext_world::bsn::specs::lift_specs("Entity", &attrs);
+    assert!(lifted.components.is_empty(), "{:?}", lifted.consumed);
+    let lifted = bevy_ext_world::bsn::specs::lift_specs("OrbitCamera", &attrs);
+    assert!(lifted.components.is_empty(), "câmara não tem at/radius");
+}
+
+/// Um nó que já tem o componente (e o atributo homónimo, como fica depois de
+/// o editor voltar a gravar) não ganha um segundo componente.
+#[test]
+fn migracao_nao_duplica_componente_existente() {
+    let text = r#"#"world"
+bevy_world_xml::bsn::WorldNode {
+    tag: "world",
+    attrs: [],
+    text: "",
+}
+bevy_ecs::hierarchy::Children [
+    #"fumo"
+    bevy_ext_scene::ParticleSpec {
+        preset: "smoke",
+    }
+    bevy_world_xml::bsn::WorldNode {
+        tag: "ParticleSystem",
+        attrs: [
+            bevy_world_xml::bsn::WorldProp { key: "preset", value: "smoke" },
+        ],
+        text: "",
+    }
+]
+"#;
+    let (migrated, report) = bevy_ext_world::bsn::specs::migrate_text(text);
+    assert_eq!(report.nodes, 0, "{migrated}");
+    assert_eq!(migrated.matches("bevy_ext_scene::ParticleSpec").count(), 1);
+    assert_eq!(migrated, text, "nada mudou");
+}
+
 /// O `SceneNodeId` do documento fica disponível pela origem do nó: é a chave
 /// que o jogo usa para receber as edições do Play do Jackdaw.
 #[test]

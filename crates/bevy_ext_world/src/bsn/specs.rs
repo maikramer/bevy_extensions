@@ -14,8 +14,9 @@ use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 use bevy::reflect::{FromReflect, PartialReflect, Reflect, TypePath, TypeRegistry};
 use bevy_ext_scene::{
-    AttrSpec, AuthoredProps, BodySpec, ColliderSpec, Destructible, FloraStation, Harvestable,
-    ModelLod, NodeSpecs, ParticleSpec, PortalSpec, ScriptRef, SpawnExclusionSpec,
+    AttrSpec, AudioMixerSpec, AuthoredProps, BiomeRegionSpec, BodySpec, CameraSpec, ColliderSpec,
+    Destructible, FloraStation, Harvestable, InteriorSceneSpec, ModelLod, MusicLayerSpec,
+    NodeSpecs, ParticleSpec, PortalSpec, ScriptRef, SpawnExclusionSpec,
 };
 
 use crate::xml::NodeOrigin;
@@ -231,6 +232,11 @@ pub fn spec_attr_keys() -> &'static [&'static str] {
         keys.extend_from_slice(ParticleSpec::KEYS);
         keys.extend_from_slice(SpawnExclusionSpec::KEYS);
         keys.extend_from_slice(PortalSpec::KEYS);
+        keys.extend_from_slice(CameraSpec::KEYS);
+        keys.extend_from_slice(InteriorSceneSpec::KEYS);
+        keys.extend_from_slice(AudioMixerSpec::KEYS);
+        keys.extend_from_slice(MusicLayerSpec::KEYS);
+        keys.extend_from_slice(BiomeRegionSpec::KEYS);
         keys
     })
 }
@@ -345,6 +351,11 @@ pub(crate) fn apply_specs(
         particle: read::<ParticleSpec>(ast, entity),
         exclusion: read::<SpawnExclusionSpec>(ast, entity),
         portal: read::<PortalSpec>(ast, entity),
+        camera: read::<CameraSpec>(ast, entity),
+        interior: read::<InteriorSceneSpec>(ast, entity),
+        mixer: read::<AudioMixerSpec>(ast, entity),
+        music_layer: read::<MusicLayerSpec>(ast, entity),
+        biome: read::<BiomeRegionSpec>(ast, entity),
     };
     if specs.is_empty() {
         return;
@@ -386,6 +397,21 @@ pub fn write_spec_attrs(specs: &NodeSpecs, attrs: &mut Vec<(String, String)>) {
     if let Some(spec) = &specs.portal {
         write_attrs(spec, attrs);
     }
+    if let Some(spec) = &specs.camera {
+        write_attrs(spec, attrs);
+    }
+    if let Some(spec) = &specs.interior {
+        write_attrs(spec, attrs);
+    }
+    if let Some(spec) = &specs.mixer {
+        write_attrs(spec, attrs);
+    }
+    if let Some(spec) = &specs.music_layer {
+        write_attrs(spec, attrs);
+    }
+    if let Some(spec) = &specs.biome {
+        write_attrs(spec, attrs);
+    }
     if let Some(props) = &specs.props {
         for (key, value) in props.to_attrs() {
             match attrs.iter_mut().find(|(k, _)| *k == key) {
@@ -413,30 +439,60 @@ pub struct LiftedSpecs {
 /// Move para componentes os atributos com ida e volta exata. Chaves com
 /// significado por tag (`radius`, `preset`, `at`…) só migram na sua tag.
 pub fn lift_specs(tag: &str, attrs: &[(String, String)]) -> LiftedSpecs {
+    lift_specs_skipping(tag, attrs, &|_| false)
+}
+
+/// [`lift_specs`] sem os tipos para que `skip(type_path)` é verdadeiro.
+///
+/// A migração passa aqui os componentes que o nó **já tem**: um ficheiro
+/// voltado a gravar pelo editor pode ter o componente e o atributo
+/// homónimo ao mesmo tempo (o componente ganha no load), e voltar a levantá-lo
+/// duplicava o componente no documento.
+pub fn lift_specs_skipping(
+    tag: &str,
+    attrs: &[(String, String)],
+    skip: &dyn Fn(&str) -> bool,
+) -> LiftedSpecs {
     let mut out = LiftedSpecs::default();
-    fn take<T: AttrSpec + PartialReflect>(attrs: &[(String, String)], out: &mut LiftedSpecs) {
+    fn take<T: AttrSpec + PartialReflect + TypePath>(
+        attrs: &[(String, String)],
+        out: &mut LiftedSpecs,
+        skip: &dyn Fn(&str) -> bool,
+    ) {
+        if skip(T::type_path()) {
+            return;
+        }
         if let Some((spec, keys)) = bevy_ext_scene::lift::<T>(attrs) {
             out.components.push(Box::new(spec));
             out.consumed.extend(keys.into_iter().map(str::to_string));
         }
     }
-    take::<ColliderSpec>(attrs, &mut out);
-    take::<BodySpec>(attrs, &mut out);
-    take::<Destructible>(attrs, &mut out);
-    take::<Harvestable>(attrs, &mut out);
+    take::<ColliderSpec>(attrs, &mut out, skip);
+    take::<BodySpec>(attrs, &mut out, skip);
+    take::<Destructible>(attrs, &mut out, skip);
+    take::<Harvestable>(attrs, &mut out, skip);
     if matches!(tag, "GltfScene" | "GLTFLoader") {
-        take::<ModelLod>(attrs, &mut out);
+        take::<ModelLod>(attrs, &mut out, skip);
     }
-    take::<FloraStation>(attrs, &mut out);
-    take::<ScriptRef>(attrs, &mut out);
-    if let Some((props, keys)) = AuthoredProps::from_attrs(attrs) {
+    take::<FloraStation>(attrs, &mut out, skip);
+    take::<ScriptRef>(attrs, &mut out, skip);
+    if !skip(CustomProperties::type_path())
+        && let Some((props, keys)) = AuthoredProps::from_attrs(attrs)
+    {
         out.components.push(Box::new(custom_from_authored(&props)));
         out.consumed.extend(keys);
     }
-    match tag {
-        "ParticleSystem" => take::<ParticleSpec>(attrs, &mut out),
-        "SpawnExclusion" => take::<SpawnExclusionSpec>(attrs, &mut out),
-        "ScenePortal" => take::<PortalSpec>(attrs, &mut out),
+    match tag.to_ascii_lowercase().as_str() {
+        "particlesystem" => take::<ParticleSpec>(attrs, &mut out, skip),
+        "spawnexclusion" => take::<SpawnExclusionSpec>(attrs, &mut out, skip),
+        "sceneportal" => take::<PortalSpec>(attrs, &mut out, skip),
+        // Câmara e áudio: `at`/`size`/`id`/`height`/`target` repetem-se
+        // noutras tags — só migram na sua.
+        "orbitcamera" | "thirdpersoncamera" => take::<CameraSpec>(attrs, &mut out, skip),
+        "interiorscene" => take::<InteriorSceneSpec>(attrs, &mut out, skip),
+        "audiomixer" => take::<AudioMixerSpec>(attrs, &mut out, skip),
+        "musiclayer" => take::<MusicLayerSpec>(attrs, &mut out, skip),
+        "biomeregion" => take::<BiomeRegionSpec>(attrs, &mut out, skip),
         _ => {}
     }
     out
@@ -507,7 +563,18 @@ pub fn migrate_text(text: &str) -> (String, MigrateReport) {
                 .and_then(|l| l.trim().strip_prefix("tag: \""))
                 .and_then(|l| l.strip_suffix("\","))
                 .unwrap_or_default();
-            let lifted = lift_specs(tag, &attrs);
+            // Componentes que o nó já tem (o bloco da entidade começa depois
+            // do separador `--`): não são levantados outra vez.
+            let block_start = lines[..i]
+                .iter()
+                .rposition(|line| line.trim() == "--")
+                .map_or(0, |at| at + 1);
+            let already = |type_path: &str| {
+                lines[block_start..i]
+                    .iter()
+                    .any(|line| line.trim_start().starts_with(type_path))
+            };
+            let lifted = lift_specs_skipping(tag, &attrs, &already);
             if lifted.components.is_empty() {
                 out.push_str(line);
                 i += 1;

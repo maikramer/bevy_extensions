@@ -466,7 +466,9 @@ mod tests {
                 .expect(text);
             assert_eq!(spec.to_attrs()[1].1, text);
         }
-        // `8.0` voltaria como `8`: fica no DSL.
+        // `8.0` voltaria como `8` dentro de um texto compacto (`preset: …;
+        // start-life-max: 8`), e a comparação por valor só cobre listas de
+        // números: fica no DSL.
         assert!(lift::<ParticleSpec>(&attrs(&[(
             "particle-emitter",
             "preset: smoke; emission-rate: 9; start-life-min: 5.5; start-life-max: 8.0; start-speed-min: 0.2; start-speed-max: 0.45; start-size-min: 0.84; start-size-max: 1.86"

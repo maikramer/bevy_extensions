@@ -156,10 +156,41 @@ fn attrs_equivalent(
         terrain_attrs_equivalent(&tag, &mut left, &mut right, path)?;
     }
 
-    if left != right {
-        return Err(format!("{path}: attrs {left:?} != {right:?}"));
+    // O que sobra compara-se: números por valor — a forma canónica de um
+    // componente tipado escreve `num()` (`"1.0"` → `"1"`, `"0.0030"` →
+    // `"0.003"`) e o mundo que o jogo carrega é o mesmo; o resto é exato.
+    let mut keys: Vec<&String> = left.keys().chain(right.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        let (Some(left_value), Some(right_value)) = (left.get(key), right.get(key)) else {
+            return Err(format!("{path}: `{key}` só existe de um dos lados"));
+        };
+        if !numeric_values_equal(left_value, right_value) {
+            return Err(format!("{path}: {key} {left_value:?} != {right_value:?}"));
+        }
     }
     Ok(())
+}
+
+/// Listas de números iguais por valor (dentro da tolerância de pose); o resto
+/// compara-se como texto.
+fn numeric_values_equal(left: &str, right: &str) -> bool {
+    let numbers = |text: &str| -> Option<Vec<f32>> {
+        text.split_whitespace()
+            .map(|part| part.parse::<f32>().ok())
+            .collect()
+    };
+    match (numbers(left), numbers(right)) {
+        (Some(left), Some(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(&right)
+                    .all(|(a, b)| (a - b).abs() <= EPS_POS)
+        }
+        _ => left == right,
+    }
 }
 
 /// Attrs de features de terreno: um attr ausente vale o default do spec e os

@@ -945,7 +945,6 @@ pub fn reset_scene_resources(world: &mut World) {
     reset_default::<crate::physics::TerrainCollisionStatus>(world);
     reset_default::<crate::interact::InteractionFocus>(world);
     reset_default::<crate::worldsys::InteriorLighting>(world);
-    reset_default::<crate::grass::GrassField>(world);
     reset_default::<crate::terrain::delta::TerrainEditQueue>(world);
     // Posse de sistemas/ações (`viber.own_system`/`own_action`) é do MUNDO:
     // um kart que reclamava `locomotion` deixava o herói sem movimento para
