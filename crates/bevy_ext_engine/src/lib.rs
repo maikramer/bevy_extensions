@@ -35,6 +35,7 @@
 extern crate self as viber;
 
 pub mod app;
+pub mod animation;
 pub mod camera;
 pub mod camera_glue;
 pub mod cinematic;

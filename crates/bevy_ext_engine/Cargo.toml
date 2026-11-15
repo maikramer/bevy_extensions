@@ -42,6 +42,10 @@ bevy = { workspace = true, features = [
     # `WorldAssetRoot` (folhagem) e as luzes (drivers do mundo, céu).
     "bevy_world_serialization",
     "bevy_light",
+    # Animar GLBs: `bevy_animation` + o campo `Gltf.animations` (o loader só
+    # expõe os clips com o `bevy_gltf/bevy_animation`). O monólito tem-no por
+    # causa dos default features; aqui os defaults são cortados.
+    "gltf_animation",
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
