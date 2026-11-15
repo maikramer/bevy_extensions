@@ -1095,6 +1095,7 @@ dependencies = [
  "log",
  "mlua",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

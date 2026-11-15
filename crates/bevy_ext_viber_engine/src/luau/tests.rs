@@ -1036,6 +1036,11 @@ fn test_game_state_and_load_module() {
     )
     .unwrap();
     let mut app = test_app(host);
+    // exit4/F3: `viber.game()` é o proxy sobre o store do processo — as
+    // leituras passam pela VM (o registry `viber_game` já não existe). O
+    // reset limpa a poluição de OUTROS testes ANTES do update (depois limpar
+    // apagava o estado que o script acabou de escrever).
+    bevy_ext_luau::game::reset_game_state_for_tests();
     for path in ["a.lua", "b.lua"] {
         app.world_mut().spawn((
             Transform::default(),
@@ -1046,11 +1051,13 @@ fn test_game_state_and_load_module() {
     }
     app.update();
     let host = app.world().resource::<LuaScriptHost>();
-    let game: Table = host.lua.named_registry_value("viber_game").unwrap();
-    assert!(
-        matches!(game.raw_get::<bool>("ok"), Ok(true)),
-        "módulo partilhado + game() world-scoped"
-    );
+    let ok: bool = host
+        .lua
+        .load("return viber.game().ok == true")
+        .eval()
+        .expect("módulo partilhado + game() world-scoped");
+    assert!(ok);
+    bevy_ext_luau::game::reset_game_state_for_tests();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1230,9 +1237,13 @@ fn test_apply_script_spawns_creates_and_calls_back() {
     assert_eq!(spawned.len(), 1, "um cristal criado pelo sistema exclusivo");
     assert_eq!(spawned[0].1, Vec3::new(5.0, 0.0, -3.0));
     let host = app.world().resource::<LuaScriptHost>();
-    let game: Table = host.lua.named_registry_value("viber_game").unwrap();
-    let bits: i64 = game.raw_get("spawned").expect("callback on_spawned correu");
+    let bits: i64 = host
+        .lua
+        .load("return viber.game().spawned")
+        .eval()
+        .expect("callback on_spawned correu");
     assert_eq!(bits as u64, spawned[0].0.to_bits());
+    bevy_ext_luau::game::reset_game_state_for_tests();
 }
 
 #[test]
@@ -1322,7 +1333,9 @@ fn test_game_kv_roundtrip_ignores_complex_values() {
         )
         .exec()
         .expect("chunk kv");
-    let json = crate::luau::game::game_to_json(&host.lua);
+    // exit4/F3: o save serializa o STORE do processo (o overlay de sessão
+    // nunca entra — tabelas/funções vivem só na VM).
+    let json = bevy_ext_luau::game::game_to_json(&bevy_ext_luau::game::game_store());
     assert_eq!(json.get("n"), Some(&serde_json::json!(7)));
     assert_eq!(json.get("s"), Some(&serde_json::json!("x")));
     assert_eq!(json.get("b"), Some(&serde_json::json!(true)));
@@ -1330,13 +1343,16 @@ fn test_game_kv_roundtrip_ignores_complex_values() {
         !json.contains_key("tbl") && !json.contains_key("fn"),
         "tabelas/funções não são persistíveis: {json:?}"
     );
-    // Repõe noutra VM: os primitivos voltam.
-    let fresh = LuaScriptHost::new(PathBuf::from("scripts")).expect("host");
-    crate::luau::game::json_to_game(&fresh.lua, &json);
-    let game: Table = fresh.lua.named_registry_value("viber_game").unwrap();
-    assert_eq!(game.raw_get::<f64>("n").unwrap(), 7.0);
-    assert_eq!(game.raw_get::<String>("s").unwrap(), "x");
-    assert!(game.raw_get::<bool>("b").unwrap());
+    // Repõe (load): os primitivos voltam (o store é do processo, a VM vê via
+    // proxy).
+    bevy_ext_luau::game::restore_game_json(&json);
+    let (n, s_str, b): (f64, String, bool) = host
+        .lua
+        .load("return viber.game().n, viber.game().s, viber.game().b")
+        .eval()
+        .expect("restore");
+    assert_eq!((n, s_str.as_str(), b), (7.0, "x", true));
+    bevy_ext_luau::game::reset_game_state_for_tests();
 }
 
 /// Um load SUBSTITUI o estado: chaves que só existem na sessão atual não
@@ -1350,13 +1366,15 @@ fn test_game_kv_load_replaces_stale_state() {
         .expect("chunk kv");
     let mut kv = std::collections::BTreeMap::new();
     kv.insert("keep".to_string(), serde_json::json!("new"));
-    crate::luau::game::json_to_game(&host.lua, &kv);
-    let game: Table = host.lua.named_registry_value("viber_game").unwrap();
-    assert!(
-        game.raw_get::<mlua::Value>("stale").unwrap().is_nil(),
-        "chave só da sessão sobreviveu ao load"
-    );
-    assert_eq!(game.raw_get::<String>("keep").unwrap(), "new");
+    bevy_ext_luau::game::restore_game_json(&kv);
+    let (stale_is_nil, keep): (bool, String) = host
+        .lua
+        .load("return viber.game().stale == nil, viber.game().keep")
+        .eval()
+        .expect("load substitui");
+    assert!(stale_is_nil, "chave só da sessão sobreviveu ao load");
+    assert_eq!(keep, "new");
+    bevy_ext_luau::game::reset_game_state_for_tests();
 }
 
 #[test]
@@ -2016,12 +2034,13 @@ fn test_load_module_without_return_runs_once() {
     let mut world = World::new();
     host.activate(world.spawn_empty().id(), "user.lua")
         .expect("activate");
-    let game: Table = host.lua.named_registry_value("viber_game").unwrap();
-    assert_eq!(game.raw_get::<i64>("runs").unwrap(), 1);
+    let runs: i64 = host.lua.load("return viber.game().runs").eval().expect("runs");
+    assert_eq!(runs, 1);
     assert_eq!(
         host.script_global("user.lua", "b").unwrap(),
         mlua::Value::Boolean(true)
     );
+    bevy_ext_luau::game::reset_game_state_for_tests();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2411,12 +2430,9 @@ fn test_load_module_cache_key_normalizes_dot_segments() {
     let mut world = World::new();
     host.activate(world.spawn_empty().id(), "user.lua")
         .expect("activate");
-    let game: Table = host.lua.named_registry_value("viber_game").unwrap();
-    assert_eq!(
-        game.raw_get::<i64>("runs").unwrap(),
-        1,
-        "módulo correu uma só vez"
-    );
+    let runs: i64 = host.lua.load("return viber.game().runs").eval().expect("runs");
+    assert_eq!(runs, 1, "módulo correu uma só vez");
+    bevy_ext_luau::game::reset_game_state_for_tests();
     assert_eq!(
         host.script_global("user.lua", "same").unwrap(),
         mlua::Value::Boolean(true),

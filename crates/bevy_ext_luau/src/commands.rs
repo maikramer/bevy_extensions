@@ -69,6 +69,13 @@ pub enum ScriptCommand {
         scene: String,
         entry: Option<String>,
     },
+    /// Teleporte da entidade para (x, y, z) (`viber.set_position`) — o
+    /// consumidor faz o snap no terreno ao aplicar (a mesma regra do
+    /// `MoveTowards` do monólito).
+    SetPosition {
+        entity: Entity,
+        pos: Vec3,
+    },
 }
 
 /// Alcance BASE autorado de interação (o default do `set_interaction`),

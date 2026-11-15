@@ -10,15 +10,21 @@
 //! `scene_name`), estado de jogo partilhado (`game.rs`), input, comandos
 //! enfileirados e loader de módulos.
 //!
-//! PENDENTES desta fase (documentados no relatório da migração): as funções
-//! com consumidor final na engine — movimento/pose
-//! (`move_*`/`set_position`/`teleport_player`), IA (`sense`/`wander_target`/
-//! `next_state`), vitais e combate (`entity_*`/`radial_damage`), áudio de
-//! mundo (`sound`/`sound_loop`/`music`/`audio`), câmara (`camera_*`),
-//! `viber.vael.*` (a bridge Rust do jogo regista-se à parte),
-//! `viber.nlu`/`viber.decision` (runtimes do CelerAI), save
-//! (`save*`/`load_save`/`quit`), eventos/timers/signals (`viber.events`/
-//! `viber.after`/`viber.signals`) e o módulo `viber.ecs`.
+//! exit4/F2–F3 (2026-11-15): o grupo `events` (`viber.events` + fan-out dos
+//! contratos do core) e o NÚCLEO (`log`/`position`/`set_position`/
+//! `distance_to_player`/`player_forward`/`player_hp`/`player_id`/
+//! `entity_id`/`self_name`/`home`) estão portados; o grupo `game` é UM SÓ
+//! (o gémeo do monólito virou shim `viber::luau::game` — proxy sobre o
+//! store, interop JSON do save, `evict_module`, `load_json`).
+//!
+//! PENDENTES (documentados no relatório da migração): F4 percepção/props
+//! (`hostiles`/`find`/`ground_below`/`road`/`attach`/`set_pose`/…
+//! — `set_position`/`play_clip`/`set_interaction` já portados), F5
+//! efeitos/áudio (`sound`/`sound_loop`/`music`/`audio`/`camera_*`),
+//! F6 IA/combate (`sense`/`wander_target`/`next_state`/`entity_*`/
+//! `radial_damage`), F7 save/câmara/resto, F8 `viber.nlu`/`viber.decision`
+//! (features CelerAI) e `viber.vael` (do próprio jogo). Timers/signals
+//! (`viber.after`/`viber.signals`) seguem na onda do host.
 
 pub mod commands;
 pub mod events;
@@ -62,8 +68,22 @@ pub struct ScriptHostState {
     /// Entidades nomeadas deste frame para `viber.nearby`/`player_nearby`.
     pub nearby: Vec<NearbyEnt>,
     /// Pasta `scripts/` do projeto para `viber.load` (o loader de módulos
-    /// lê ficheiros .lua daqui).
+    /// lê ficheiros .lua daqui). O `publish_globals` espelha-a no static do
+    /// `game` — a fonte do `viber.load`/`load_json` de todas as VMs.
     pub scripts_dir: Option<std::path::PathBuf>,
+    /// Forward do herói no plano (x, z) — `viber.player_forward()`.
+    pub player_forward: Vec2,
+    /// Snapshot `(current, max)` do HP do herói — `viber.player_hp()`.
+    pub player_hp: Option<(f32, f32)>,
+    /// Bits da entidade do herói — `viber.player_id()`.
+    pub player_id: Option<i64>,
+    /// Posição de início-de-frame por entidade (bits → posição) para
+    /// `viber.position()`/`distance_to_player` da entidade que corre o
+    /// script. O monólito semeava `ScriptCtx::origin` por chamada; aqui é o
+    /// snapshot publicado.
+    pub positions: std::collections::HashMap<i64, Vec3>,
+    /// Nome de mundo por entidade (bits → nome) para `viber.self_name()`.
+    pub names: std::collections::HashMap<i64, String>,
 }
 
 /// Uma entidade NOMEADA do snapshot de percepção (`viber.nearby` /
@@ -99,7 +119,19 @@ struct ScriptGlobals {
     biome: Option<String>,
     menu_open: bool,
     nearby: Vec<NearbyEnt>,
-    scripts_dir: Option<std::path::PathBuf>,
+    /// Forward do herói no plano (x, z) — `viber.player_forward()`.
+    player_forward: Vec2,
+    /// Snapshot `(current, max)` do HP do herói — `viber.player_hp()`.
+    player_hp: Option<(f32, f32)>,
+    /// Bits da entidade do herói — `viber.player_id()`.
+    player_id: Option<i64>,
+    /// Posição de início-de-frame das entidades com script
+    /// (`viber.position`/`distance_to_player` da própria entidade).
+    positions: std::collections::HashMap<i64, Vec3>,
+    /// Nome de mundo por entidade (`viber.self_name`).
+    names: std::collections::HashMap<i64, String>,
+    /// Ring de `viber.log` (cap 256; linhas até 8 KiB como o monólito).
+    logs: VecDeque<String>,
     toasts: VecDeque<String>,
     input: InputSnapshot,
     /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
@@ -211,7 +243,18 @@ fn publish_globals(
         globals.biome.clone_from(&state.biome);
         globals.menu_open = menus.as_ref().is_some_and(|menus| menus.any());
         globals.nearby.clone_from(&state.nearby);
-        globals.scripts_dir.clone_from(&state.scripts_dir);
+        globals.player_forward = state.player_forward;
+        globals.player_hp = state.player_hp;
+        globals.player_id = state.player_id;
+        globals.positions.clone_from(&state.positions);
+        globals.names.clone_from(&state.names);
+    }
+    // A pasta de scripts do frame publica-se no static do `game` (a fonte
+    // do `viber.load`/`load_json` de todas as VMs). Só `Some` escreve — o
+    // host do monólito semeia o static no `new` e o `None` de apps mínimas
+    // não o limpa.
+    if let Some(dir) = state.scripts_dir.as_ref() {
+        game::set_scripts_dir(Some(dir.clone()));
     }
 }
 
@@ -260,6 +303,15 @@ fn push_command(
     if let Ok(mut globals) = globals.write() {
         globals.commands.push_back(command);
     }
+}
+
+/// A entidade do contexto (app data do attach). Erro Lua quando o script
+/// corre fora de `on_update` (attach estático/REPL) — a mesma semântica do
+/// "fora de on_update" do monólito para comandos que precisam de entidade.
+fn script_entity(lua: &Lua) -> mlua::Result<Entity> {
+    lua.app_data_ref::<ScriptEntity>()
+        .and_then(|e| e.0)
+        .ok_or_else(|| mlua::Error::runtime("fora de on_update (sem entidade no attach)"))
 }
 
 /// Instala a tabela `viber` num contexto Lua. Público para o adaptador do
@@ -351,6 +403,197 @@ fn install_viber_api_with(
         })?,
     )?;
 
+    // ── Núcleo portado do monólito (exit4/F3) ───────────────────────────
+
+    // viber.log(msg) — log da engine + ring buffer (cap 256, linha até
+    // 8 KiB — o mesmo push_log do ScriptCtx).
+    let log_globals = globals.clone();
+    viber.set(
+        "log",
+        lua.create_function(move |lua, msg: String| {
+            let entity = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .map(|e| format!("{e:?}"))
+                .unwrap_or_else(|| "pre-activate".into());
+            log::info!(target: "viber::luau", "[{entity}] {msg}");
+            if let Ok(mut globals) = log_globals.write() {
+                const MAX_LOG_MESSAGE: usize = 8192;
+                let mut line = msg;
+                if line.len() > MAX_LOG_MESSAGE {
+                    let mut end = MAX_LOG_MESSAGE;
+                    while !line.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    line.truncate(end);
+                    line.push('\u{2026}');
+                }
+                if globals.logs.len() >= 256 {
+                    globals.logs.pop_front();
+                }
+                globals.logs.push_back(line);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // viber.position() -> x, y, z — snapshot de início-de-frame da entidade
+    // que corre o script (do mapa publicado); zeros fora de on_update.
+    let position_globals = globals.clone();
+    viber.set(
+        "position",
+        lua.create_function(move |lua, ()| {
+            let origin = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .and_then(|entity| {
+                    position_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.positions.get(&(entity.to_bits() as i64)).copied())
+                })
+                .unwrap_or_default();
+            Ok((origin.x, origin.y, origin.z))
+        })?,
+    )?;
+
+    // viber.set_position(x, y, z) — enfileira o comando (aplicado pós-frame
+    // com snap no terreno). Erro fora de on_update, como no monólito.
+    let setpos_globals = globals.clone();
+    viber.set(
+        "set_position",
+        lua.create_function(move |lua, (x, y, z): (f32, f32, f32)| {
+            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                return Err(mlua::Error::runtime(
+                    "viber.set_position: coordenadas não finitas (NaN/inf)",
+                ));
+            }
+            let entity = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .ok_or_else(|| {
+                    mlua::Error::runtime(
+                        "viber.set_position outside on_update (no owning entity)",
+                    )
+                })?;
+            push_command(
+                &setpos_globals,
+                commands::ScriptCommand::SetPosition {
+                    entity,
+                    pos: Vec3::new(x, y, z),
+                },
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.distance_to_player() -> number | nil (nil = sem herói ou fora
+    // de on_update).
+    let distance_globals = globals.clone();
+    viber.set(
+        "distance_to_player",
+        lua.create_function(move |lua, ()| {
+            let origin = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .and_then(|entity| {
+                    distance_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.positions.get(&(entity.to_bits() as i64)).copied())
+                });
+            let player = distance_globals.read().ok().and_then(|g| g.player);
+            Ok(player.zip(origin).map(|(p, o)| p.distance(o)))
+        })?,
+    )?;
+
+    // viber.player_forward() -> dx, dz — forward do herói no plano.
+    let forward_globals = globals.clone();
+    viber.set(
+        "player_forward",
+        lua.create_function(move |_, ()| {
+            let (x, z) = forward_globals
+                .read()
+                .map(|g| (g.player_forward.x, g.player_forward.y))
+                .unwrap_or_default();
+            Ok((x, z))
+        })?,
+    )?;
+
+    // viber.player_hp() -> ok, cur, max — snapshot do HP do herói.
+    let hp_globals = globals.clone();
+    viber.set(
+        "player_hp",
+        lua.create_function(move |_, ()| match hp_globals.read().ok().and_then(|g| g.player_hp) {
+            Some((cur, max)) => Ok((true, cur, max)),
+            None => Ok((false, 0.0, 0.0)),
+        })?,
+    )?;
+
+    // viber.player_id() -> bits | nil — a entidade do herói.
+    let pid_globals = globals.clone();
+    viber.set(
+        "player_id",
+        lua.create_function(move |_, ()| Ok(pid_globals.read().ok().and_then(|g| g.player_id)))?,
+    )?;
+
+    // viber.entity_id() -> bits | nil — a entidade que corre o script agora.
+    viber.set(
+        "entity_id",
+        lua.create_function(|lua, ()| {
+            Ok(lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .map(|entity| entity.to_bits() as i64))
+        })?,
+    )?;
+
+    // viber.self_name() -> string — nome de MUNDO da entidade corrente
+    // (do mapa publicado); vazio fora de on_update/sem Name.
+    let name_globals = globals.clone();
+    viber.set(
+        "self_name",
+        lua.create_function(move |lua, ()| {
+            Ok(lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .and_then(|entity| {
+                    name_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.names.get(&(entity.to_bits() as i64)).cloned())
+                })
+                .unwrap_or_default())
+        })?,
+    )?;
+
+    // viber.home() -> x, z — posição de SPAWN (centro do wander), lida da
+    // tabela de estado semeada em `activate_at`; `position()` é a ACTUAL e
+    // fazia scripts de leash orbitarem o sítio corrente.
+    let home_globals = globals.clone();
+    viber.set(
+        "home",
+        lua.create_function(move |lua, ()| {
+            let fallback = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .and_then(|entity| {
+                    home_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.positions.get(&(entity.to_bits() as i64)).copied())
+                })
+                .unwrap_or_default();
+            let state: mlua::Table = lua.named_registry_value("viber_state")?;
+            if let Ok(home) = state.raw_get::<mlua::Table>("home")
+                && let (Ok(x), Ok(z)) = (home.raw_get::<f32>("x"), home.raw_get::<f32>("z"))
+            {
+                return Ok((x, z));
+            }
+            Ok((fallback.x, fallback.z))
+        })?,
+    )?;
+
     // ── Comandos enfileirados (drenados no Update) ──────────────────────
 
     // viber.sound_at_player(name) — SFX curto na posição do herói; sem
@@ -380,7 +623,7 @@ fn install_viber_api_with(
     let clip_globals = globals.clone();
     viber.set(
         "play_clip",
-        lua.create_function(move |_, (name, opts): (String, Option<mlua::Table>)| {
+        lua.create_function(move |lua, (name, opts): (String, Option<mlua::Table>)| {
             let (speed, id, lock) = match opts {
                 Some(t) => (
                     t.raw_get::<f32>("speed").ok().unwrap_or(1.0),
@@ -396,7 +639,7 @@ fn install_viber_api_with(
             }
             let entity = match id {
                 Some(bits) => Some(commands::entity_from_id(bits)?),
-                None => None,
+                None => Some(script_entity(lua)?),
             };
             push_command(
                 &clip_globals,
@@ -510,15 +753,18 @@ fn install_viber_api_with(
     // ── Interação e percepção ───────────────────────────────────────────
 
     // viber.gesture(name) — gesto one-shot no rig da própria entidade
-    // (speed 1.0, sem lock; o `play_clip` é a forma generalizada).
+    // (speed 1.0, sem lock; o `play_clip` é a forma generalizada). Erro fora
+    // de on_update (a entidade é conhecida no attach do contexto), como no
+    // monólito.
     let gesture_globals = globals.clone();
     viber.set(
         "gesture",
-        lua.create_function(move |_, name: String| {
+        lua.create_function(move |lua, name: String| {
+            let entity = script_entity(lua)?;
             push_command(
                 &gesture_globals,
                 commands::ScriptCommand::Gesture {
-                    entity: None,
+                    entity: Some(entity),
                     name,
                     speed: 1.0,
                     lock: false,
@@ -535,7 +781,7 @@ fn install_viber_api_with(
     viber.set(
         "set_interaction",
         lua.create_function(
-            move |_, (label, key, range): (String, String, Option<f32>)| {
+            move |lua, (label, key, range): (String, String, Option<f32>)| {
                 keys::key_code_from_str(&key).ok_or_else(|| {
                     mlua::Error::runtime(format!(
                         "viber.set_interaction: tecla desconhecida '{key}'"
@@ -547,10 +793,11 @@ fn install_viber_api_with(
                         "viber.set_interaction: range tem de ser finito e >= 0",
                     ));
                 }
+                let entity = script_entity(lua)?;
                 push_command(
                     &interaction_globals,
                     commands::ScriptCommand::SetInteraction {
-                        entity: None,
+                        entity: Some(entity),
                         label,
                         key,
                         range,
@@ -562,87 +809,6 @@ fn install_viber_api_with(
     )?;
 
     // ── Módulos e cenas ─────────────────────────────────────────────────
-
-    // viber.load(path) — corre um chunk de `scripts/` num env próprio UMA
-    // vez por VM e devolve o `return` (cache em `viber_modules`). A chave
-    // do cache é o caminho RESOLVIDO (sem o prefixo histórico `scripts/`,
-    // `.`/`//` normalizados) — a mesma grafia em todas as chamadas.
-    // PENDENTE na integração: evict no hot-reload dos módulos.
-    let load_globals = globals.clone();
-    viber.set(
-        "load",
-        lua.create_function(move |lua, path: String| {
-            // Só caminhos RELATIVOS dentro de `scripts/` — `..` ou raiz
-            // absoluta liam (e executavam) qualquer ficheiro do disco.
-            let inside = std::path::Path::new(&path)
-                .components()
-                .all(|c| {
-                    matches!(
-                        c,
-                        std::path::Component::Normal(_) | std::path::Component::CurDir
-                    )
-                });
-            if path.is_empty() || !inside {
-                return Err(mlua::Error::runtime(format!(
-                    "viber.load('{path}'): só caminhos relativos a scripts/ (sem '..')"
-                )));
-            }
-            let key: String = std::path::Path::new(path.strip_prefix("scripts/").unwrap_or(&path))
-                .components()
-                .filter_map(|component| match component {
-                    std::path::Component::Normal(part) => {
-                        Some(part.to_string_lossy().into_owned())
-                    }
-                    // `..`/raiz já foram rejeitados acima; `.` cai.
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("/");
-            if key.is_empty() {
-                return Err(mlua::Error::runtime(format!(
-                    "viber.load('{path}'): caminho sem ficheiro"
-                )));
-            }
-            let modules: mlua::Table = lua.named_registry_value("viber_modules")?;
-            if let Ok(cached) = modules.raw_get::<mlua::Value>(key.clone())
-                && !cached.is_nil()
-            {
-                return Ok(cached);
-            }
-            let dir = load_globals
-                .read()
-                .ok()
-                .and_then(|globals| globals.scripts_dir.clone())
-                .ok_or_else(|| {
-                    mlua::Error::runtime("viber.load sem scripts_dir publicado no ScriptHostState")
-                })?;
-            let full = dir.join(&key);
-            let code = std::fs::read_to_string(&full).map_err(|error| {
-                mlua::Error::runtime(format!("viber.load('{path}'): {error}"))
-            })?;
-            // Env sandbox próprio (mesma forma do chunk de entidade) — o
-            // módulo não pode clobber globals de quem o carrega.
-            let env = lua.create_table()?;
-            let mt = lua.create_table()?;
-            mt.set("__index", lua.globals())?;
-            env.set_metatable(Some(mt))?;
-            let chunk = lua
-                .load(&code)
-                .set_name(format!("={path}"))
-                .set_environment(env)
-                .into_function()?;
-            let value: mlua::Value = chunk.call(())?;
-            // Módulo sem `return` (só mexe em `viber.game()`) cacheia `true`,
-            // como o `require` — com `nil` o cache falhava e o módulo
-            // re-corria a CADA chamada.
-            let value = match value {
-                mlua::Value::Nil => mlua::Value::Boolean(true),
-                other => other,
-            };
-            modules.raw_set(key, value.clone())?;
-            Ok(value)
-        })?,
-    )?;
 
     // viber.change_scene(id [, entrada]) -> true | false, erro — troca de
     // cena (fade, descarrega a atual, carrega a outra; `entrada` =
@@ -737,9 +903,6 @@ fn install_viber_api_with(
         )?;
     }
 
-    // Cache dos módulos do `viber.load` (por VM, sobrevive a hot-reload do
-    // script como o `viber_modules` do Viber).
-    lua.set_named_registry_value("viber_modules", lua.create_table()?)?;
 
     keys::install(lua, &viber, globals.clone())?;
 
@@ -1091,6 +1254,10 @@ mod tests {
     #[test]
     fn play_clip_valida_e_enfila_o_gesto() {
         let (lua, globals, _store) = vm();
+        // Sem `id`, a entidade vem do attach do contexto (exit4/F3: o
+        // comando drena SEM contexto — a entidade tem de viajar nele).
+        let own = Entity::try_from_bits(42u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
         lua.load("viber.play_clip('mine', { speed = 1.4 })")
             .exec()
             .expect("clip");
@@ -1098,7 +1265,7 @@ mod tests {
             commands::ScriptCommand::Gesture { entity, name, speed, lock } => {
                 assert_eq!(name, "mine");
                 assert_eq!((speed, lock), (1.4, false));
-                assert_eq!(entity, None);
+                assert_eq!(entity, Some(own));
             }
             other => panic!("comando inesperado: {other:?}"),
         }
@@ -1264,21 +1431,120 @@ mod tests {
 
 
     #[test]
+    fn nucleo_lê_o_snapshot_publicado() {
+        let (lua, globals, _store) = vm();
+        let own = Entity::try_from_bits(5u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
+        {
+            let mut g = globals.write().expect("globals");
+            g.player = Some(Vec3::new(10.0, 2.0, 6.0));
+            g.player_forward = Vec2::new(0.0, 1.0);
+            g.player_hp = Some((70.0, 100.0));
+            g.player_id = Some(1);
+            g.positions.insert(5, Vec3::new(4.0, 2.0, 6.0));
+            g.names.insert(5, "moinho".into());
+        }
+        let (x, y, z): (f32, f32, f32) = lua.load("return viber.position()").eval().expect("position");
+        assert_eq!((x, y, z), (4.0, 2.0, 6.0));
+        let distance: f32 = lua.load("return viber.distance_to_player()").eval().expect("distance");
+        assert!((distance - 6.0).abs() < 1e-4);
+        let (fx, fz): (f32, f32) = lua.load("return viber.player_forward()").eval().expect("forward");
+        assert_eq!((fx, fz), (0.0, 1.0));
+        let (ok, cur, max): (bool, f32, f32) = lua.load("return viber.player_hp()").eval().expect("hp");
+        assert_eq!((ok, cur, max), (true, 70.0, 100.0));
+        let pid: i64 = lua.load("return viber.player_id()").eval().expect("pid");
+        assert_eq!(pid, 1);
+        let eid: i64 = lua.load("return viber.entity_id()").eval().expect("eid");
+        assert_eq!(eid, 5);
+        let name: String = lua.load("return viber.self_name()").eval().expect("nome");
+        assert_eq!(name, "moinho");
+        // home: sem `home` no estado, cai na posição corrente.
+        let (hx, hz): (f32, f32) = lua.load("return viber.home()").eval().expect("home");
+        assert_eq!((hx, hz), (4.0, 6.0));
+        // Sem entidade no attach: position zeros, set_position erro.
+        let (lua2, _g2, _s2) = vm();
+        let (x, _y, _z): (f32, f32, f32) = lua2.load("return viber.position()").eval().expect("position zeros");
+        assert_eq!(x, 0.0);
+        let erro: bool = lua2
+            .load("return not pcall(function() viber.set_position(1, 2, 3) end)")
+            .eval()
+            .expect("erro");
+        assert!(erro);
+    }
+
+    #[test]
+    fn set_position_enfila_com_a_entidade_do_attach() {
+        let (lua, globals, _store) = vm();
+        let own = Entity::try_from_bits(8u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
+        lua.load("viber.set_position(1.5, -2.0, 3.5)").exec().expect("set");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::SetPosition { entity, pos } => {
+                assert_eq!(entity, own);
+                assert_eq!(pos, Vec3::new(1.5, -2.0, 3.5));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        // NaN é erro de script.
+        let erro: bool = lua
+            .load("return not pcall(function() viber.set_position(0/0, 1, 2) end)")
+            .eval()
+            .expect("NaN");
+        assert!(erro);
+    }
+
+    #[test]
+    fn log_ring_e_cap() {
+        let (lua, globals, _store) = vm();
+        for i in 0..260 {
+            lua.load(format!("viber.log('linha {i}')")).exec().expect("log");
+        }
+        let logs = globals.read().expect("globals").logs.clone();
+        assert_eq!(logs.len(), 256);
+        assert_eq!(logs.front().map(String::as_str), Some("linha 4"), "cap 256 descarta as antigas");
+    }
+
+    #[test]
+    fn home_lê_o_estado_semeado_pela_integracao() {
+        let (lua, _globals, _store) = vm();
+        let own = Entity::try_from_bits(3u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
+        let state: mlua::Table = lua.named_registry_value("viber_state").expect("estado");
+        let home = lua.create_table().expect("home");
+        home.raw_set("x", 10.5).expect("x");
+        home.raw_set("z", -4.0).expect("z");
+        state.raw_set("home", home).expect("semear");
+        let (x, z): (f32, f32) = lua.load("return viber.home()").eval().expect("home");
+        assert_eq!((x, z), (10.5, -4.0));
+    }
+
+    #[test]
     fn gesture_enfila_o_gesto_sem_velocidade() {
         let (lua, globals, _store) = vm();
+        let own = Entity::try_from_bits(7u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
         lua.load("viber.gesture('foldarms')").exec().expect("gesto");
         match globals.write().expect("globals").commands.pop_front().expect("comando") {
             commands::ScriptCommand::Gesture { entity, name, speed, lock } => {
                 assert_eq!(name, "foldarms");
-                assert_eq!((entity, speed, lock), (None, 1.0, false));
+                assert_eq!((entity, speed, lock), (Some(own), 1.0, false));
             }
             other => panic!("comando inesperado: {other:?}"),
         }
+        // Fora de on_update (attach estático): erro, como no monólito.
+        let (lua2, _g2, _s2) = vm();
+        let erro: bool = lua2
+            .load("return not pcall(function() viber.gesture('x') end)")
+            .eval()
+            .expect("erro sem entidade");
+        assert!(erro);
     }
 
     #[test]
     fn set_interaction_valida_tecla_e_alcance_a_fila() {
         let (lua, globals, _store) = vm();
+        let own = Entity::try_from_bits(11u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
         lua.load("viber.set_interaction('Minerar', 'j')")
             .exec()
             .expect("interação");
@@ -1286,7 +1552,7 @@ mod tests {
             commands::ScriptCommand::SetInteraction { entity, label, key, range } => {
                 assert_eq!((label.as_str(), key.as_str()), ("Minerar", "j"));
                 assert_eq!(range, commands::BASE_RANGE_M);
-                assert_eq!(entity, None);
+                assert_eq!(entity, Some(own));
             }
             other => panic!("comando inesperado: {other:?}"),
         }
@@ -1429,7 +1695,7 @@ mod tests {
             "viber.game().efeitos = true\n",
         )
         .expect("modulo sem return");
-        globals.write().expect("globals").scripts_dir = Some(dir.clone());
+        lua.set_app_data(game::ScriptsDir(Some(dir.clone())));
 
         let nome: String = lua
             .load("return viber.load('lib/fsm.lua').estado()")
@@ -1473,9 +1739,10 @@ mod tests {
         assert!(erro.iter().all(|e| *e));
 
         // Sem scripts_dir publicado: erro (a integração publica o caminho).
-        globals.write().expect("globals").scripts_dir = None;
+        let (lua3, _g3, _s3) = vm();
+        lua3.set_app_data(game::ScriptsDir(None));
         let (lua2, _g2, _s2) = vm();
-        let erro: bool = lua2
+        let erro: bool = lua3
             .load("return not pcall(function() viber.load('lib/fsm.lua') end)")
             .eval()
             .expect("sem dir");
@@ -1496,7 +1763,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("grosso.lua"), "achei = 'do modulo'\n").expect("módulo");
-        globals.write().expect("globals").scripts_dir = Some(dir);
+        lua.set_app_data(game::ScriptsDir(Some(dir)));
 
         let isolado: bool = lua
             .load(

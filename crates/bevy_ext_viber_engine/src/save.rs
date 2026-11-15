@@ -206,7 +206,7 @@ fn options_system(
             let mut game = capture(position, (mixer.master, mixer.music, mixer.sfx));
             game.volumes_extra = Some((mixer.voice, mixer.ambience));
             if let Some(host) = host.as_mut() {
-                game.world_kv = crate::luau::game::game_to_json(&host.lua);
+                game.world_kv = bevy_ext_luau::game::game_to_json(&bevy_ext_luau::game::game_store());
             }
             // Metadados que o menu lê sem abrir o JSON: hora da gravação,
             // tempo de jogo e rótulo (o jogo escreve-os em `viber.game()`).
@@ -314,7 +314,7 @@ fn options_system(
                     }
                 });
                 if let Some(host) = host.as_mut() {
-                    crate::luau::game::json_to_game(&host.lua, &game.world_kv);
+                    bevy_ext_luau::game::restore_game_json(&game.world_kv);
                 }
                 // 1.º herói (ver o save): com 2+ heróis o load morria em
                 // silêncio — "Jogo carregado." sem herói nenhum reposicionado.
