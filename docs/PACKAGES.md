@@ -3,6 +3,9 @@
 Estado: 0.1.0 (2026-11-12). O repo é o lar durável dos pacotes; o Viber fica
 como app/fachada transitória até o Vael deixar de o usar.
 
+> Standard de engenharia (Vael + este repo):
+> [`../../Vael/docs/DEV-STANDARD-STUDY.md`](../../Vael/docs/DEV-STANDARD-STUDY.md).
+
 ## Release 0.1.0
 
 - Repositório: https://github.com/maikramer/bevy_extensions (`main` `074b533`).
