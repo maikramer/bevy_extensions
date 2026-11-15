@@ -121,6 +121,62 @@ impl ScriptGameEvent {
             Self::SceneUnloading { .. } => "scene_unloading",
         }
     }
+
+    /// Converte o evento para a tabela que `viber.events()` devolve ao
+    /// script — o corpo é o MESMO do gémeo `bevy_ext_engine::luau` (de onde
+    /// este tipo foi copiado); o fan-out do monólito chama-o por evento.
+    pub fn to_table(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
+        let t = lua.create_table()?;
+        t.raw_set("type", self.kind())?;
+        match self {
+            Self::Kill { name, entity } => {
+                t.raw_set("name", name.clone())?;
+                t.raw_set("entity", *entity)?;
+            }
+            Self::Hit {
+                entity,
+                amount,
+                faction,
+                x,
+                y,
+                z,
+            } => {
+                t.raw_set("entity", *entity)?;
+                t.raw_set("amount", *amount)?;
+                t.raw_set("faction", faction.clone())?;
+                t.raw_set("x", *x)?;
+                t.raw_set("y", *y)?;
+                t.raw_set("z", *z)?;
+            }
+            Self::PlayerDied => {}
+            Self::Collect { item, amount } => {
+                t.raw_set("item", item.clone())?;
+                t.raw_set("amount", *amount)?;
+            }
+            Self::QuestDone { id } => {
+                t.raw_set("id", id.clone())?;
+            }
+            Self::LevelUp { level } => {
+                t.raw_set("level", *level)?;
+            }
+            Self::UiAction { name, arg } => {
+                t.raw_set("name", name.clone())?;
+                t.raw_set("arg", arg.clone())?;
+            }
+            Self::CinematicEnd { id, skipped } => {
+                t.raw_set("id", id.clone())?;
+                t.raw_set("skipped", *skipped)?;
+            }
+            Self::SceneLoaded { scene, entry } => {
+                t.raw_set("scene", scene.clone())?;
+                t.raw_set("entry", entry.clone())?;
+            }
+            Self::SceneUnloading { scene } => {
+                t.raw_set("scene", scene.clone())?;
+            }
+        }
+        Ok(t)
+    }
 }
 
 /// O handle Luau que a UI usa para instalar a tabela `viber.ui`.

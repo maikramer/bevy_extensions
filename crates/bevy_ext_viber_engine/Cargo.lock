@@ -1044,6 +1044,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ext_ui"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_ext_core",
+ "bevy_ext_world",
+ "mlua",
+]
+
+[[package]]
 name = "bevy_ext_viber_engine"
 version = "0.1.0"
 dependencies = [
@@ -1061,6 +1071,7 @@ dependencies = [
  "bevy_ext_save",
  "bevy_ext_scene",
  "bevy_ext_terrain_runtime",
+ "bevy_ext_ui",
  "bevy_ext_world",
  "bevy_gradmesh",
  "bevy_kira_audio",

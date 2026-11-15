@@ -916,6 +916,16 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // inertes.
     if ui {
         app.add_plugins(ui::UiPlugin);
+        // Glue do shim `ui.rs`: o retrato do MUNDO e a fonte do HUD chegam
+        // ao crate extraído antes do collect ler os binds.
+        app.add_systems(
+            bevy::app::Update,
+            (
+                ui::publish_ui_world_state,
+                ui::publish_ui_font,
+            )
+                .before(ui::UiSet::Collect),
+        );
     } else {
         app.init_resource::<crate::ui::runtime::UiRegistry>()
             .init_resource::<crate::ui::UiModalsOpen>();
@@ -938,7 +948,11 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     if ui && scripts == ScriptsMode::Compat {
         app.add_systems(
             bevy::app::Update,
-            ui::install_ui_script_api
+            // O handle da VM (`UiScriptHost`) sai ANTES do install — o
+            // `install_ui_script_api` do crate lê O CONTRATO, não o host
+            // Luau deste monólito.
+            (ui::publish_ui_script_host, ui::install_ui_script_api)
+                .chain()
                 .before(luau::luau_on_add)
                 .before(luau::luau_update),
         );

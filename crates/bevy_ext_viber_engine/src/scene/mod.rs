@@ -42,9 +42,11 @@ pub struct PrototypeInstance(pub String);
 
 /// O nó XML que declarou uma entidade viva (posto pelo spawn a partir de
 /// `EntitySpec::source`). [`SceneDoc::node_ref_for`] converte-o num [`NodeRef`].
-#[derive(Component, Debug, Clone, PartialEq, Reflect)]
-#[reflect(Component)]
-pub struct SceneSource(#[reflect(ignore)] pub Arc<NodeOrigin>);
+///
+/// Contrato movido ao `bevy_ext_ui::ui::host` (exit3/wave-c) — a árvore
+/// declarativa extraída carimba O MESMO componente; o TypePath
+/// `viber::scene` fica congelado no crate.
+pub use bevy_ext_ui::ui::host::SceneSource;
 
 /// Os filhos de `node` (até `depth` níveis), cada um com seletor, tag, rótulo e atributos.
 /// Um `<Include>` lista os nós do ficheiro incluído.
