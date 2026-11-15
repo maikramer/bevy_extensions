@@ -85,6 +85,12 @@ pub enum RunMode {
 #[derive(Debug, Clone, bevy::ecs::message::Message)]
 pub struct ScriptToast(pub String);
 
+/// Alcance histórico de interação (m) — a unidade em que o conteúdo foi
+/// autorado. O valor EFETIVO é este × `range_scale` do monólito
+/// (`interact::scaled_range`). Contrato partilhado pelo sistema de interação
+/// e pelo prompt do HUD (`hud::interact::BALLOON_RANGE_M`).
+pub const BASE_RANGE_M: f32 = 3.5;
+
 /// Bus volumes from `<AudioMixer master music sfx voice ambience>`.
 ///
 /// The resource always exists: a derived `Default` with zeroed fields would

@@ -2,16 +2,18 @@
 
 use bevy::prelude::*;
 
-use crate::vitals::{Health, health_fraction};
+use bevy_ext_core::vitals::{Health, health_fraction};
 
 /// Marker for the healthbar fill node (width mirrors the player's `Health`).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::vitals"]
 pub struct HudHealthFill;
 
 /// Marker for the healthbar label node ("100/100").
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::vitals"]
 pub struct HudHealthLabel;
 
 /// Label text for the healthbar ("{cur}/{max}", hp rounded for display).
@@ -22,7 +24,7 @@ pub fn health_label_text(current: f32, max: f32) -> String {
 /// Mirror the hero's [`Health`] into the `healthbar` fill width and label.
 /// Without a `Health` on the player it shows the default 100/100.
 pub fn hud_health_sync(
-    players: Query<&Health, With<crate::player::Player>>,
+    players: Query<&Health, With<bevy_ext_core::Player>>,
     mut fills: Query<&mut Node, With<HudHealthFill>>,
     mut labels: Query<&mut Text, With<HudHealthLabel>>,
 ) {

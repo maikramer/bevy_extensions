@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 // Bevy 0.20: `Interaction`/`Button` do prelude são aliases de tipos privados.
-use crate::ui::interaction::{Button, Interaction};
+use bevy_ext_ui::ui::interaction::{Button, Interaction};
 
 use super::assets::{HudAssets, label};
 
@@ -11,6 +11,7 @@ use super::assets::{HudAssets, label};
 /// A clickable tab button.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::widgets"]
 pub struct TabButton {
     pub tab: usize,
 }
@@ -18,6 +19,7 @@ pub struct TabButton {
 /// A tab content frame; only the active tab is visible.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::widgets"]
 pub struct TabContent {
     pub tab: usize,
 }

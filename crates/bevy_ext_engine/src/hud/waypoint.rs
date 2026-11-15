@@ -8,12 +8,13 @@ use bevy::prelude::*;
 use bevy::ui::Val2;
 
 use crate::hud::markers::HudMarkers;
-use crate::player::Player;
-use crate::recipes::spawn::OrbitCamera;
+use bevy_ext_core::Player;
+use crate::camera::OrbitCamera;
 
 /// Raiz da seta (posicionada em % do ecrã).
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::waypoint"]
 pub struct WaypointArrowRoot {
     pub margin: f32,
 }
@@ -21,11 +22,13 @@ pub struct WaypointArrowRoot {
 /// O triângulo que roda.
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::waypoint"]
 pub struct WaypointArrowPointer;
 
 /// A legenda ("Entregar · 42 m").
 #[derive(Component, Debug, Clone, Copy, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::waypoint"]
 pub struct WaypointArrowCaption;
 
 /// Margem por omissão (px lógicos).
@@ -144,8 +147,8 @@ pub fn spawn_waypoint_arrow(world: &mut World, hud: &super::assets::HudAssets, m
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn update_waypoint_arrow(
     markers: Option<Res<HudMarkers>>,
-    interior: Option<Res<crate::worldsys::InteriorLighting>>,
-    menus: Option<Res<crate::menus::MenusOpen>>,
+    interior: Option<Res<bevy_ext_core::InteriorLighting>>,
+    menus: Option<Res<bevy_ext_core::MenusOpen>>,
     hud_hidden: Option<Res<crate::hud::HudHidden>>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     players: Query<&GlobalTransform, With<Player>>,

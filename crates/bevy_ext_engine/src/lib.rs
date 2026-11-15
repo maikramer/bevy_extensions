@@ -35,6 +35,8 @@
 extern crate self as viber;
 
 pub mod app;
+pub mod ambient;
+pub mod animation;
 pub mod camera;
 pub mod camera_glue;
 pub mod cinematic;
@@ -48,6 +50,7 @@ pub mod foliage;
 pub mod frame_pacing;
 pub mod graphics;
 pub mod grass;
+pub mod hud;
 pub mod hud_assets;
 pub mod ibl;
 pub mod luau;
@@ -63,15 +66,3 @@ pub mod vitals;
 pub mod water_ssr;
 pub mod worldsys;
 
-/// Alias de compat `viber::…` — o `feedback.rs` (definição CANÓNICA aqui
-/// desde a exit2/hubs; o monólito re-exporta este módulo na exit2/luau)
-/// importa `viber::hud::assets::HudAssets`. Sem a dep `viber`, o alias de
-/// crate (`extern crate self`) + este `hud::assets` na raiz dão ao caminho
-/// histórico um destino local (o HudAssets movido — o mesmo tipo que o
-/// `viber::hud::assets` do monólito re-exporta).
-#[doc(hidden)]
-pub mod hud {
-    pub mod assets {
-        pub use crate::hud_assets::*;
-    }
-}

@@ -3,12 +3,13 @@
 
 use bevy::prelude::*;
 
-use crate::player::Player;
-use crate::recipes::spawn::OrbitCamera;
+use bevy_ext_core::Player;
+use crate::camera::OrbitCamera;
 
 /// One direction letter in the sliding compass strip.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::compass"]
 pub struct CompassLetter {
     /// World bearing this letter sits at (0° = north/−Z, 90° = east/+X).
     pub bearing_deg: f32,
@@ -17,6 +18,7 @@ pub struct CompassLetter {
 /// A compass tick mark (slides with the letters).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::compass"]
 pub struct CompassTick {
     pub bearing_deg: f32,
 }
@@ -24,6 +26,7 @@ pub struct CompassTick {
 /// Distance readout under a compass letter: nearest NPC in that sector.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::compass"]
 pub struct CompassDistance {
     pub bearing_deg: f32,
 }
@@ -102,7 +105,7 @@ pub fn hud_compass_update(
         })
         .unwrap_or_default();
     for (mut node, mut visibility, letter) in &mut letters {
-        let delta = crate::camera::shortest_angle_delta_deg(heading, letter.bearing_deg);
+        let delta = crate::camera_glue::shortest_angle_delta_deg(heading, letter.bearing_deg);
         // Escrita GUARDADA também na `Visibility`: escrever o mesmo valor
         // marca `Changed` e punha o Taffy a refazer o layout da faixa do
         // compasso em todos os frames.
@@ -120,7 +123,7 @@ pub fn hud_compass_update(
         }
     }
     for (mut node, tick) in &mut ticks {
-        let delta = crate::camera::shortest_angle_delta_deg(heading, tick.bearing_deg);
+        let delta = crate::camera_glue::shortest_angle_delta_deg(heading, tick.bearing_deg);
         let wanted = match compass_offset_px(delta, 230.0, 55.0) {
             Some(offset) => Val::Px(230.0 + offset),
             None => Val::Px(-100.0), // parked off-strip
@@ -130,7 +133,7 @@ pub fn hud_compass_update(
         }
     }
     for (mut node, mut visibility, dist, mut text) in &mut distances {
-        let delta = crate::camera::shortest_angle_delta_deg(heading, dist.bearing_deg);
+        let delta = crate::camera_glue::shortest_angle_delta_deg(heading, dist.bearing_deg);
         let wanted = match compass_offset_px(delta, 230.0, 55.0) {
             Some(offset) => Val::Px(230.0 + offset),
             None => Val::Px(-100.0),
@@ -162,6 +165,7 @@ pub fn hud_compass_update(
 /// e marcos comuns partilham o pool; o desenho distingue-os.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::compass"]
 pub struct CompassLandmark {
     /// Slot fixo (ordem de desenho); o rumo é reatribuído por frame.
     pub slot: usize,

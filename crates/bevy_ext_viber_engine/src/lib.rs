@@ -53,7 +53,11 @@ pub mod bridge;
 // `CameraSnapshot`) são do `bevy_ext_core` — o caminho `viber::camera`
 // reexporta o módulo e os tipos são OS MESMOS no jogo.
 pub use bevy_ext_engine::camera_glue as camera;
-pub mod cinematic;
+// Cinemáticas movidas ao `bevy_ext_engine` (exit5/G-2); o caminho
+// `viber::cinematic` reexporta o módulo e os TypePaths `viber::cinematic::`
+// ficam congelados no crate. O gémeo tem os formatadores de pose locais
+// (réplica dos `scene::pose` puros) e o gate de pausa por relva ocupada.
+pub use bevy_ext_engine::cinematic as cinematic;
 pub mod cinematic_cli;
 // Contrato `config.yaml` movido ao `bevy_ext_engine` (onda exit3/wave-b) —
 // o MESMO tipo no jogo; o `fixture()` dos testes do audit também vem daí.
@@ -153,8 +157,15 @@ pub mod time_fx;
 pub mod ui;
 pub mod vinst;
 pub mod water_ssr;
-pub mod worldsys;
 pub mod xml;
+
+// Drivers do mundo movidos ao `bevy_ext_engine` (exit5/G-2): relógio/sol/
+// clima/atmosfera/interior + seating/`place` no terreno + `PendingWorldSystems`
+// (o acumulador que o loader alimenta). O caminho `viber::worldsys` reexporta
+// o módulo e os TypePaths `viber::worldsys::` ficam congelados no crate; os
+// ESTADOS que a lente lê (`AtmosphereState`/`WeatherState`/`SunState`/biomas)
+// têm o dono único no `bevy_ext_postfx::env` desde a exit3/wave-c.
+pub use bevy_ext_engine::worldsys as worldsys;
 
 /// Checkout do jogo Vael, irmão deste repo.
 ///
