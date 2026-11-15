@@ -46,6 +46,16 @@ use crate::{
 // caminho `crate::app::RunMode` mantém-se.
 pub use bevy_engine_core::RunMode;
 
+/// Run condition: o JOGO corre (tudo menos o modo Edit do editor; sem o
+/// resource — apps mínimas de teste — corre).
+///
+/// Era o gate dos sistemas do host Luau; com o host morto continua a ser o
+/// gate "fora do Edit" que os sistemas de jogo do Vael (quest_events,
+/// rules_authority, travel) penduram — o nome histórico mantém-se.
+pub fn scripts_enabled(mode: Option<Res<RunMode>>) -> bool {
+    mode.is_none_or(|mode| *mode != RunMode::Edit)
+}
+
 /// Que IA a engine regista.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AiMode {
