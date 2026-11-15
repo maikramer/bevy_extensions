@@ -47,6 +47,14 @@ bevy_rapier3d = { version = "0.37", default-features = false, features = [
     "async-collider",
     "debug-render-3d",
 ] }
+# Port avian (onda exit3/wave-b): o gate congela `LinearVelocity` e usa o
+# `RigidBodyDisabled` do avian3d — o mesmo estilo do `bevy_ext_water`
+# (dep default-features=false, `3d` + `parry-f32`). O spawn de corpos da
+# era Rapier em `recipes::spawn` segue em `bevy_rapier3d` (port na wave E).
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+] }
 # Callbacks `on_spawned` do spawn de protótipos por script (mlua::Function).
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 # O varrimento de cena pára os loops kira das entidades condenadas.
