@@ -32,6 +32,12 @@
 //! onda do host.
 
 pub mod commands;
+// Onda final do DELETE-MONOLITH (2026-11-15): os componentes da ligação
+// entidade↔script (TypePaths `viber::luau::components` congelados lá), a
+// escrita genérica por reflexão (`patch_component`) e a REPL do bridge
+// (`viber.lua` sobre uma instância persistente dedicada).
+pub mod components;
+pub mod ecs;
 pub mod entity;
 pub mod events;
 pub mod exports;
@@ -44,6 +50,7 @@ pub mod keys;
 pub mod nlu;
 pub mod ownership;
 pub mod props;
+pub mod repl;
 pub mod sfx;
 pub mod surfaces;
 pub mod timers;
@@ -61,6 +68,10 @@ use bevy_mod_scripting::prelude::*;
 use mlua::{IntoLua, Lua, MultiValue};
 
 pub use commands::{ScriptCommand, ScriptCommandMessage};
+pub use components::{
+    DEFAULT_ACTIVATION_RADIUS, Groups, ScriptActivation, ScriptProps, ScriptSay,
+    SignalConnections, link_components,
+};
 pub use game::{GameValue, apply_game_patches, game_snapshot, publish_game_patch};
 pub use surfaces::{RoadSample, SurfaceQueries, SurfaceQueriesHandle};
 
@@ -417,22 +428,28 @@ fn init_context(
     // engine, superfícies do jogo) — a lista lê-se VIVA aqui (um plugin
     // adicionado depois do `VaelScriptingPlugin` entra a tempo: os contextos
     // só nascem com entidades, depois de todos os builds).
-    let extras = extra_initializers()
-        .iter()
-        .copied()
-        .collect::<Vec<_>>();
-    for init in extras {
-        init(attachment, context)?;
+    for init in extra_installers() {
+        // Um instalador que falha NUNCA falha o contexto (o mesmo contrato do
+        // jogo): o erro fica no log e o script continua sem essa API.
+        if let Err(error) = init(&**context) {
+            log::warn!("[lua] falha a instalar API extra num contexto: {error}");
+        }
     }
     Ok(())
 }
 
-/// Registo GLOBAL de instaladores de contexto ([`ContextInitializer`], fn
-/// pointers) que o [`VaelScriptingPlugin`] corre por contexto novo, depois do
+/// Instalador de contexto "bare": corre sobre uma `&Lua` nua. Os contextos
+/// BMS recebem-no DEPOIS do seeding de app-data e do `install_viber_api`;
+/// a REPL do bridge ([`repl::repl`]) corre-o sobre a instância persistente
+/// dela — o MESMO conjunto de APIs nos dois sítios.
+pub type BareInstaller = fn(&Lua) -> Result<(), String>;
+
+/// Registo GLOBAL de instaladores de contexto (fn pointers) que o
+/// [`VaelScriptingPlugin`] corre por contexto novo, depois do
 /// `install_viber_api`. Plugins fora deste crate (profiler da engine, glue do
 /// jogo) registam nele no build — em vez do host antigo, que instalava na VM
 /// partilhada única (`ResMut<LuaScriptHost>`).
-pub fn add_context_installer(initializer: ContextInitializer<LuaScriptingPlugin>) {
+pub fn add_context_installer(initializer: BareInstaller) {
     match EXTRA_INITIALIZERS.lock() {
         Ok(mut list) => list.push(initializer),
         Err(poisoned) => poisoned.into_inner().push(initializer),
@@ -441,7 +458,7 @@ pub fn add_context_installer(initializer: ContextInitializer<LuaScriptingPlugin>
 
 /// Snapshot do registo (ordem de registo; dedup por ponteiro — um plugin
 /// cujo build corre duas vezes não instala duas vezes por contexto).
-fn extra_initializers() -> Vec<ContextInitializer<LuaScriptingPlugin>> {
+pub(crate) fn extra_installers() -> Vec<BareInstaller> {
     let list = EXTRA_INITIALIZERS.lock();
     let Ok(list) = list else {
         return Vec::new();
@@ -453,7 +470,7 @@ fn extra_initializers() -> Vec<ContextInitializer<LuaScriptingPlugin>> {
         .collect()
 }
 
-static EXTRA_INITIALIZERS: std::sync::Mutex<Vec<ContextInitializer<LuaScriptingPlugin>>> =
+static EXTRA_INITIALIZERS: std::sync::Mutex<Vec<BareInstaller>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Publica o estado do frame: os campos do `ScriptHostState` e o

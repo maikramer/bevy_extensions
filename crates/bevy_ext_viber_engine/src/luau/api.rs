@@ -10,7 +10,7 @@ use super::commands::ScriptCommand;
 use super::ctx::ScriptCtx;
 use super::input::key_code_from_str;
 use super::sfx::{SFX_NAME_REGISTRY, sfx_clip_from_str};
-use super::{decision, entity, events, game, input, nlu, props, terrain, timers};
+use super::{decision, entity, events, game, nlu, props, terrain, timers};
 
 /// Installs the `viber` API table on the VM globals:
 /// `log(msg)`, `time()`, `position()`, `set_position(x, y, z)`,
@@ -2350,7 +2350,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         })?,
     )?;
 
-    input::install(lua, &api)?;
+    // `viber.input` era da VM antiga — com o shim do input no keys do BMS,
+    // a instalação morreu com o host (o grupo morre com ele em commit 4).
     events::install(lua, &api)?;
     terrain::install(lua, &api)?;
     timers::install(lua, &api)?;

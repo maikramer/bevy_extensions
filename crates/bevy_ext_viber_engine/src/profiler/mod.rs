@@ -973,22 +973,18 @@ impl Plugin for ProfilerPlugin {
             .add_systems(First, (count_frames, sync_frozen_state).chain());
             // Superfície Luau (padrão viber.ui). BMS: o instalador por
             // contexto vai para o registo do `bevy_ext_luau` — os contextos
-            // nascem com os closures `viber.profiler`/`viber.profiler_cmd`
-            // já dentro (os Arcs são partilhados com este recurso). O host
-            // antigo (`viber run`, até à H) instala por sistema, sem ordem
-            // explícita — idempotente, o frame-1 sem profiler tolera-se.
+            // BMS e a REPL do bridge nascem com os closures
+            // `viber.profiler`/`viber.profiler_cmd` já dentro (os Arcs são
+            // partilhados com este recurso).
             bevy_ext_luau::add_context_installer(script::install_context_api);
-            app.add_systems(Update, script::install_profiler_script_api)
-                .add_systems(
-                    Update,
-                    // A view publica-se antes dos scripts do frame (o
-                    // snapshot que `viber.profiler()` lê é o DESTE frame;
-                    // com o set vazio — host antigo sem bridge — a ordem é
-                    // omissa e tolera-se).
-                    script::publish_profiler_view
-                        .before(crate::luau::bms_bridge::VaelScripts),
-                )
-                .add_systems(
+            app.add_systems(
+                Update,
+                // A view publica-se antes dos scripts do frame (o snapshot
+                // que `viber.profiler()` lê é o DESTE frame).
+                script::publish_profiler_view
+                    .before(crate::luau::bms_bridge::VaelScripts),
+            )
+            .add_systems(
                     Update,
                     // Os comandos enfileirados pelos scripts no frame
                     // aplicam-se depois deles (pós-frame, como sempre).

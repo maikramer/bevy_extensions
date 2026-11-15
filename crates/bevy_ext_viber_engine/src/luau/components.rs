@@ -1,115 +1,17 @@
-//! Componentes e mensagens do runtime Luau: a ligação entidade↔script.
-//!
-//! - [`LuaScriptRef`]: o componente que liga uma entidade a um chunk
-//!   (`scripts/<path>`), inserido pelo spawn.
-//! - [`ScriptActivation`]: o "LOD de IA" — raio além do qual o script nem roda.
-//! - [`ScriptInteraction`]: alvo de interação registado por script
-//!   (`viber.set_interaction`), arbitrado pelo `interact::InteractionFocus`.
-//! - [`ScriptToast`]: mensagem de toast pedida por `viber.toast`.
-//! - [`ScriptSay`]: linha falada por `viber.say`, para o jogo a apresentar.
+//! Componentes e mensagens da ligação entidade↔script — SHIM (2026-11-15,
+//! onda final do DELETE-MONOLITH). Os tipos vivem agora no
+//! `bevy_ext_luau::components` (os TypePaths `viber::luau::components` estão
+//! CONGELADOS lá — são chaves de save/BRP/reflexão do editor); os caminhos
+//! históricos `viber::luau::components::*` continuam a resolver e os tipos
+//! são OS MESMOS no jogo.
 
-use bevy::prelude::*;
+pub use bevy_ext_luau::components::*;
 
-pub use bevy_engine_core::ScriptToast;
-
-/// Uma linha falada por um script (`viber.say`), já resolvida do locale e com
-/// a duração final. A engine desenha o balão nativo do HUD por omissão; com
-/// [`crate::dialogue::ExternalSayPresenter`] presente, o jogo ouve esta
-/// mensagem e apresenta a fala onde quiser (balão no mundo, caixa, legenda).
-#[derive(Message, Debug, Clone)]
-pub struct ScriptSay {
-    /// Entidade que correu o script (quem falou), quando conhecida. Numa
-    /// callback chamada de outro script pode ser a entidade do HUD: o jogo
-    /// resolve o orador visual e cai para um toast quando não há nenhum.
-    pub speaker: Option<Entity>,
-    pub text: String,
-    /// Duração final em segundos (nunca 0; o default do HUD já resolvido).
-    pub seconds: f32,
-}
-
-// A marca de script saiu para o `bevy_ext_engine::luau` (onda exit2/hubs)
-// — a folhagem/cinemática extraídas filtram o MESMO tipo; o caminho
-// histórico continua a resolver.
-pub use bevy_ext_engine::luau::LuaScriptRef;
-
-/// Valores por instância dos props exportados pelo script (atributos
-/// `prop-<nome>` do nó, sem o prefixo, texto cru). O tipo vem das anotações
-/// `--@export` do script ([`super::exports`]) e é aplicado em `viber.prop`.
-#[derive(Debug, Clone, Default, Component, PartialEq, Reflect)]
-#[reflect(Component, Default)]
-#[type_path = "viber::luau::components"]
-pub struct ScriptProps(#[reflect(ignore)] pub std::sync::Arc<Vec<(String, String)>>);
-
-/// Grupos da entidade (`groups="guardas aldeia"`) — `viber.group`,
-/// `viber.in_group`, `viber.call_group` e os alvos `@grupo` das conexões.
-#[derive(Debug, Clone, Default, Component, PartialEq, Reflect)]
-#[reflect(Component, Default)]
-#[type_path = "viber::luau::components"]
-pub struct Groups(#[reflect(ignore)] pub std::sync::Arc<Vec<String>>);
-
-/// Conexões de sinal do EMISSOR (`connect-<sinal>="alvo:método; …"`): o que
-/// um `viber.emit(sinal, …)` desta entidade chama.
-#[derive(Debug, Clone, Default, Component, PartialEq, Reflect)]
-#[reflect(Component, Default)]
-#[type_path = "viber::luau::components"]
-pub struct SignalConnections(
-    #[reflect(ignore)] pub std::sync::Arc<Vec<(String, Vec<super::exports::Connection>)>>,
-);
-
-impl SignalConnections {
-    pub fn of(&self, signal: &str) -> &[super::exports::Connection] {
-        self.0
-            .iter()
-            .find(|(name, _)| name == signal)
-            .map(|(_, conns)| conns.as_slice())
-            .unwrap_or(&[])
-    }
-}
-
-/// Os componentes de grupos/conexões de um nó (`None` quando não declara).
-/// Um `connect-*` mal escrito avisa e cai (o `viber scene lint` aponta-o).
+/// Wrapper com o tipo autoral do nó do monólito ([`crate::recipes::NodeLinks`]):
+/// o genérico vive no `bevy_ext_luau` e recebe os dados crus.
 pub fn link_components(
     links: &crate::recipes::NodeLinks,
     label: &str,
 ) -> (Option<Groups>, Option<SignalConnections>) {
-    let groups =
-        (!links.groups.is_empty()).then(|| Groups(std::sync::Arc::new(links.groups.clone())));
-    let mut parsed = Vec::new();
-    for (signal, raw) in &links.connections {
-        match super::exports::parse_connections(raw) {
-            Ok(conns) if !conns.is_empty() => parsed.push((signal.clone(), conns)),
-            Ok(_) => {}
-            Err(error) => warn!("{label}: connect-{signal}: {error}"),
-        }
-    }
-    let connections = (!parsed.is_empty()).then(|| SignalConnections(std::sync::Arc::new(parsed)));
-    (groups, connections)
+    bevy_ext_luau::components::link_components(&links.groups, &links.connections, label)
 }
-/// Raio de ativação do script ("LOD de IA"): além deste raio do player o
-/// `on_update` NEM RODA — inimigo congelado (lógica + animação paradas).
-/// Autoria via `activation-radius` no spawner; default 45 m.
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component, Default)]
-#[type_path = "viber::luau::components"]
-pub struct ScriptActivation {
-    pub radius: f32,
-}
-
-impl Default for ScriptActivation {
-    fn default() -> Self {
-        Self {
-            radius: DEFAULT_ACTIVATION_RADIUS,
-        }
-    }
-}
-
-/// Distância padrão de congelamento total de scripts de criatura (m).
-pub const DEFAULT_ACTIVATION_RADIUS: f32 = 45.0;
-/// Alvo de interação registado por script (`viber.set_interaction`): o prompt
-/// "[tecla] label" aparece quando o player está perto.
-///
-/// Contrato movido ao `bevy_ext_core::scripting` (exit4/F2; passou pelo
-/// `bevy_ext_ui::ui::host` na wave-c): a UI declarativa
-/// extraída lê O MESMO componente para publicar o prompt; o TypePath
-/// `viber::luau::components` fica congelado no core.
-pub use bevy_engine_core::scripting::ScriptInteraction;

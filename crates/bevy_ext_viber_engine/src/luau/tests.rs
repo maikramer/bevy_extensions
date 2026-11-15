@@ -756,59 +756,9 @@ fn test_key_code_parser_covers_full_keyboard() {
     assert_eq!(input_code_from_str("mouse99"), None);
 }
 
-#[test]
-fn test_viber_input_reads_key_states() {
-    // pressed/down/released com a W pressionada: pressed=true só no frame
-    // do press; down=true enquanto held; released=true no frame do release.
-    let host = host_with(
-        "saw_pressed = false\n\
-             saw_down = false\n\
-             saw_released = false\n\
-             function on_update(dt)\n\
-               if viber.input.pressed('w') then saw_pressed = true end\n\
-               if viber.input.down('w') then saw_down = true end\n\
-               if viber.input.released('w') then saw_released = true end\n\
-             end",
-        "input.lua",
-    );
-    let mut app = test_app(host);
-    app.world_mut().spawn((
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        LuaScriptRef {
-            path: "input.lua".to_string(),
-        },
-    ));
-    let mut keys = app
-        .world_mut()
-        .get_resource_mut::<ButtonInput<KeyCode>>()
-        .expect("keys");
-    keys.press(KeyCode::KeyW);
-    app.update();
-    assert!(
-        app.world()
-            .get_resource::<LuaScriptHost>()
-            .unwrap()
-            .script_global("input.lua", "saw_pressed")
-            .is_ok_and(|v| v == mlua::Value::Boolean(true))
-    );
-    let mut keys = app
-        .world_mut()
-        .get_resource_mut::<ButtonInput<KeyCode>>()
-        .expect("keys");
-    keys.release(KeyCode::KeyW);
-    app.update();
-    let host = app.world().get_resource::<LuaScriptHost>().unwrap();
-    assert_eq!(
-        host.script_global("input.lua", "saw_down").unwrap(),
-        mlua::Value::Boolean(true),
-        "down durante o hold"
-    );
-    assert_eq!(
-        host.script_global("input.lua", "saw_released").unwrap(),
-        mlua::Value::Boolean(true),
-        "released no frame do release"
-    );
-}
+// `test_viber_input_reads_key_states` morreu com a tabela `viber.input` da
+// VM antiga (a instalação saiu do `api.rs` no re-roteio; o parser de teclas
+// vive no `bevy_ext_luau::keys` e o snapshot do frame é publicado lá).
 
 #[test]
 fn test_simple_rpg_npc_scripts_compile() {

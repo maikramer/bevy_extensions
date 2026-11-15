@@ -72,28 +72,6 @@ fn shared_queue() -> Arc<Mutex<Vec<String>>> {
     Arc::clone(&SHARED)
 }
 
-/// Instala `viber.profiler`/`viber.profiler_cmd` no host Luau (uma vez).
-pub fn install_profiler_script_api(
-    mut state: ResMut<ProfilerScriptState>,
-    host: Option<ResMut<crate::luau::LuaScriptHost>>,
-) {
-    if state.installed {
-        return;
-    }
-    let Some(host) = host else { return };
-    let snapshot = state.clone();
-    match install_profiler_api(&host.lua, &snapshot) {
-        Ok(()) => {
-            state.installed = true;
-            debug!("profiler: viber.profiler instalado no host de scripts");
-        }
-        Err(error) => {
-            state.installed = true;
-            warn!("profiler: falha a instalar viber.profiler ({error})");
-        }
-    }
-}
-
 fn install_profiler_api(lua: &mlua::Lua, _state: &ProfilerScriptState) -> mlua::Result<()> {
     let viber: mlua::Table = lua.globals().get("viber")?;
 
@@ -131,16 +109,12 @@ fn install_profiler_api(lua: &mlua::Lua, _state: &ProfilerScriptState) -> mlua::
     Ok(())
 }
 
-/// Instalador de contexto BMS: `viber.profiler`/`viber.profiler_cmd` em CADA
-/// contexto novo (o registo `bevy_ext_luau::add_context_installer` corre-o;
-/// o host antigo tinha a instalação única via `ResMut<LuaScriptHost>`).
-/// Assinatura [`bevy_ext_luau::ContextInitializer`] (fn pointer).
-pub fn install_context_api(
-    _attachment: &bevy_ext_luau::ScriptAttachment,
-    context: &mut bevy_ext_luau::LuaContext,
-) -> Result<(), bevy_ext_luau::InteropError> {
+/// Instalador de contexto: `viber.profiler`/`viber.profiler_cmd` em CADA
+/// contexto novo (o registo `bevy_ext_luau::add_context_installer` corre-o
+/// sobre a `&Lua` nua — contexto BMS semeado ou a REPL do bridge).
+pub fn install_context_api(lua: &mlua::Lua) -> Result<(), String> {
     let state = ProfilerScriptState::default();
-    install_profiler_api(&**context, &state).map_err(bevy_ext_luau::InteropError::external)
+    install_profiler_api(lua, &state).map_err(|error| error.to_string())
 }
 
 /// Publica o snapshot para as closures: leve com o modal fechado (nada),
