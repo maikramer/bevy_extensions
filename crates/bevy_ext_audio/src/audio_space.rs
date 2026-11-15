@@ -1,8 +1,14 @@
 //! Som 3D com oclusão barata.
 //!
-//! O kira spatial (feature `spatial`) trata da pan e da queda com a distância.
-//! A oclusão é um raycast câmara→fonte, no máximo [`OCCLUSION_RAYS`] por frame:
-//! um volume no caminho baixa o ganho. A música de zona fica 2D.
+//! EXTRAÇÃO (onda exit3/wave-b): saiu do monólito `viber` para aqui; o
+//! monólito re-exporta (`viber::audio_space` continua a resolver) e o
+//! TypePath refletido de [`SpatialOneShot`] fica congelado em
+//! `viber::audio_space`.
+//!
+//! O kira spatial (feature `spatial`) trata da pan e da queda com a
+//! distância. A oclusão é um raycast câmara→fonte, no máximo
+//! [`OCCLUSION_RAYS`] por frame: um volume no caminho baixa o ganho. A
+//! música de zona fica 2D.
 
 use bevy::prelude::*;
 
@@ -13,6 +19,7 @@ pub const OCCLUDED_GAIN: f32 = 0.35;
 
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::audio_space"]
 pub struct SpatialOneShot {
     pub pos: Vec3,
     /// Ganho extra da oclusão, 1 = livre.

@@ -4,6 +4,12 @@
 //! `bevy_ext_scene_runtime`; TypePath refletido congelado em
 //! `viber::spawn_gate`. O agendamento do plugin ainda ordena contra
 //! `player_movement`/`third_person_camera`, que vivem no `viber`.
+//! PORT AVIAN (onda exit3/wave-b): a cópia extraída era da era RAPIER
+//! (`KinematicCharacterController`/`Velocity`); o jogo corre avian+tnua e o
+//! monólito portou este módulo — o gate congela `LinearVelocity` e o
+//! `RigidBodyDisabled` é o do avian3d. O `chunk_edge` vem do
+//! `bevy_ext_terrain_runtime` (público desde a exit2/scene; a cópia local
+//! com o TODO morreu).
 //! — segura uma entidade no ar até haver chão de colisão por baixo dela
 //! (port do plugin `spawn-gate`).
 //!
@@ -21,7 +27,7 @@
 //! segurança de uma coluna que nunca chega a assar (longe do herói).
 
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{KinematicCharacterController, RigidBodyDisabled, Velocity};
+use avian3d::prelude::{LinearVelocity, RigidBodyDisabled};
 
 use crate::player::Player;
 use crate::worldsys::EngineConfigs;
@@ -164,7 +170,7 @@ fn ground_ready_at(
     columns: &Query<&crate::terrain::plugin::TerrainChunk, With<crate::physics::VoxelCollider>>,
 ) -> bool {
     let half = runtime.spec.world_size * 0.5;
-    let edge = chunk_edge(&runtime.spec);
+    let edge = crate::terrain::plugin::chunk_edge(&runtime.spec);
     columns
         .iter()
         .any(|column| crate::physics::column_xz_distance(p, column.coords, half, edge) <= 0.0)
@@ -198,11 +204,10 @@ fn hold_gated(
         &mut Transform,
         &mut SpawnGated,
         Option<&mut Player>,
-        Option<&mut KinematicCharacterController>,
-        Option<&mut Velocity>,
+        Option<&mut LinearVelocity>,
     )>,
 ) {
-    for (entity, mut transform, mut gate, player, controller, velocity) in &mut gated {
+    for (entity, mut transform, mut gate, player, velocity) in &mut gated {
         gate.waited += time.delta_secs();
         let is_player = player.is_some();
         let release = match runtime.as_deref() {
@@ -220,11 +225,11 @@ fn hold_gated(
         if let Some(mut player) = player {
             player.vel_y = 0.0;
         }
-        if let Some(mut controller) = controller {
-            controller.translation = Some(Vec3::ZERO);
-        }
+        // O `RigidBodyDisabled` (inserido no gate) já congela o corpo; zero a
+        // velocidade para o corpo não arrancar com o impulso do frame em que
+        // é reativado.
         if let Some(mut velocity) = velocity {
-            *velocity = Velocity::zero();
+            velocity.0 = Vec3::ZERO;
         }
         if !release {
             transform.translation = gate.hold;
@@ -245,27 +250,6 @@ fn hold_gated(
             entity.insert(crate::player::TeleportSettle::default());
         }
         info!("spawn-gate: solto a y={y:.2} após {:.2} s", gate.waited);
-    }
-}
-
-/// Aresta inteira de uma coluna em metros (o `edge` do bootstrap).
-///
-/// TODO(viber-exit): cópia local de `terrain::plugin::{chunk_edge,
-/// lod0_step}` — são `pub(crate)` no monólito e puras (só campos pub do
-/// `TerrainSpec`); apagar quando o plugin do terreno for extraído e os
-/// helpers ficarem públicos.
-fn chunk_edge(spec: &crate::terrain::spec::TerrainSpec) -> f32 {
-    let step = lod0_step(spec);
-    (spec.chunk_size / step as f32).round().max(1.0) * step as f32
-}
-
-fn lod0_step(spec: &crate::terrain::spec::TerrainSpec) -> usize {
-    let ideal = spec.chunk_size / spec.resolution.max(1) as f32;
-    let step = ideal.round().max(1.0) as usize;
-    if (spec.chunk_size / step as f32).abs().fract() > 1e-3 {
-        1
-    } else {
-        step
     }
 }
 
@@ -294,7 +278,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::terrain::plugin::TerrainChunk;
+    use crate::terrain::plugin::{TerrainChunk, chunk_edge};
     use crate::terrain::runtime::TerrainRuntime;
 
     fn runtime(collision_resolution: u32) -> TerrainRuntime {

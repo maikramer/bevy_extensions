@@ -60,6 +60,7 @@
 //! silenciosos — nenhum pânico.
 
 pub mod ambience;
+pub mod audio_space;
 pub mod host;
 pub mod music;
 pub mod names;

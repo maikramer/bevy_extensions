@@ -29,19 +29,22 @@
 //!
 //! # Módulos próprios (saíram do monólito nesta onda)
 //!
-//! `config` (contrato `config.yaml`), `camera` (matemática pura + defaults
-//! do plugin), `interact` (foco de interação), `meshopt` (shim do
-//! `bevy_ext_gltf`), `particles` (runtime de `<ParticleSystem>`),
-//! `animation` (o pedido `AnimatedScene` que o spawn insere),
-//! `hud` (a construção do HUD na troca de cena). O `cinematic` TENTOU mover
-//! nesta onda e voltou: o IR `ParsedWorld.cinematics` tipa o `CinematicSpec`
-//! do monólito. Os módulos de contrato que vivem noutros crates chegam por
-//! módulos-shim com o MESMO caminho (`crate::menus::…`, `crate::music::…`,
-//! `crate::terrain::…`), para os corpos movidos não mudarem.
+//! `attachment` (a primitiva de anexar props a ossos; extraída na
+//! exit3/wave-b), `camera` (matemática pura + defaults do plugin), `interact` (foco de
+//! interação), `meshopt` (shim do `bevy_ext_gltf`), `particles` (runtime de
+//! `<ParticleSystem>`), `animation` (o pedido `AnimatedScene` que o spawn
+//! insere), `hud` (a construção do HUD na troca de cena). O `cinematic`
+//! TENTOU mover nesta onda e voltou: o IR `ParsedWorld.cinematics` tipa o
+//! `CinematicSpec` do monólito. Os módulos de contrato que vivem noutros
+//! crates chegam por módulos-shim com o MESMO caminho (`crate::menus::…`,
+//! `crate::music::…`, `crate::terrain::…`), para os corpos movidos não
+//! mudarem. O `config` (contrato `config.yaml`) saiu daqui na exit3/wave-b:
+//! vive no `bevy_ext_engine` e é re-exportado — UM só tipo para monólito,
+//! este crate e o jogo.
 
 pub mod animation;
+pub mod attachment;
 pub mod camera;
-pub mod config;
 pub mod hud;
 pub mod interact;
 pub mod meshopt;
@@ -51,6 +54,11 @@ pub mod recipes;
 pub mod scene_loader;
 pub mod spawn_gate;
 pub mod streaming;
+
+// `config` — o contrato `config.yaml` vive no `bevy_ext_engine` (onda
+// exit3/wave-b); o caminho `crate::config::…` continua a resolver e o
+// `GameConfig` é O MESMO tipo que o monólito e o jogo veem.
+pub use bevy_ext_engine::config as config;
 
 // ── contratos extraídos, consumidos DIRECTAMENTE ────────────────────────
 //

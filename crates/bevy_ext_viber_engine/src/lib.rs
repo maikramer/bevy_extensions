@@ -20,6 +20,13 @@
 // apagar as cópias e re-exportar daí. O `terrain` e o `physics` JÁ são shims
 // para os crates extraídos; `a11y`/`locale`/`vitals`/`camera`/`feedback`/
 // `editor_camera` também (core/engine, exit2/luau).
+// NOTA(exit3/wave-b): `streaming` e `spawn_gate` têm os MESMOS gémeos no
+// scene_runtime (forks verificados ao nível, onda B — o diff do `streaming`
+// são só as anotações de extração + `#[type_path]`); `attachment` GANHOU um
+// gémeo lá (extração da onda B). O swap `pub use scene_runtime::…` está
+// bloqueado pelo MESMO ciclo — o cargo recusa-o hoje com "cyclic package
+// dependency" (testado); aterrará quando a ponte `viber` do scene_runtime
+// morrer (ondas C/D/F), que é o mesmo gatilho dos gémeos em cima.
 // Acessibilidade movida ao `bevy_ext_core`; o caminho `viber::a11y` continua
 // a resolver e o recurso é O MESMO (ver o `pub use` na lista em baixo).
 pub mod adaptive_quality;
@@ -28,7 +35,10 @@ pub mod ambient;
 pub mod animation;
 pub mod app;
 pub mod attachment;
-pub mod audio_space;
+// Som 3D + oclusão movidos ao `bevy_ext_audio` (onda exit3/wave-b); o
+// caminho `viber::audio_space` reexporta o módulo e o TypePath do
+// `SpatialOneShot` fica congelado lá.
+pub use bevy_ext_audio::audio_space as audio_space;
 pub mod audit;
 pub mod bake;
 pub mod bridge;
@@ -39,7 +49,9 @@ pub mod bridge;
 pub use bevy_ext_engine::camera_glue as camera;
 pub mod cinematic;
 pub mod cinematic_cli;
-pub mod config;
+// Contrato `config.yaml` movido ao `bevy_ext_engine` (onda exit3/wave-b) —
+// o MESMO tipo no jogo; o `fixture()` dos testes do audit também vem daí.
+pub use bevy_ext_engine::config as config;
 // Módulo movido ao `bevy_ext_physics` (onda exit2/hubs); o caminho
 // `viber::corpse` continua a resolver e o tipo é o MESMO no jogo.
 pub use bevy_ext_physics::corpse;
