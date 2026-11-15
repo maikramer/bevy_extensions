@@ -10,21 +10,26 @@
 //! `scene_name`), estado de jogo partilhado (`game.rs`), input, comandos
 //! enfileirados e loader de módulos.
 //!
-//! exit4/F2–F3 (2026-11-15): o grupo `events` (`viber.events` + fan-out dos
-//! contratos do core) e o NÚCLEO (`log`/`position`/`set_position`/
-//! `distance_to_player`/`player_forward`/`player_hp`/`player_id`/
-//! `entity_id`/`self_name`/`home`) estão portados; o grupo `game` é UM SÓ
-//! (o gémeo do monólito virou shim `viber::luau::game` — proxy sobre o
-//! store, interop JSON do save, `evict_module`, `load_json`).
+//! exit4/F2–F5 (2026-11-15): portados o grupo `events`, o NÚCLEO
+//! (`log`/`position`/`set_position`/`distance_to_player`/`player_forward`/
+//! `player_hp`/`player_id`/`entity_id`/`self_name`/`home`), a percepção e
+//! props (F4: `nearby` com a semântica do monólito, `hostiles`, `find`,
+//! `ground_below`/`road` via SEAM `SurfaceQueries`, `prop`/`props`,
+//! `attach`, `set_pose`/`set_scale`/`set_visible`, `topple`/`corpse`,
+//! `own_system`/`own_action`…) e os efeitos/áudio (F5: `sound`/`sound_loop`/
+//! `sound_stop`, `music`/`audio`, `punch`/`kick`/`lantern`, `camera_free`/
+//! `camera_pose`/`camera_state`, `bone_offset`, `clip_duration`). O grupo
+//! `game` é UM SÓ (o gémeo do monólito virou shim `viber::luau::game` —
+//! proxy sobre o store, interop JSON do save, `evict_module`, `load_json`).
+//! `exports.rs`/`ownership.rs` são do BMS (shims no monólito).
 //!
-//! PENDENTES (documentados no relatório da migração): F4 percepção/props
-//! (`hostiles`/`find`/`ground_below`/`road`/`attach`/`set_pose`/…
-//! — `set_position`/`play_clip`/`set_interaction` já portados), F5
-//! efeitos/áudio (`sound`/`sound_loop`/`music`/`audio`/`camera_*`),
-//! F6 IA/combate (`sense`/`wander_target`/`next_state`/`entity_*`/
-//! `radial_damage`), F7 save/câmara/resto, F8 `viber.nlu`/`viber.decision`
-//! (features CelerAI) e `viber.vael` (do próprio jogo). Timers/signals
-//! (`viber.after`/`viber.signals`) seguem na onda do host.
+//! PENDENTES (documentados no relatório da migração): F6 IA/combate
+//! (`sense`/`wander_target`/`next_state`/`entity_damage`/`radial_damage`/
+//! `fire_projectile`/`push_player`), F7 save/câmara/resto (`save*`/`quit`/
+//! `locale`/`say`/`prompt`/`markers`/`a11y`/`net_role`), F8
+//! `viber.nlu`/`viber.decision` (features CelerAI) e `viber.vael` (do
+//! próprio jogo). Timers/signals (`viber.after`/`viber.signals`) seguem na
+//! onda do host.
 
 pub mod commands;
 pub mod entity;
@@ -122,6 +127,11 @@ pub struct ScriptHostState {
     /// `on_road`/`in_water`) — seam [`surfaces::SurfaceQueries`] implementado
     /// pela integração.
     pub surfaces: Option<surfaces::SurfaceQueriesHandle>,
+    /// Pose VIVA da câmara de jogo (`viber.camera_state`).
+    pub camera: Option<(Vec3, f32, f32)>,
+    /// Duração de cada clip do herói (`viber.clip_duration`), nomes
+    /// normalizados → segundos.
+    pub clip_durations: std::collections::HashMap<String, f32>,
 }
 
 /// Snapshot de input do frame (`viber.input.*`): teclado e rato nos três
@@ -173,6 +183,12 @@ struct ScriptGlobals {
     particle_presets: Vec<String>,
     /// Consultas de superfície publicadas (`viber.ground_below`/`road`/…).
     surfaces: Option<surfaces::SurfaceQueriesHandle>,
+    /// Pose VIVA da câmara de jogo — `viber.camera_state()`: posição do olho
+    /// e direção de vista (yaw/pitch em graus, convenção do `camera_pose`).
+    camera: Option<(Vec3, f32, f32)>,
+    /// Duração de cada clip do herói (`viber.clip_duration`), nomes
+    /// normalizados → segundos.
+    clip_durations: std::collections::HashMap<String, f32>,
     /// Ring de `viber.log` (cap 256; linhas até 8 KiB como o monólito).
     logs: VecDeque<String>,
     toasts: VecDeque<String>,
@@ -294,6 +310,8 @@ fn publish_globals(
         globals.prototype_names.clone_from(&state.prototype_names);
         globals.particle_presets.clone_from(&state.particle_presets);
         globals.surfaces = state.surfaces.clone();
+        globals.camera = state.camera;
+        globals.clip_durations.clone_from(&state.clip_durations);
     }
     // A pasta de scripts do frame publica-se no static do `game` (a fonte
     // do `viber.load`/`load_json` de todas as VMs). Só `Some` escreve — o
@@ -956,6 +974,403 @@ fn install_viber_api_with(
         )?,
     )?;
 
+    // ── F5: efeitos/áudio/câmara ────────────────────────────────────────
+
+    // viber.sound(clip) — SFX curto na posição da entidade (volume cai com
+    // a distância à câmara). Nome inválido = erro de script (warn 1×).
+    // `{x=, y=, z=}` posiciona o SFX no mundo (golpe num prop); sem
+    // overrides toca na origem da entidade que corre o script.
+    let sound_globals = globals.clone();
+    viber.set(
+        "sound",
+        lua.create_function(move |lua, (name, opts): (String, Option<mlua::Table>)| {
+            let clip = sfx::sfx_clip_from_str(&name).ok_or_else(|| {
+                let names: Vec<&str> = sfx::SFX_NAME_REGISTRY.iter().map(|(n, _)| *n).collect();
+                mlua::Error::runtime(format!(
+                    "clip de som desconhecido '{name}' ({})",
+                    names.join(", ")
+                ))
+            })?;
+            // Origem da entidade corrente (do snapshot publicado); 0 fora de
+            // on_update — o mesmo default do monólito (ctx.origin).
+            let origin = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .and_then(|entity| {
+                    sound_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.positions.get(&(entity.to_bits() as i64)).copied())
+                })
+                .unwrap_or_default();
+            let position = match opts {
+                Some(opts) => {
+                    let x = opts.raw_get::<Option<f32>>("x")?;
+                    let y = opts.raw_get::<Option<f32>>("y")?;
+                    let z = opts.raw_get::<Option<f32>>("z")?;
+                    // Um NaN aqui seguia para o evento de SFX: a atenuação
+                    // por distância dava NaN e o volume chegava NaN ao mixer
+                    // (o resto das primitivas com posição rejeita não-finitos).
+                    for (axis, value) in [("x", x), ("y", y), ("z", z)] {
+                        if value.is_some_and(|v| !v.is_finite()) {
+                            return Err(mlua::Error::runtime(format!(
+                                "viber.sound('{name}'): {axis} tem de ser finito (NaN/inf)"
+                            )));
+                        }
+                    }
+                    if x.is_none() && y.is_none() && z.is_none() {
+                        Some(origin)
+                    } else {
+                        Some(Vec3::new(
+                            x.unwrap_or(origin.x),
+                            y.unwrap_or(origin.y),
+                            z.unwrap_or(origin.z),
+                        ))
+                    }
+                }
+                None => Some(origin),
+            };
+            push_command(&sound_globals, commands::ScriptCommand::PlaySfx { clip, position });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.sound_loop(id, clip [, {pitch, volume, x, y, z, bus}]) /
+    // viber.sound_stop(id). `clip` = nome do registry ou caminho sob
+    // sfx_dir; `bus` = "sfx" (default) | "ambience" (vento, chuva, insetos).
+    let loop_globals = globals.clone();
+    viber.set(
+        "sound_loop",
+        lua.create_function(move |lua, (id, clip, opts): (String, String, Option<mlua::Table>)| {
+            if id.is_empty() || clip.is_empty() {
+                return Err(mlua::Error::runtime(
+                    "viber.sound_loop: id e clip não podem ser vazios",
+                ));
+            }
+            let mut pitch = 1.0_f64;
+            let mut volume = 1.0_f32;
+            let mut position = None;
+            let mut ambience = false;
+            let origin_y = lua
+                .app_data_ref::<ScriptEntity>()
+                .and_then(|e| e.0)
+                .and_then(|entity| {
+                    loop_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.positions.get(&(entity.to_bits() as i64)).copied())
+                })
+                .map(|o| o.y)
+                .unwrap_or(0.0);
+            if let Some(opts) = opts {
+                if let Ok(value) = opts.get::<f64>("pitch") {
+                    if !value.is_finite() || value <= 0.0 {
+                        return Err(mlua::Error::runtime(
+                            "viber.sound_loop: pitch tem de ser finito e > 0",
+                        ));
+                    }
+                    pitch = value;
+                }
+                if let Ok(value) = opts.get::<f32>("volume") {
+                    if !value.is_finite() || value < 0.0 {
+                        return Err(mlua::Error::runtime(
+                            "viber.sound_loop: volume tem de ser finito e >= 0",
+                        ));
+                    }
+                    volume = value;
+                }
+                if let Ok(bus) = opts.get::<String>("bus") {
+                    ambience = match bus.as_str() {
+                        "ambience" | "ambiente" | "ambient" => true,
+                        "sfx" => false,
+                        other => {
+                            return Err(mlua::Error::runtime(format!(
+                                "viber.sound_loop: bus '{other}' inválido (sfx|ambience)"
+                            )));
+                        }
+                    };
+                }
+                let x = opts.get::<f32>("x").ok();
+                let y = opts.get::<f32>("y").ok();
+                let z = opts.get::<f32>("z").ok();
+                // A mesma regra do `viber.sound`: NaN/inf são ERRO (o resto
+                // das primitivas com posição rejeita não-finitos) — aqui
+                // caíam em silêncio e o loop tocava sem posição.
+                for (axis, value) in [("x", x), ("y", y), ("z", z)] {
+                    if value.is_some_and(|v| !v.is_finite()) {
+                        return Err(mlua::Error::runtime(format!(
+                            "viber.sound_loop: {axis} tem de ser finito (NaN/inf)"
+                        )));
+                    }
+                }
+                if let (Some(x), Some(z)) = (x, z) {
+                    // Sem `y` = a cota da entidade (0 enterrava o loop nas
+                    // colinas — o `viber.sound` já usava a origem).
+                    let y = y.unwrap_or(origin_y);
+                    position = Some(Vec3::new(x, y, z));
+                }
+            }
+            let owner = lua.app_data_ref::<ScriptEntity>().and_then(|e| e.0);
+            push_command(
+                &loop_globals,
+                commands::ScriptCommand::SoundLoop {
+                    id,
+                    clip,
+                    pitch,
+                    volume,
+                    position,
+                    ambience,
+                    owner,
+                },
+            );
+            Ok(())
+        })?,
+    )?;
+    let stop_globals = globals.clone();
+    viber.set(
+        "sound_stop",
+        lua.create_function(move |_, id: String| {
+            push_command(&stop_globals, commands::ScriptCommand::SoundStop(id));
+            Ok(())
+        })?,
+    )?;
+
+    // viber.music.layer(nome | nil) — força a layer de BGM. nil devolve a
+    // zona/combate automáticos.
+    // viber.music.combat(active [, boss]) — a REGRA de quando entra a música
+    // de combate é do jogo (a engine só tem o estado e o crossfade).
+    let music_globals = globals.clone();
+    let music_table = lua.create_table()?;
+    music_table.set(
+        "layer",
+        lua.create_function(move |_, name: Option<String>| {
+            push_command(&music_globals, commands::ScriptCommand::MusicLayer(name));
+            Ok(())
+        })?,
+    )?;
+    let combat_globals = globals.clone();
+    music_table.set(
+        "combat",
+        lua.create_function(move |_, (active, boss): (bool, Option<bool>)| {
+            push_command(
+                &combat_globals,
+                commands::ScriptCommand::MusicCombat {
+                    active,
+                    boss: boss.unwrap_or(false),
+                },
+            );
+            Ok(())
+        })?,
+    )?;
+    viber.set("music", music_table)?;
+
+    // viber.audio.* — primitivas de mistura/ambiente (o jogo decide quando).
+    let duck_globals = globals.clone();
+    let audio_table = lua.create_table()?;
+    audio_table.set(
+        "duck",
+        lua.create_function(move |_, (bus, gain, secs): (String, f32, f32)| {
+            if !gain.is_finite() || !secs.is_finite() || secs <= 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.audio.duck: gain finito e secs > 0",
+                ));
+            }
+            if !commands::is_valid_audio_bus(&bus) {
+                return Err(mlua::Error::runtime(format!(
+                    "viber.audio.duck: bus '{bus}' inválido (master|music|sfx|voice|ambience)"
+                )));
+            }
+            push_command(
+                &duck_globals,
+                commands::ScriptCommand::AudioDuck { bus, gain, secs },
+            );
+            Ok(())
+        })?,
+    )?;
+    let reverb_globals = globals.clone();
+    audio_table.set(
+        "reverb",
+        lua.create_function(move |_, (preset, wet): (String, Option<f32>)| {
+            if !commands::is_valid_reverb_preset(&preset) {
+                return Err(mlua::Error::runtime(format!(
+                    "viber.audio.reverb: preset '{preset}' inválido (off|room|hall|cave)"
+                )));
+            }
+            if let Some(wet) = wet
+                && (!wet.is_finite() || !(0.0..=1.0).contains(&wet))
+            {
+                return Err(mlua::Error::runtime(
+                    "viber.audio.reverb: wet tem de estar em 0..=1",
+                ));
+            }
+            push_command(
+                &reverb_globals,
+                commands::ScriptCommand::AudioReverb { preset, wet },
+            );
+            Ok(())
+        })?,
+    )?;
+    viber.set("audio", audio_table)?;
+
+    // viber.punch(stops, bloom) — pulso de pós-processo.
+    let punch_globals = globals.clone();
+    viber.set(
+        "punch",
+        lua.create_function(move |_, (stops, bloom): (f32, f32)| {
+            if !(stops.is_finite() && bloom.is_finite()) {
+                return Err(mlua::Error::runtime("viber.punch: valores não finitos"));
+            }
+            push_command(&punch_globals, commands::ScriptCommand::Punch { stops, bloom });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.kick(x, y, z) — solavanco direcional da câmara.
+    let kick_globals = globals.clone();
+    viber.set(
+        "kick",
+        lua.create_function(move |_, (x, y, z): (f32, f32, f32)| {
+            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                return Err(mlua::Error::runtime("viber.kick: valores não finitos"));
+            }
+            push_command(
+                &kick_globals,
+                commands::ScriptCommand::CameraKick(Vec3::new(x, y, z)),
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.lantern(intensity) — acende/reforça a lanterna do viajante (a
+    // tocha equipada ilumina mesmo de DIA; 0 = só a lanterna automática
+    // nocturna). `intensity` em lúmenes, o mesmo espaço da `LANTERN`.
+    let lantern_globals = globals.clone();
+    viber.set(
+        "lantern",
+        lua.create_function(move |_, intensity: f32| {
+            if !intensity.is_finite() {
+                return Err(mlua::Error::runtime(
+                    "viber.lantern: intensidade não finita (NaN/inf)",
+                ));
+            }
+            push_command(
+                &lantern_globals,
+                commands::ScriptCommand::SetLantern(intensity.max(0.0)),
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.bone_offset(bone, rx, ry, rz) — rotação ADITIVA num osso do
+    // herói, somada por cima da animação (idle/walk/run) todos os frames.
+    // Zeros (identidade) limpam a entrada.
+    let bone_globals = globals.clone();
+    viber.set(
+        "bone_offset",
+        lua.create_function(move |_, (bone, rx, ry, rz): (String, f32, f32, f32)| {
+            if bone.trim().is_empty() {
+                return Err(mlua::Error::runtime("viber.bone_offset: osso vazio"));
+            }
+            if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                return Err(mlua::Error::runtime(
+                    "viber.bone_offset: rotação não finita (NaN/inf)",
+                ));
+            }
+            let identity = rx.abs() < 1e-6 && ry.abs() < 1e-6 && rz.abs() < 1e-6;
+            let rotation = if identity {
+                Quat::IDENTITY
+            } else {
+                Quat::from_euler(EulerRot::XYZ, rx, ry, rz)
+            };
+            push_command(
+                &bone_globals,
+                commands::ScriptCommand::SetBoneOffset {
+                    bone: bone.trim().to_lowercase(),
+                    rotation,
+                },
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.camera_free(ativo) — a câmara de JOGO passa a ser escrita pelo
+    // script (`camera_pose`). `false` devolve a pose ao rig de terceira
+    // pessoa no frame seguinte.
+    let camerafree_globals = globals.clone();
+    viber.set(
+        "camera_free",
+        lua.create_function(move |_, active: bool| {
+            push_command(&camerafree_globals, commands::ScriptCommand::CameraFree(active));
+            Ok(())
+        })?,
+    )?;
+
+    // viber.camera_pose(olho_x, olho_y, olho_z, alvo_x, alvo_y, alvo_z) —
+    // pose do modo livre. Sem `camera_free(true)` é inerte.
+    let camerapose_globals = globals.clone();
+    viber.set(
+        "camera_pose",
+        lua.create_function(
+            move |_, (x, y, z, tx, ty, tz): (f32, f32, f32, f32, f32, f32)| {
+                if !(x.is_finite()
+                    && y.is_finite()
+                    && z.is_finite()
+                    && tx.is_finite()
+                    && ty.is_finite()
+                    && tz.is_finite())
+                {
+                    return Err(mlua::Error::runtime(
+                        "viber.camera_pose: coordenadas não finitas (NaN/inf)",
+                    ));
+                }
+                push_command(
+                    &camerapose_globals,
+                    commands::ScriptCommand::CameraPose {
+                        pos: Vec3::new(x, y, z),
+                        look: Vec3::new(tx, ty, tz),
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+
+    // viber.camera_state() -> {x,y,z,yaw,pitch} — pose VIVA da câmara de
+    // jogo (publicada pela integração). `nil` sem câmara.
+    let camerastate_globals = globals.clone();
+    viber.set(
+        "camera_state",
+        lua.create_function(move |lua, ()| {
+            let Some((pos, yaw, pitch)) = camerastate_globals.read().ok().and_then(|g| g.camera)
+            else {
+                return Ok(mlua::Value::Nil);
+            };
+            let table = lua.create_table()?;
+            table.raw_set("x", pos.x)?;
+            table.raw_set("y", pos.y)?;
+            table.raw_set("z", pos.z)?;
+            table.raw_set("yaw", yaw)?;
+            table.raw_set("pitch", pitch)?;
+            Ok(mlua::Value::Table(table))
+        })?,
+    )?;
+
+    // viber.clip_duration(nome) — duração do clip do herói (s), fuzzy pelo
+    // nome normalizado (o `normalize_clip_name` é o contrato do
+    // `bevy_ext_core::animation`). O jogo agenda swings/one-shots sem
+    // hardcodar o GLB.
+    let clip_globals = globals.clone();
+    viber.set(
+        "clip_duration",
+        lua.create_function(move |_, name: String| {
+            let key = bevy_ext_core::animation::normalize_clip_name(&name);
+            Ok(clip_globals
+                .read()
+                .ok()
+                .and_then(|g| g.clip_durations.get(&key).copied()))
+        })?,
+    )?;
+
     // ── Módulos e cenas ─────────────────────────────────────────────────
 
     // viber.change_scene(id [, entrada]) -> true | false, erro — troca de
@@ -1529,8 +1944,8 @@ fn install_viber_api_with(
     viber.set(
         "hit_flash",
         lua.create_function(move |lua, (id, secs): (Option<i64>, Option<f32>)| {
-            // HIT_FLASH_SECS do feedback do monólito (0.15 s).
-            let secs = secs.unwrap_or(0.15);
+            // HIT_FLASH_SECS do feedback do monólito (0.16 s).
+            let secs = secs.unwrap_or(0.16);
             if !secs.is_finite() || secs <= 0.0 {
                 return Err(mlua::Error::runtime(
                     "viber.hit_flash: segundos têm de ser finitos e > 0",
@@ -2559,6 +2974,184 @@ mod tests {
             .eval()
             .expect("erro");
         assert!(erro);
+    }
+
+    #[test]
+    fn sound_valida_clip_e_posiciona_na_origem() {
+        let (lua, globals, _store) = vm();
+        let own = Entity::try_from_bits(21u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
+        globals.write().expect("globals").positions.insert(21, Vec3::new(3.0, 4.0, 5.0));
+        lua.load("viber.sound('hit')").exec().expect("som");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::PlaySfx { clip, position } => {
+                assert_eq!(clip, bevy_ext_core::SfxClip::Hit);
+                assert_eq!(position, Some(Vec3::new(3.0, 4.0, 5.0)), "sem overrides = origem da entidade");
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        // Override parcial: y dado substitui só o y.
+        lua.load("viber.sound('hit', { y = 9 })").exec().expect("com y");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::PlaySfx { position, .. } => {
+                assert_eq!(position, Some(Vec3::new(3.0, 9.0, 5.0)));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        // NaN e clip desconhecido são ERRO.
+        let erros: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.sound('hit', { x = 0/0 }) end),
+                not pcall(function() viber.sound('piano') end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erros.iter().all(|e| *e));
+    }
+
+    #[test]
+    fn sound_loop_valida_opts_e_enfila() {
+        let (lua, globals, _store) = vm();
+        let own = Entity::try_from_bits(30u64).expect("entidade");
+        lua.set_app_data(ScriptEntity(Some(own)));
+        globals.write().expect("globals").positions.insert(30, Vec3::new(0.0, 7.0, 0.0));
+        lua.load(
+            "viber.sound_loop('motor', 'vehicles/engine_rev.ogg', { pitch = 1.5, volume = 0.4, x = 2, z = 8, bus = 'ambience' })",
+        )
+        .exec()
+        .expect("loop");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::SoundLoop { id, clip, pitch, volume, position, ambience, owner } => {
+                assert_eq!((id.as_str(), clip.as_str(), pitch, volume), ("motor", "vehicles/engine_rev.ogg", 1.5, 0.4));
+                assert_eq!(position, Some(Vec3::new(2.0, 7.0, 8.0)), "sem y = cota da entidade");
+                assert!(ambience);
+                assert_eq!(owner, Some(own));
+            }
+            other => panic!("comando inesperado: {other:?}"),
+        }
+        let erros: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.sound_loop('', 'x') end),
+                not pcall(function() viber.sound_loop('id', 'x', { pitch = 0 }) end),
+                not pcall(function() viber.sound_loop('id', 'x', { volume = -1 }) end),
+                not pcall(function() viber.sound_loop('id', 'x', { bus = 'master' }) end),
+                not pcall(function() viber.sound_loop('id', 'x', { y = 0/0 }) end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erros.iter().all(|e| *e));
+        lua.load("viber.sound_stop('motor')").exec().expect("stop");
+        match globals.write().expect("globals").commands.pop_front().expect("comando") {
+            commands::ScriptCommand::SoundStop(id) => assert_eq!(id, "motor"),
+            other => panic!("comando inesperado: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn music_e_audio_validam_e_enfileiram() {
+        let (lua, globals, _store) = vm();
+        lua.load(
+            "viber.music.layer('boss') viber.music.combat(false) \
+             viber.audio.duck('music', 0.3, 2.0) viber.audio.reverb('cave', 0.5) \
+             viber.music.layer(nil)",
+        )
+        .exec()
+        .expect("fila de áudio");
+        let mut queued = Vec::new();
+        {
+            let mut g = globals.write().expect("globals");
+            while let Some(c) = g.commands.pop_front() {
+                queued.push(c);
+            }
+        }
+        assert_eq!(queued.len(), 5);
+        assert!(matches!(&queued[0], commands::ScriptCommand::MusicLayer(name) if name.as_deref() == Some("boss")));
+        assert!(matches!(&queued[1], commands::ScriptCommand::MusicCombat { active: false, boss: false }));
+        assert!(matches!(&queued[2], commands::ScriptCommand::AudioDuck { bus, gain, secs } if bus == "music" && *gain == 0.3 && *secs == 2.0));
+        assert!(matches!(&queued[3], commands::ScriptCommand::AudioReverb { preset, wet } if preset == "cave" && *wet == Some(0.5)));
+        assert!(matches!(&queued[4], commands::ScriptCommand::MusicLayer(None)));
+        // Validações: bus/preset inválidos, wet fora de 0..=1, secs <= 0.
+        let erros: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.audio.duck('não-existe', 0.3, 2.0) end),
+                not pcall(function() viber.audio.duck('music', 0.3, 0.0) end),
+                not pcall(function() viber.audio.reverb('banheiro') end),
+                not pcall(function() viber.audio.reverb('cave', 1.5) end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erros.iter().all(|e| *e));
+    }
+
+    #[test]
+    fn feedback_de_camara_e_lanterna_enfileiram() {
+        let (lua, globals, _store) = vm();
+        lua.load(
+            "viber.punch(0.5, 0.2) viber.kick(1, -2, 3) viber.lantern(12.5) \
+             viber.camera_free(true) viber.camera_pose(0, 1, 2, 4, 5, 6) \
+             viber.bone_offset('hand_r', 0.1, 0, 0) viber.bone_offset('hand_r', 0, 0, 0)",
+        )
+        .exec()
+        .expect("fila");
+        let mut queued = Vec::new();
+        {
+            let mut g = globals.write().expect("globals");
+            while let Some(c) = g.commands.pop_front() {
+                queued.push(c);
+            }
+        }
+        assert_eq!(queued.len(), 7);
+        assert!(matches!(&queued[0], commands::ScriptCommand::Punch { stops, bloom } if *stops == 0.5 && *bloom == 0.2));
+        assert!(matches!(&queued[1], commands::ScriptCommand::CameraKick(v) if *v == Vec3::new(1.0, -2.0, 3.0)));
+        assert!(matches!(&queued[2], commands::ScriptCommand::SetLantern(v) if *v == 12.5));
+        assert!(matches!(&queued[3], commands::ScriptCommand::CameraFree(true)));
+        assert!(matches!(&queued[4], commands::ScriptCommand::CameraPose { pos, look } if *pos == Vec3::new(0.0, 1.0, 2.0) && *look == Vec3::new(4.0, 5.0, 6.0)));
+        assert!(matches!(&queued[5], commands::ScriptCommand::SetBoneOffset { bone, rotation } if bone == "hand_r" && *rotation != Quat::IDENTITY));
+        assert!(matches!(&queued[6], commands::ScriptCommand::SetBoneOffset { rotation, .. } if *rotation == Quat::IDENTITY), "zeros limpam a entrada");
+        // Validações: NaN em tudo.
+        let erros: Vec<bool> = lua
+            .load(r#"
+              return {
+                not pcall(function() viber.punch(0/0, 1) end),
+                not pcall(function() viber.kick(0/0, 1, 2) end),
+                not pcall(function() viber.lantern(0/0) end),
+                not pcall(function() viber.camera_pose(0/0, 1, 2, 3, 4, 5) end),
+                not pcall(function() viber.bone_offset('', 0, 0, 0) end),
+                not pcall(function() viber.bone_offset('hand', 0/0, 0, 0) end),
+              }
+            "#)
+            .eval()
+            .expect("validações");
+        assert!(erros.iter().all(|e| *e));
+    }
+
+    #[test]
+    fn camera_state_e_clip_duration_lêem_o_snapshot() {
+        let (lua, globals, _store) = vm();
+        globals.write().expect("globals").camera = Some((Vec3::new(1.0, 5.0, 9.0), 45.0, -10.0));
+        globals.write().expect("globals").clip_durations.insert("mine".into(), 0.8);
+        let (x, yaw, pitch): (f32, f32, f32) = lua
+            .load("local c = viber.camera_state() return c.x, c.yaw, c.pitch")
+            .eval()
+            .expect("camera");
+        assert_eq!((x, yaw, pitch), (1.0, 45.0, -10.0));
+        let dur: f32 = lua.load("return viber.clip_duration('Animator3D_Mine')").eval().expect("clip");
+        assert!((dur - 0.8).abs() < 1e-5, "normaliza o nome do clip");
+        let missing: bool = lua
+            .load("return viber.clip_duration('não-existe') == nil")
+            .eval()
+            .expect("sem clip");
+        assert!(missing);
+        // Sem câmara publicada: nil.
+        let (lua2, _g2, _s2) = vm();
+        let none: bool = lua2.load("return viber.camera_state() == nil").eval().expect("sem câmara");
+        assert!(none);
     }
 
     #[test]

@@ -149,6 +149,49 @@ pub enum ScriptCommand {
         rot: Vec3,
         scale: f32,
     },
+    // ── F5 (efeitos/áudio) ──────────────────────────────────────────────
+    /// Loop de SFX (`viber.sound_loop`). `clip` é nome do registry ou caminho
+    /// relativo ao `sfx_dir` (`vehicles/engine_rev.ogg`).
+    SoundLoop {
+        id: String,
+        clip: String,
+        pitch: f64,
+        volume: f32,
+        position: Option<Vec3>,
+        /// `true` = bus de ambiente (`<AudioMixer ambience>`); `false` = SFX.
+        ambience: bool,
+        /// Entidade cujo script pediu o loop (o loop morre com ela). `None`
+        /// em chamadas fora de `on_update` (tick/REPL).
+        owner: Option<Entity>,
+    },
+    /// Pára um loop (`viber.sound_stop`).
+    SoundStop(String),
+    /// Força a layer de BGM (`viber.music.layer`). `None` devolve o automático.
+    MusicLayer(Option<String>),
+    /// Liga/desliga a música de combate (`viber.music.combat`). `boss` promove
+    /// para a layer `boss`; `active=false` corta já (sem esperar o hold).
+    MusicCombat { active: bool, boss: bool },
+    /// Duck temporário de um bus (`viber.audio.duck`): `gain` linear durante
+    /// `secs` segundos. Expira sozinho.
+    AudioDuck { bus: String, gain: f32, secs: f32 },
+    /// Reverb dos buses de SFX/voz (`viber.audio.reverb`).
+    AudioReverb { preset: String, wet: Option<f32> },
+    /// Pulso de pós-processo (`viber.punch`): saturação de stops + bloom.
+    Punch { stops: f32, bloom: f32 },
+    /// Solavanco direcional da câmara (`viber.kick`).
+    CameraKick(Vec3),
+    /// `viber.lantern(intensity)` — acende/reforça a lanterna do viajante
+    /// (a tocha equipada ilumina mesmo de dia; 0 = só a automática nocturna).
+    SetLantern(f32),
+    /// `viber.bone_offset(bone, rx, ry, rz)` — rotação ADITIVA num osso do
+    /// herói, aplicada por cima de qualquer animação (idle/walk/run).
+    /// `Quat::IDENTITY` remove a entrada.
+    SetBoneOffset { bone: String, rotation: Quat },
+    /// Câmara de jogo conduzida por script (`viber.camera_free`). `false`
+    /// devolve a pose ao rig de terceira pessoa no frame seguinte.
+    CameraFree(bool),
+    /// Pose do modo livre (`viber.camera_pose`): olho + ponto olhado.
+    CameraPose { pos: Vec3, look: Vec3 },
 }
 
 /// Alcance BASE autorado de interação (o default do `set_interaction`),
@@ -166,6 +209,22 @@ pub struct ScriptCommandMessage(pub ScriptCommand);
 pub fn entity_from_id(bits: i64) -> mlua::Result<Entity> {
     Entity::try_from_bits(bits as u64)
         .ok_or_else(|| mlua::Error::runtime(format!("id de entidade inválido: {bits}")))
+}
+
+/// Bus de áudio aceite por `viber.audio.duck` — os MESMOS nomes do
+/// `AudioBus::parse` do monólito (o comando leva a string; o consumidor
+/// revalida contra o seu mixer).
+pub fn is_valid_audio_bus(bus: &str) -> bool {
+    matches!(
+        bus,
+        "master" | "music" | "sfx" | "voice" | "ambience" | "ambient"
+    )
+}
+
+/// Preset de reverb aceite por `viber.audio.reverb` (o mesmo conjunto do
+/// `ReverbPreset::parse`).
+pub fn is_valid_reverb_preset(preset: &str) -> bool {
+    matches!(preset, "off" | "room" | "hall" | "cave")
 }
 
 /// Cor `#rgb`/`#rrggbb` (ou `0x…`) → componentes sRGB em `0..=1`. Mesma
