@@ -1,0 +1,43 @@
+[package]
+name = "bevy_ext_water"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Água interactiva para Bevy: corpos lago/rio, solver iWave dispersivo em compute, material volumétrico, esteiras/salpicos e flutuação (incl. avian3d)"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "water", "waves", "buoyancy", "gamedev"]
+categories = ["game-development", "rendering", "simulation"]
+
+[features]
+default = ["avian"]
+# Adapter de flutuação/obstáculos para corpos rígidos avian3d.
+avian = ["dep:avian3d"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_color",
+    "bevy_mesh",
+    "bevy_shader",
+    "bevy_image",
+    "bevy_camera",
+] }
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+], optional = true }
+half = "2"
+
+[dev-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+
+[package.metadata.docs.rs]
+all-features = true

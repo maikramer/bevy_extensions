@@ -2161,12 +2161,12 @@ fn spawn_water(
     if result.water.is_empty() {
         return;
     }
-    let (wave_tex, domain_tex) = world
+    let (wave_tex, domain_tex, obstacle_tex) = world
         .get_resource::<super::water_waves::WaterWaveWorld>()
-        .map(|w| (w.wave_tex.clone(), w.domain_tex.clone()))
+        .map(|w| (w.wave_tex.clone(), w.domain_tex.clone(), w.obstacle_tex.clone()))
         .unwrap_or_else(|| {
             let h = images.add(super::water_waves::make_wave_rgba16f_image(1, 1, false));
-            (h.clone(), h)
+            (h.clone(), h.clone(), h)
         });
     // Renderização em dois passes de transparência ordenada por `depth_bias`:
     //   1. `AlphaMode::Multiply` (`depth_bias = 0.0`): absorção Beer–Lambert +
@@ -2189,6 +2189,7 @@ fn spawn_water(
             params: WaterUniforms::absorb_default(),
             wave_tex: wave_tex.clone(),
             domain_tex: domain_tex.clone(),
+            obstacle_tex: obstacle_tex.clone(),
         },
     });
     let surface_material = materials.add(WaterMaterial {
@@ -2206,6 +2207,7 @@ fn spawn_water(
             params: WaterUniforms::surface_default(),
             wave_tex,
             domain_tex,
+            obstacle_tex,
         },
     });
     // Espuma ambiente: emissores ao longo da linha de água (um a cada

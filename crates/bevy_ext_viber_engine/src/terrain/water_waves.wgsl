@@ -29,6 +29,7 @@ struct WaveSimUniforms {
 @group(0) @binding(3) var domain_tex: texture_2d<f32>;
 @group(0) @binding(4) var domain_sampler: sampler;
 @group(0) @binding(5) var wave_out_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(6) var obstacle_tex: texture_2d<f32>;
 
 const GRID_U: u32 = 512u;
 const GRID_I: i32 = 512;
@@ -108,8 +109,8 @@ fn step_sim(
     let dt = clamp(sim.shift_dt_time.z, 0.001, 0.025);
     let time = sim.shift_dt_time.w;
 
-    // Neighborhood depth probes (1.0 m grid spacing) to detect shorelines, gravel bars, and rock banks.
-    let dom_step = 1.0 / 128.0;
+    // Neighborhood depth probes (0.5 m grid spacing) to detect shorelines, gravel bars, and rock banks.
+    let dom_step = 1.0 / 256.0;
     let d_xp = max(textureSampleLevel(domain_tex, domain_sampler, uv + vec2<f32>(dom_step, 0.0), 0.0).x, 0.0);
     let d_xm = max(textureSampleLevel(domain_tex, domain_sampler, uv - vec2<f32>(dom_step, 0.0), 0.0).x, 0.0);
     let d_zp = max(textureSampleLevel(domain_tex, domain_sampler, uv + vec2<f32>(0.0, dom_step), 0.0).x, 0.0);
@@ -122,6 +123,23 @@ fn step_sim(
         0.0,
         1.0,
     );
+
+    // Waterline obstacle SDF (`obstacle_tex`: r=halo, gb=outward normal, a=radius_m).
+    let obs = textureSampleLevel(obstacle_tex, domain_sampler, uv, 0.0);
+    let obs_halo = clamp(obs.x, 0.0, 2.0);
+    let obs_has = step(0.005, obs_halo);
+    let obs_dist = select(8.0, (1.0 - obs_halo) * 4.0, obs_has > 0.5);
+    let obs_n = normalize(select(vec2<f32>(1.0, 0.0), obs.yz, dot(obs.yz, obs.yz) > 1e-4));
+    let obs_t = vec2<f32>(-obs_n.y, obs_n.x);
+
+    var obs_impact = 0.0;
+    var obs_graze = 0.0;
+    if obs_has > 0.5 && obs_dist < 2.2 {
+        let probe_uv = clamp(uv + obs_n * (dom_step * 2.5), vec2<f32>(0.0), vec2<f32>(1.0));
+        let flow_up = textureSampleLevel(domain_tex, domain_sampler, probe_uv, 0.0).yz;
+        obs_impact = max(-dot(flow_up, obs_n), 0.0);
+        obs_graze = abs(dot(flow_up, obs_t));
+    }
 
     // Boundary-layer bank friction: current decelerates near shallow beds and riverbanks,
     // deflects along bank walls, and sheds tiny shoreline shear ripples.
@@ -170,10 +188,11 @@ fn step_sim(
     let h_curr = prev_state.x;
     let h_prev = prev_state.y;
     let depth_regime_deep = smoothstep(0.45, 1.25, depth_m);
-    let foam_decay_rate = mix(1.85, 0.88, depth_regime_deep) + shore_prox * 0.42;
+    let obs_wake_hold = obs_has * smoothstep(0.15, 1.5, obs_dist) * (1.0 - smoothstep(1.8, 3.8, obs_dist));
+    let foam_decay_rate = max(mix(1.85, 0.88, depth_regime_deep) + shore_prox * 0.42 - obs_wake_hold * 0.24, 0.45);
     var foam = prev_state.z * exp(-dt * foam_decay_rate);
 
-    // Outer rolling boundary sponge + depth-stratified bottom & shoreline friction.
+    // Outer rolling boundary sponge + depth-stratified bottom, shoreline & obstacle boundary friction.
     let edge_margin = 24.0;
     let d_edge = min(
         min(f32(gx), f32(GRID_I - 1 - gx)),
@@ -184,12 +203,24 @@ fn step_sim(
     let depth_speed = clamp(sqrt(depth_m / 0.85), 0.22, 1.0);
     let shallow_bed_drag = (1.0 - smoothstep(0.05, 0.62, depth_m)) * 1.95;
     let bank_friction = shore_prox * (1.25 + min(shore_slope, 1.5) * 0.95);
-    let alpha = 0.34 + shallow_bed_drag + bank_friction + (1.0 - wet) * 5.2 + edge_sponge * 10.0;
+    let obs_wall_band = obs_has * smoothstep(0.48, 0.02, obs_dist) * smoothstep(-0.14, 0.02, obs_dist);
+    let obs_friction = obs_wall_band * 1.45;
+    let alpha = 0.34 + shallow_bed_drag + bank_friction + obs_friction + (1.0 - wet) * 5.2 + edge_sponge * 10.0;
 
     let a_dt = 0.5 * alpha * dt;
-    let shoal_gain = 1.0 + 0.18 * shore_prox * smoothstep(0.05, 0.35, depth_m);
+    let shoal_gain = 1.0 + 0.18 * shore_prox * smoothstep(0.05, 0.35, depth_m) + 0.34 * obs_wall_band;
     let g_eff = sim.physics.x * depth_speed * shoal_gain;
     var h_next = (2.0 * h_curr - (1.0 - a_dt) * h_prev - g_eff * dt * dt * v_conv) / (1.0 + a_dt);
+
+    // Bow wave pile-up & shoulder capillary radiation where stream hits solid obstacles.
+    if obs_has > 0.5 && wet > 0.04 && (obs_impact > 0.06 || obs_graze > 0.14) {
+        let bow_band = smoothstep(-0.10, 0.08, obs_dist) * smoothstep(1.35, 0.10, obs_dist);
+        let graze_band = smoothstep(-0.08, 0.06, obs_dist) * smoothstep(0.95, 0.08, obs_dist);
+        let bow_pulse = 0.55 + 0.45 * sin(dot(world_xz, obs_t) * 3.4 - time * 5.2);
+        let graze_pulse = cos(dot(world_xz, obs_n) * 4.4 + time * 4.8);
+        h_next += (bow_band * obs_impact * bow_pulse + graze_band * obs_graze * 0.28 * graze_pulse)
+            * dt * 0.16 * wet;
+    }
 
     // Bank shear excites delicate lapping capillary ripples where current brushes dry edges.
     if shore_prox > 0.12 && wet > 0.08 && flow_sq > 0.04 {
@@ -274,7 +305,7 @@ fn step_sim(
         }
     }
 
-    // Steep wave crests and shoreline swash/breaking generate natural whitecap/splash foam.
+    // Steep wave crests, shoreline swash, and obstacle collisions generate aerated foam.
     let v_vert = abs(h_next - h_curr) / max(dt, 0.004);
     let steep_foam = clamp((v_vert - 0.65) * 0.38, 0.0, 0.35) * dt * 6.0;
     let shore_break_foam = shore_prox
@@ -282,10 +313,21 @@ fn step_sim(
         * clamp((v_vert * 0.85 + sqrt(flow_sq) * 0.32 - 0.28) * 0.55, 0.0, 0.42)
         * dt
         * 5.5;
-    foam = clamp(foam + impulse_foam + steep_foam + shore_break_foam, 0.0, 1.0);
+    let obs_collar = obs_has * smoothstep(-0.14, 0.06, obs_dist) * smoothstep(0.85, 0.08, obs_dist);
+    let obs_bow_foam = obs_collar * smoothstep(0.16, 1.10, obs_impact)
+        * (0.58 + 0.42 * sin(dot(world_xz, obs_t) * 4.5 + time * 4.0));
+    let obs_shear_foam = obs_collar * smoothstep(0.40, 1.60, obs_graze) * 0.48;
+    let obs_wave_slap = obs_wall_band * clamp((v_vert - 0.16) * 0.65, 0.0, 0.48);
+    let obs_collide_foam = (obs_bow_foam + obs_shear_foam + obs_wave_slap) * dt * 4.8 * wet;
+    foam = clamp(
+        foam + impulse_foam + steep_foam + shore_break_foam + obs_collide_foam,
+        0.0,
+        1.0,
+    );
 
     let shore_damp = smoothstep(0.006, 0.11, depth_m);
-    h_next *= shore_damp * (1.0 - edge_sponge * 0.35);
+    let obs_solid_damp = select(1.0, smoothstep(-0.22, 0.05, obs_dist), obs_has > 0.5);
+    h_next *= shore_damp * obs_solid_damp * (1.0 - edge_sponge * 0.35);
     h_next = sanitize(h_next);
     state_out[idx] = vec4<f32>(h_next, sanitize(h_curr), foam * wet, 0.0);
 }
