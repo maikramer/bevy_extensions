@@ -122,7 +122,7 @@ pub fn focus_interactions(
             &ScriptInteraction,
             Option<&crate::vitals::Health>,
         ),
-        (Without<Player>, Without<viber::corpse::Corpse>),
+        (Without<Player>, Without<bevy_ext_physics::corpse::Corpse>),
     >,
 ) {
     focus.clear();
