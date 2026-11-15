@@ -1268,7 +1268,6 @@ impl bevy::app::Plugin for BmsBridgePlugin {
             .init_resource::<crate::attachment::AttachmentSlots>()
             .init_resource::<crate::luau::ScriptSystemOwners>()
             .init_resource::<crate::recipes::spawn::PendingScriptSpawns>()
-            .init_resource::<crate::luau::contacts::ContactBook>()
             .add_message::<ScriptToast>()
             .add_message::<crate::luau::ScriptSay>()
             .add_message::<crate::ambient::SfxEvent>()

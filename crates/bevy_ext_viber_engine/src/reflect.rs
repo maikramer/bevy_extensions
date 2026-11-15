@@ -70,12 +70,10 @@ impl Plugin for ReflectPlugin {
         app.register_type::<crate::luau::LuaScriptRef>()
             .register_type::<crate::luau::ScriptProps>()
             .register_type::<crate::luau::Groups>()
-            .register_type::<crate::luau::SignalConnections>()
             .register_type::<crate::luau::ScriptActivation>()
             .register_type::<crate::luau::ScriptInteraction>()
             .register_type::<crate::luau::ScriptGameEvent>()
             .register_type::<crate::luau::ScriptEventQueue>()
-            .register_type::<crate::luau::LuaScriptHost>()
             .register_type::<crate::luau::ScriptSystemOwners>();
 
         // ── animação ───────────────────────────────────────────────────

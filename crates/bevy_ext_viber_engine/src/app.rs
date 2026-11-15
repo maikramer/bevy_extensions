@@ -8,7 +8,8 @@
 //!
 //! O modo Edit é ADITIVO sobre o Game: os mesmos plugins (o spawn do mundo
 //! depende dos recursos deles), mas com a simulação congelada
-//! (`Time<Virtual>` em pausa), scripts Luau parados ([`scripts_enabled`]),
+//! (`Time<Virtual>` em pausa), sem host Luau (os scripts do jogo correm no
+//! BMS — `bevy_ext_luau` — e a engine standalone corre sem comportamento),
 //! sem bridge e com a câmara de editor no lugar da de jogo.
 //!
 //! [`AppOptions`] é COMPONÍVEL: um crate que traga as suas próprias regras
@@ -44,17 +45,6 @@ use crate::{
 // de partilha: o runtime de cena e o host têm de ver o MESMO resource). O
 // caminho `crate::app::RunMode` mantém-se.
 pub use bevy_engine_core::RunMode;
-
-/// De onde vêm os scripts de comportamento.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ScriptsMode {
-    /// Host Luau da engine (`scripts/` do config) — o comportamento de sempre.
-    #[default]
-    Compat,
-    /// Sem host Luau: um app que traz o seu próprio comportamento (ex.:
-    /// regras em Rust) não paga a VM nem os sistemas de script.
-    Off,
-}
 
 /// Que IA a engine regista.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,9 +97,6 @@ pub struct AppOptions {
     /// rigs e clamp da borda. `false` para um jogo que traz o seu controller e
     /// câmara; a câmara de editor (`--camera free`) é independente.
     pub player_camera: bool,
-    /// Scripts de comportamento: host Luau da engine ([`ScriptsMode::Compat`])
-    /// ou nenhum ([`ScriptsMode::Off`]).
-    pub scripts: ScriptsMode,
     /// Save/load do jogo é externo: a engine não instala o `SavePlugin`
     /// (o jogo trata dos slots e do envelope). `SaveRequest`, `SaveDir` e
     /// `WorldSaveKey` continuam disponíveis como ponte Lua.
@@ -141,19 +128,12 @@ impl Default for AppOptions {
             damage_numbers_2d: true,
             ai: AiMode::Full,
             player_camera: true,
-            scripts: ScriptsMode::Compat,
             external_save: false,
             ui: true,
             profiler: true,
             default_plugins: None,
         }
     }
-}
-
-/// Run condition: scripts Luau correm (tudo menos o modo Edit; sem o
-/// resource — apps mínimas de teste — correm).
-pub fn scripts_enabled(mode: Option<Res<RunMode>>) -> bool {
-    mode.is_none_or(|mode| *mode != RunMode::Edit)
 }
 
 fn pause_virtual_time(mut time: ResMut<Time<Virtual>>) {
@@ -263,7 +243,6 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         damage_numbers_2d,
         ai,
         player_camera,
-        scripts,
         external_save,
         ui,
         profiler,
@@ -427,7 +406,7 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
             .map(|spec| (spec.id.clone(), spec.clone()))
             .collect(),
     ));
-    // O modo viaja como resource: os run conditions (`scripts_enabled`, …)
+    // O modo viaja como resource: os run conditions de cena/editor
     // leem-no para congelar a simulação no editor.
     app.insert_resource(mode);
     // Registered before `AssetPlugin`, which snapshots the sources when it
@@ -777,21 +756,12 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // `WorldTiledTextures` é consumido aqui; escrever o sampler noutro
     // sistema reabria a corrida clamp/REPEAT das texturas de chão).
     app.add_plugins(textures::TexturesPlugin);
-    // Fase 2: Luau — scripts do `scripts_dir` do config, com `on_update(dt)`.
-    // O árbitro das interações (`interact::InteractionFocus`) é registado pelo
-    // próprio `LuauScriptPlugin` — quem o lê é o `viber.interacted`.
-    // `ScriptsMode::Off`: um app com o seu próprio comportamento não paga a
-    // VM nem os sistemas `luau_*` (os consumidores do host são todos `Option`).
-    if scripts == ScriptsMode::Compat {
-        app.add_plugins(luau::LuauScriptPlugin {
-            scripts_dir: config.scripts_dir_on(&world_dir),
-            });
-        // Ponte para o host BMS (`bevy_ext_luau`): aplica os comandos que
-        // os scripts BMS enfileiram pelo caminho ÚNICO do monólito e
-        // publica o estado do frame para os globals do BMS. Sem o plugin
-        // BMS no app os dois sistemas são no-op (inofensivo).
-        app.add_plugins(luau::bms_bridge::BmsBridgePlugin);
-    }
+    // Fase 2: Luau — SEM host na engine standalone (2026-11-15, onda final
+    // do DELETE-MONOLITH): o host vivo (`LuauScriptPlugin`) morreu. Os
+    // scripts de comportamento correm no BMS (`bevy_ext_luau`) e é o JOGO
+    // que regista `VaelScriptingPlugin` + `luau::bms_bridge::BmsBridgePlugin`
+    // (a ponte publica o estado do frame e aplica os comandos). Um app que
+    // traga comportamento próprio regista a ponte BMS explicitamente.
 
     // Serviços de engine que o movimento, o som e o HUD leem.
     app.init_resource::<menus::MenusOpen>();
@@ -1110,20 +1080,8 @@ mod tests {
         assert!(opts.gameplay, "gameplay liga por omissão");
         assert_eq!(opts.ai, AiMode::Full, "IA completa por omissão");
         assert!(opts.player_camera, "player/câmara ligam por omissão");
-        assert_eq!(
-            opts.scripts,
-            ScriptsMode::Compat,
-            "scripts Luau por omissão"
-        );
         assert!(opts.ui, "UI declarativa liga por omissão");
         assert!(opts.profiler, "profiler liga por omissão");
-    }
-
-    /// `ScriptsMode::Off` é um modo distinto; o `Default` do enum é `Compat`.
-    #[test]
-    fn scripts_mode_default_is_compat() {
-        assert_eq!(ScriptsMode::default(), ScriptsMode::Compat);
-        assert_ne!(ScriptsMode::Off, ScriptsMode::Compat);
     }
 
     /// Os três modos de IA são distintos e o default é o completo.

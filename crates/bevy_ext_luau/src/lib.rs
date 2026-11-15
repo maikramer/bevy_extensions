@@ -89,6 +89,18 @@ pub use bevy_mod_scripting::prelude::{
     LuaScriptingPlugin, ScriptCallbackMessage, ScriptComponent, ScriptValue, event_handler,
 };
 
+/// `viber.gesture` numa entidade sem `CharacterAnimator`. A engine não tem
+/// como o tocar; um jogo com outro animador (o Vael com o
+/// `jackdaw_animation_runtime`) observa este evento e toca o estado.
+/// Era do runtime do host antigo (`viber::luau::runtime` — o caminho
+/// histórico resolve por shim no monólito).
+#[derive(Event, Debug, Clone)]
+pub struct UnboundGesture {
+    pub entity: Entity,
+    pub name: String,
+    pub speed: f32,
+}
+
 /// Criatura hostil viva neste frame (`viber.hostiles`) — portado do
 /// `HostileSnap` do monólito.
 #[derive(Debug, Clone)]

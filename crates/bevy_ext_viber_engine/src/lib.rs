@@ -81,7 +81,6 @@ pub mod fx_specs;
 pub mod glb_bounds;
 pub mod gltf_residency;
 pub mod graphics;
-pub mod hot_reload;
 pub mod hud;
 pub mod ibl;
 pub use bevy_ext_physics::ik;
