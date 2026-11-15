@@ -204,16 +204,15 @@ impl Plugin for TerrainCollidersPlugin {
 mod tests {
     use super::*;
 
-    /// `collision_keep_within` lê o spec do monólito (o do
-    /// `bevy_ext_terrain_runtime` é outro tipo): banda = min(chunk × raio,
-    /// LOD 0).
+    /// `collision_keep_within` lê o spec do twin (`bevy_ext_terrain_runtime`):
+    /// banda = min(chunk × raio, `lod_distance()` — o ratio × chunk).
     #[test]
     fn test_collision_keep_within_is_the_lod0_band() {
         let mut spec = crate::terrain::spec::TerrainSpec::default();
         spec.chunk_size = 64.0;
-        spec.lod_distance = 1000.0;
+        spec.lod_distance_ratio = 1000.0 / 64.0;
         assert_eq!(collision_keep_within(&spec), 64.0 * PHYSICS_CHUNK_RADIUS);
-        spec.lod_distance = 50.0;
+        spec.lod_distance_ratio = 50.0 / 64.0;
         assert_eq!(collision_keep_within(&spec), 50.0);
     }
 }

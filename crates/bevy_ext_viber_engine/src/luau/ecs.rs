@@ -53,8 +53,8 @@ pub const WHITELIST: &[&str] = &[
     // Vitais e combate
     "viber::vitals::Health",
     "viber::vitals::Hostile",
-    "viber::projectile::Projectile",
-    "viber::spawn_gate::SpawnGated",
+    "bevy_ext_viber_engine::projectile::Projectile",
+    "bevy_ext_viber_engine::spawn_gate::SpawnGated",
     // Jogador e IA
     "viber::player::Player",
     "viber::player::TeleportSettle",
@@ -1415,7 +1415,7 @@ mod tests {
         insert_component(
             app.world_mut(),
             entity,
-            "viber::projectile::Projectile",
+            "bevy_ext_viber_engine::projectile::Projectile",
             &patch,
         )
         .expect("insert sem Default");
@@ -1432,7 +1432,7 @@ mod tests {
         let error = insert_component(
             app.world_mut(),
             entity,
-            "viber::projectile::Projectile",
+            "bevy_ext_viber_engine::projectile::Projectile",
             &partial,
         )
         .unwrap_err();

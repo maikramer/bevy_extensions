@@ -37,18 +37,21 @@ pub use bevy_ext_engine::luau::LuaScriptRef;
 /// `--@export` do script ([`super::exports`]) e é aplicado em `viber.prop`.
 #[derive(Debug, Clone, Default, Component, PartialEq, Reflect)]
 #[reflect(Component, Default)]
+#[type_path = "viber::luau::components"]
 pub struct ScriptProps(#[reflect(ignore)] pub std::sync::Arc<Vec<(String, String)>>);
 
 /// Grupos da entidade (`groups="guardas aldeia"`) — `viber.group`,
 /// `viber.in_group`, `viber.call_group` e os alvos `@grupo` das conexões.
 #[derive(Debug, Clone, Default, Component, PartialEq, Reflect)]
 #[reflect(Component, Default)]
+#[type_path = "viber::luau::components"]
 pub struct Groups(#[reflect(ignore)] pub std::sync::Arc<Vec<String>>);
 
 /// Conexões de sinal do EMISSOR (`connect-<sinal>="alvo:método; …"`): o que
 /// um `viber.emit(sinal, …)` desta entidade chama.
 #[derive(Debug, Clone, Default, Component, PartialEq, Reflect)]
 #[reflect(Component, Default)]
+#[type_path = "viber::luau::components"]
 pub struct SignalConnections(
     #[reflect(ignore)] pub std::sync::Arc<Vec<(String, Vec<super::exports::Connection>)>>,
 );
@@ -87,6 +90,7 @@ pub fn link_components(
 /// Autoria via `activation-radius` no spawner; default 45 m.
 #[derive(Debug, Clone, Component, Reflect)]
 #[reflect(Component, Default)]
+#[type_path = "viber::luau::components"]
 pub struct ScriptActivation {
     pub radius: f32,
 }
