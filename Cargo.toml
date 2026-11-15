@@ -70,10 +70,11 @@ bevy_ext_gradmesh = { version = "0.1.0", path = "crates/bevy_ext_gradmesh" }
 bevy_ext_scene = { version = "0.1.0", path = "crates/bevy_ext_scene" }
 bevy_ext_physics = { version = "0.1.0", path = "crates/bevy_ext_physics" }
 bevy_ext_engine = { version = "0.1.0", path = "crates/bevy_ext_engine" }
+# Linha do Vael/monólito (bevy 0.20); o bevy_ext_physics já é avian. O
+# bevy_rapier3d fica para os membros ainda Rapier (nav/ai/engine/gradmesh).
+avian3d = "0.8"
 bevy_rapier3d = "0.37"
 # O jogo e os crates vivos usam Avian; os crates extraídos ainda por portar
-# mantêm o Rapier nas suas próprias linhas.
-avian3d = "0.8"
 bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_mesh"] }
 bevy_landmass = "0.13"
 landmass_rerecast = "0.4"

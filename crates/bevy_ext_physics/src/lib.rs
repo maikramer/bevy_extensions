@@ -1,9 +1,10 @@
-//! Rapier physics for the Viber world contract.
+//! Avian physics for the Viber world contract.
 //!
 //! Extracted from the engine monolith (`viber::physics`, `viber::physics_fx`,
 //! `viber::ragdoll`, `viber::corpse` and `viber::ik`); the reflected types
 //! keep the historical `#[type_path]` values so `.bsn` files, saves and BRP
-//! clients keep working.
+//! clients keep working. O backend físico é o `avian3d` (linha do Vael/
+//! monólito, 0.8 sobre bevy 0.20).
 //!
 //! - [`physics`] — colliders and rigid bodies from the declarative world
 //!   ([`PhysicsPlugin`]): parsing helpers, deferred mesh shapes, the

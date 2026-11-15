@@ -415,6 +415,7 @@ dependencies = [
  "itertools 0.15.0",
  "obvhs",
  "parry3d",
+ "parry3d-f64",
  "smallvec",
  "thiserror 2.0.21",
  "thread_local",
@@ -988,11 +989,11 @@ dependencies = [
 name = "bevy_ext_physics"
 version = "0.1.0"
 dependencies = [
+ "avian3d",
  "bevy",
  "bevy_ext_core",
  "bevy_ext_scene",
  "bevy_ext_terrain_runtime",
- "bevy_rapier3d",
 ]
 
 [[package]]
@@ -2398,10 +2399,12 @@ version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84c634a7f09e9ccd26137a2f541ab670c84854a1af4107fecca1541cfcd1b466"
 dependencies = [
+ "async-channel",
  "async-executor",
  "async-task",
  "atomic-waker",
  "bevy_platform",
+ "concurrent-queue",
  "crossbeam-queue",
  "derive_more",
  "futures-lite",
@@ -5718,12 +5721,41 @@ dependencies = [
  "num-derive 0.5.1",
  "num-traits",
  "ordered-float",
+ "rayon",
  "rstar 0.13.1",
  "simba",
  "slab",
  "smallvec",
  "spade",
  "static_assertions",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "parry3d-f64"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffb9e04261f1783d8f66f36767b2b73132a63c9b30b12a5ed47e1faa240f7591"
+dependencies = [
+ "approx",
+ "arrayvec",
+ "bitflags 2.13.2",
+ "downcast-rs",
+ "either",
+ "ena",
+ "foldhash 0.2.0",
+ "glamx",
+ "hashbrown 0.17.1",
+ "log",
+ "num-derive 0.5.1",
+ "num-traits",
+ "ordered-float",
+ "rayon",
+ "rstar 0.13.1",
+ "simba",
+ "slab",
+ "smallvec",
+ "spade",
  "thiserror 2.0.21",
 ]
 
