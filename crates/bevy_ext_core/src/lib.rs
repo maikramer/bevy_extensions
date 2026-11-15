@@ -64,9 +64,10 @@ impl MenusOpen {
 /// Para quê a App foi montada: o jogo de si próprio, ou o editor
 /// in-process (cena congelada, portais e trocas de cena silenciados).
 ///
-/// Nascido em `viber::app`; o runtime de cena (`bevy_ext_scene_runtime`) e
-/// o host leem o MESMO resource — um enum pequeno de mais para pagar uma
-/// dependência entre crates.
+/// Nascido em `viber::app`; o host e o jogo (composição própria em
+/// `src/app.rs` do Vael) leem o MESMO resource — um enum pequeno de mais
+/// para pagar uma dependência entre crates. (O `bevy_ext_scene_runtime`,
+/// que também o lia, foi apagado a 2026-11-15 — órfão.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
 pub enum RunMode {
     /// `viber run`: o jogo.

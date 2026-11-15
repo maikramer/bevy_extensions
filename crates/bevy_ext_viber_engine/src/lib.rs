@@ -12,21 +12,17 @@
     clippy::type_complexity
 )]
 
-// NOTA(exit2/scene): `config`, `interact`, `meshopt`, `particles`,
-// `animation` (o `AnimatedScene`), `hud` e `music` têm GÉMEOS no
-// `bevy_ext_scene_runtime` — este crate mantém as cópias porque as retirar
-// (com shim para o scene_runtime) é CICLO enquanto o scene_runtime depender
-// deste crate pela ponte do `luau` (onda exit2/luau). Quando a ponte morrer,
-// apagar as cópias e re-exportar daí. O `terrain` e o `physics` JÁ são shims
-// para os crates extraídos; `a11y`/`locale`/`vitals`/`camera`/`feedback`/
-// `editor_camera` também (core/engine, exit2/luau).
-// NOTA(exit3/wave-b): `streaming` e `spawn_gate` têm os MESMOS gémeos no
-// scene_runtime (forks verificados ao nível, onda B — o diff do `streaming`
-// são só as anotações de extração + `#[type_path]`); `attachment` GANHOU um
-// gémeo lá (extração da onda B). O swap `pub use scene_runtime::…` está
-// bloqueado pelo MESMO ciclo — o cargo recusa-o hoje com "cyclic package
-// dependency" (testado); aterrará quando a ponte `viber` do scene_runtime
-// morrer (ondas C/D/F), que é o mesmo gatilho dos gémeos em cima.
+// NOTA(exit2/scene, 2026-11-15): `config`, `interact`, `meshopt`,
+// `particles`, `animation` (o `AnimatedScene`), `hud`, `music`, `streaming`,
+// `spawn_gate` e `attachment` TIVERAM gémeos no `bevy_ext_scene_runtime` —
+// o crate foi APAGADO (órfão: zero consumidores; cópias reconciliadas aqui
+// em `f565750`). Este crate voltou a ser a FONTE ÚNICA destes módulos: na
+// saída vão DIRECTOS para os crates de domínio (fases D/F/G do
+// DELETE-MONOLITH.md, no Vael) — sem crate-hub novo; a carga de mundo é o
+// formato bsn/Jackdaw (`bevy_ext_world::bsn` + specs tipadas
+// `bevy_ext_scene`). O `terrain` e o `physics` JÁ são shims para os crates
+// extraídos; `a11y`/`locale`/`vitals`/`camera`/`feedback`/`editor_camera`
+// também (core/engine, exit2/luau).
 // Acessibilidade movida ao `bevy_ext_core`; o caminho `viber::a11y` continua
 // a resolver e o recurso é O MESMO (ver o `pub use` na lista em baixo).
 pub mod adaptive_quality;

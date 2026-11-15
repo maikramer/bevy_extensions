@@ -1,9 +1,10 @@
 //! `config.yaml` — o contrato de PATHS entre o jogo e a engine.
 //!
 //! EXTRAÇÃO (onda exit3/wave-b): o módulo INTEIRO saiu do monólito `viber`
-//! para aqui — o monólito e o `bevy_ext_scene_runtime` re-exportam-no
-//! (`viber::config` / `crate::config` continuam a resolver; os TypePaths
-//! refletidos ficam congelados em `viber::config`). A secção `reflections:`
+//! para aqui — o monólito re-exporta-o (`viber::config` continua a
+//! resolver; os TypePaths refletidos ficam congelados em `viber::config`;
+//! o `bevy_ext_scene_runtime`, que também re-exportava, foi apagado a
+//! 2026-11-15 — órfão). A secção `reflections:`
 //! já vivia aqui desde a exit2/hubs; o resto (`GameConfig`, o `load`, os
 //! helpers de path) veio juntar-se.
 //!
