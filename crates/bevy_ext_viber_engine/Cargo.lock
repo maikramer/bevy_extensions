@@ -963,6 +963,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ext_nav"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_ext_core",
+ "bevy_landmass",
+ "bevy_rapier3d",
+ "bevy_rerecast",
+ "landmass_rerecast",
+]
+
+[[package]]
 name = "bevy_ext_physics"
 version = "0.1.0"
 dependencies = [
@@ -1043,6 +1055,7 @@ dependencies = [
  "bevy_ext_core",
  "bevy_ext_engine",
  "bevy_ext_gltf",
+ "bevy_ext_nav",
  "bevy_ext_physics",
  "bevy_ext_save",
  "bevy_ext_scene",
