@@ -68,20 +68,33 @@ de `.bsn`, saves e clientes BRP.
 
 ## Fecho progressivo do Viber
 
-O Vael ainda corre dentro de `viber::app::build_app`: 151 referências
-`viber::` em Rust (29 ficheiros) e 1.637 chamadas `viber.*` em 79 scripts
-Luau (11.684 linhas). O editor Jackdaw já não depende do `viber` (usa
-`bevy_ext_gltf` + `bevy_ext_world`). A ordem de corte é:
+Estado a 2026-11-14: o Vael main ainda corre dentro de
+`viber::app::build_app` (257 refs `viber::` em Rust, 32 módulos; 1.807
+chamadas `viber.*` em Lua). O editor Jackdaw já não depende do `viber` e —
+desde 2026-11-14 — **o jogo também não**: input (`jackdaw_input` +
+`ExternalActionState`), animação (`jackdaw_animation_runtime` + `AnimationSet`),
+edição viva (`editor_link`/`live_edit`/`jackdam_remote`), câmara/áudio specs
+tipadas. A composição própria da App e a unificação dos gémeos estão
+validadas nas branches `integrate2/all` (monorepo) e `exit2/app-assembly`
+(Vael), à espera da água aterrar. O mapa vivo por peça é o
+`Vael/docs/EXIT-MAP.md`; as fases F0–F4 no estudo do Vael. A ordem de corte:
 
-| Wave | Objetivo | Gate |
-|---|---|---|
-| 2 | Vael usa `bevy_ext_core`/`world`/`save` diretamente; anexa `PlayerBody`/`VaelScriptTags`; troca imports de contrato | `rg 'viber::'` a descer; jogo/testes iguais |
-| 3 | Player/câmara/input no Vael; `player_camera:false`; teleporte/aterragem próprios | QA de movimento, interiores, câmara, save, minimapa, cinemáticas |
-| 4 | Portar Lua: `rules.lua` → verbos (combat/abilities/hotbar/equipment) → FSM/inimigos/bosses/spawns/loot/story/áudio → NPC/diálogo/NLU; apagar `viber.vael`, installers e `mlua` | `rg 'viber\.' scripts` = 0; `LuaScriptHost`/`mlua` fora do jogo |
-| 5 | Trocar `build_app` por `DefaultPlugins + pacotes + VaelPlugin`; repor features do Bevy; remover `viber` do `Cargo.toml`; arquivar o monólito | `cargo tree -i viber` vazio; jogo `main`/`menu`/interiores/save/combate |
+| Wave | Objetivo | Gate | Estado |
+|---|---|---|---|
+| 2 | Vael usa `bevy_ext_core`/`world`/`save` diretamente; troca imports de contrato | `rg 'viber::'` a descer | ✅ (merge nas branches exit2) |
+| 3 | Player/câmara/input no Vael; `player_camera:false` | QA de movimento/interiores/câmara/save | ✅ + Jackdaw toma input/animação/edição viva |
+| 4 | Portar Lua para Rust; apagar `viber.vael`, installers e `mlua` | `rg 'viber\.' scripts` = 0 | em curso (qa.rs/`F2` do estudo; FSM 4b, diálogo 4d) |
+| A | Aterrar `integrate2/all` + `exit2/app-assembly`: composição própria (`src/app.rs` do Vael), gémeos unificados (vitais/input_map/a11y/locale/dialogue no core; camera-glue/editor_camera/feedback/hud-assets no engine; save-bridge no `bevy_ext_save`; netplay reactivado) | 335 testes do Vael + QA vivo (feito nas branches) | 🔄 bloqueada na água do monólito |
+| B/C | Consumir em vez de copiar: streaming/config/interact/spawn_gate(**avian**)/attachment/audio_space/save-adapter/hud-font; depois postfx(349)/nav(72)/roads/spawn(633, avian+gradmesh)/**ui data layer (troca atómica)** | check+test workspace; TypePaths intactos | 🔄 em curso (worktrees `exit3/*`) |
+| D | Terreno/água → `bevy_ext_terrain_runtime` + `bevy_ext_water` (já avian) | portar DEPOIS de a água aterrar | 🚫 bloqueada |
+| E | Port avian das cópias Rapier (`bevy_ext_physics`) | 50 testes no crate | 🔄 em curso |
+| F | luau host → `bevy_ext_luau` (BMS) por call-sites (ui 256, load 149, toast 108, game 96…); `viber.ecs` morre (0 usos); `viber.lua` → adapter BRP; `viber.scene --live` reformado (Jackdaw ganhou) | testes portados; jogo sem `mlua` cru | ⏳ |
+| 5 (H) | Remover `viber` do `Cargo.toml`; arquivar o monólito | `cargo tree -i viber` vazio; jogo main/menu/interiores/save/combate | 🚫 pós A+D+F |
 
 Não remover `viber` do `Cargo.toml` antes do runtime/player/Lua; não desligar
-`player_camera` antes do QA; não mudar os `TypePath` de wire na 0.x.
+`player_camera` antes do QA; não mudar os `TypePath` de wire na 0.x; trocas
+de módulos de runtime são ATÓMICAS (o incidente dos gémeos de 2026-11-14:
+`Option<Res<T>>` de um gémeo sem runtime falha em silêncio).
 
 ## Próximos pacotes (depois da 0.1.0)
 
