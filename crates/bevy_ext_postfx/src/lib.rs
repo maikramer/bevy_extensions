@@ -22,6 +22,7 @@
 use bevy::prelude::*;
 
 pub mod adaptive;
+pub mod ambient;
 pub mod env;
 pub mod preset;
 pub mod runtime;
