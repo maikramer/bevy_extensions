@@ -21,6 +21,7 @@
 //! `viber.after`/`viber.signals`) e o módulo `viber.ecs`.
 
 pub mod commands;
+pub mod events;
 pub mod game;
 pub mod keys;
 pub mod sfx;
@@ -117,8 +118,26 @@ fn globals() -> Arc<RwLock<ScriptGlobals>> {
 /// Host do Vael. Requer `AssetPlugin` (o BMS carrega scripts como assets).
 pub struct VaelScriptingPlugin;
 
+/// F2 (exit4): o estado da UI declarativa capturado no build do plugin —
+/// o `ContextInitializer` do BMS é um FN POINTER (não captura), portanto o
+/// `install_ui_api` do `bevy_ext_ui` lê-o daqui. Os Arcs internos partilham
+/// as MESMAS filas com o `UiPlugin`; setado uma vez por processo (o plugin
+/// tem de ser adicionado DEPOIS do plugin de UI — sem o recurso, os
+/// contextos não levam `viber.ui` e os HUD scripts não correm).
+#[cfg(feature = "ui")]
+static UI_SCRIPT_STATE: OnceLock<bevy_ext_ui::ui::script::UiScriptState> = OnceLock::new();
+
 impl Plugin for VaelScriptingPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(feature = "ui")]
+        if let Some(state) = app
+            .world()
+            .get_resource::<bevy_ext_ui::ui::script::UiScriptState>()
+        {
+            let _ = UI_SCRIPT_STATE.set(state.clone());
+        } else {
+            log::warn!("[lua] feature `ui` ligada sem UiScriptState no mundo —                 adicione o VaelScriptingPlugin DEPOIS do plugin de UI; HUD scripts não correm");
+        }
         app.init_resource::<ScriptHostState>()
             // O BMS precisa da infraestrutura de contextos; o plugin Lua é
             // configurado com o inicializador da tabela `viber`.
@@ -131,7 +150,12 @@ impl Plugin for VaelScriptingPlugin {
             .add_message::<commands::ScriptCommandMessage>()
             .add_systems(
                 PreUpdate,
-                (publish_globals, publish_input, game::apply_game_patches),
+                (
+                    publish_globals,
+                    publish_input,
+                    game::apply_game_patches,
+                    events::fan_out_events,
+                ),
             )
             .add_systems(Update, (drain_toasts, commands::drain_commands));
     }
@@ -148,13 +172,29 @@ fn init_context(
         ScriptAttachment::StaticScript(_) => None,
     };
     context.set_app_data(ScriptEntity(entity));
+    // Path do script do contexto (`viber.events` subscreve por path; a chave
+    // é o asset path do handle — o que a integração registar).
+    let path = match attachment {
+        ScriptAttachment::EntityScript(_, script) | ScriptAttachment::StaticScript(script) => {
+            script.path().map(|path| path.to_string()).unwrap_or_default()
+        }
+    };
+    context.set_app_data(events::ScriptPath(path));
     install_viber_api_with(
         context,
         globals(),
         game::game_store(),
         entity.map(|entity| entity.to_bits() as i64),
     )
-    .map_err(InteropError::external)
+    .map_err(InteropError::external)?;
+    // F2: `viber.ui` (a superfície da UI declarativa) — depois do `viber` nos
+    // globals; as filas são Arc partilhado com o UiPlugin.
+    #[cfg(feature = "ui")]
+    if let Some(state) = UI_SCRIPT_STATE.get() {
+        bevy_ext_ui::ui::script::install_ui_api(&**context, state)
+            .map_err(InteropError::external)?;
+    }
+    Ok(())
 }
 
 /// Publica o estado do frame: os campos do `ScriptHostState` e o
@@ -715,6 +755,11 @@ fn install_viber_api_with(
     )?;
 
     game::install(lua, &viber, store)?;
+    // Filas de eventos por-path (`viber.events`): path → array de tabelas.
+    // A presença da chave É a subscrição (criada na 1.ª chamada); o
+    // `fan_out_events` copia a fila da engine para cada VM subscrita.
+    events::install(lua, &viber)?;
+    lua.set_named_registry_value("viber_events", lua.create_table()?)?;
 
     lua.globals().set("viber", viber)?;
     Ok(())

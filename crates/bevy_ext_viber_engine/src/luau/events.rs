@@ -10,12 +10,14 @@ use mlua::{Lua, Table};
 
 use super::ctx::ScriptCtx;
 
-// O CONTRATO dos eventos vive agora no `bevy_ext_ui::ui::host` (exit3/wave-c):
+// O CONTRATO dos eventos vive agora no `bevy_ext_core::scripting` (exit4/F2):
 // a UI declarativa extraída empurra `UiAction` para A MESMA fila que o
 // `luau_update` drena (antes da troca eram DOIS tipos — as ações de UI nunca
-// chegavam aos scripts). O `to_table` acompanha o tipo no host; o caminho
-// histórico continua a resolver. O `EVENT_QUEUE_CAP` é do `bevy_ext_engine`.
-pub use bevy_ext_ui::ui::host::{ScriptEventQueue, ScriptGameEvent};
+// chegavam aos scripts), e o host BMS (`bevy_ext_luau`) partilha o MESMO
+// tipo sem nenhum dos crates dep o outro. O `to_table` acompanhou o host
+// (`bevy_ext_luau::events::script_game_event_to_table`); o caminho histórico
+// continua a resolver. O `EVENT_QUEUE_CAP` é do `bevy_ext_engine`.
+pub use bevy_engine_core::scripting::{ScriptEventQueue, ScriptGameEvent};
 pub use bevy_ext_engine::luau::EVENT_QUEUE_CAP;
 
 
@@ -88,7 +90,7 @@ pub(crate) fn fan_out_events(
                 }
                 break;
             }
-            let Ok(table) = event.to_table(lua) else {
+            let Ok(table) = bevy_ext_luau::events::script_game_event_to_table(lua, event) else {
                 continue;
             };
             if let Err(e) = queue.push(table) {

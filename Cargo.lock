@@ -968,6 +968,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_ext_core",
+ "bevy_ext_ui",
  "bevy_mod_scripting",
  "log",
  "mlua",

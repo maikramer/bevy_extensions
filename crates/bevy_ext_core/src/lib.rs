@@ -15,6 +15,7 @@ pub mod input_map;
 pub mod locale;
 pub mod rng;
 pub mod script_kind;
+pub mod scripting;
 pub mod vitals;
 
 pub use rng::Rng;

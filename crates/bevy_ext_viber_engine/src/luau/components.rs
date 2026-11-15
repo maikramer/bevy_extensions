@@ -104,7 +104,8 @@ pub const DEFAULT_ACTIVATION_RADIUS: f32 = 45.0;
 /// Alvo de interação registado por script (`viber.set_interaction`): o prompt
 /// "[tecla] label" aparece quando o player está perto.
 ///
-/// Contrato movido ao `bevy_ext_ui::ui::host` (exit3/wave-c): a UI declarativa
+/// Contrato movido ao `bevy_ext_core::scripting` (exit4/F2; passou pelo
+/// `bevy_ext_ui::ui::host` na wave-c): a UI declarativa
 /// extraída lê O MESMO componente para publicar o prompt; o TypePath
-/// `viber::luau::components` fica congelado no crate.
-pub use bevy_ext_ui::ui::host::ScriptInteraction;
+/// `viber::luau::components` fica congelado no core.
+pub use bevy_engine_core::scripting::ScriptInteraction;

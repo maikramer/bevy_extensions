@@ -13,7 +13,16 @@ categories = ["game-development"]
 [dependencies]
 bevy = { workspace = true, features = ["std"] }
 bevy_ext_core = { workspace = true }
+bevy_ext_ui = { workspace = true, optional = true }
 bevy_mod_scripting = { version = "0.24", features = ["luau"] }
 log = "0.4"
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 serde = { version = "1", features = ["derive"] }
+
+[features]
+# Seam sobre o `bevy_ext_ui` (F2): instala `viber.ui` (a superficie Luau da
+# UI declarativa) em cada contexto criado pelo VaelScriptingPlugin. O crate
+# ui NAO pode dep do luau (ciclo), portanto o luau e que o dep e captura o
+# `UiScriptState` no build do plugin. Default OFF — consumers sem UI nao
+# pagam o `bevy_ext_world` que a UI arrasta.
+ui = ["dep:bevy_ext_ui"]

@@ -83,6 +83,7 @@ bevy_ext_nav = { version = "0.1.0", path = "../bevy_ext_nav" }
 # MinimapRange/SceneSource/UiWorldState/UiFont/UiScriptHost) vivem no
 # `ui::host` do crate — os módulos donos do monólito reexportam-nos.
 bevy_ext_ui = { version = "0.1.0", path = "../bevy_ext_ui" }
+bevy_ext_luau = { version = "0.1.0", path = "../bevy_ext_luau" }
 # Pós-processamento extraído (shim `src/postfx.rs`); os contratos de estado
 # do céu (`AtmosphereState`/`SunState`/`BiomeRegions`…, TypePaths
 # `viber::worldsys`) vivem no `env` do crate e o `worldsys` do monólito
