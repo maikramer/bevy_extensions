@@ -27,6 +27,7 @@ use bevy::log::info;
 use bevy::time::{Time, Virtual};
 use bevy_kira_audio::AudioApp;
 
+use crate::audio_host;
 use crate::bridge;
 use crate::profiler::{Group, timed};
 use crate::recipes::ParsedWorld;
@@ -553,6 +554,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         sfx: Some(sfx_reverb),
         voice: Some(voice_reverb),
     });
+    // O host dos sistemas `music::*` (exit4/G1): espelha cena/bioma/chuva no
+    // `AudioWorldState`, semeia o `AudioPaths` do config e marca o ouvido.
+    app.add_plugins(audio_host::AudioHostPlugin);
     if let Some(port) = bridge_port {
         app.add_plugins(bridge::BridgePlugin { port });
         // O ping passa a identificar o mundo servido — o `viber debug

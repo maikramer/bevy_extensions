@@ -35,6 +35,11 @@ pub mod attachment;
 // caminho `viber::audio_space` reexporta o módulo e o TypePath do
 // `SpatialOneShot` fica congelado lá.
 pub use bevy_ext_audio::audio_space as audio_space;
+// Contratos de HOST do `bevy_ext_audio` (exit4/G1): o espelho
+// `AudioWorldState`, os paths de clips (`AudioPaths`) e o marker `AudioEar`
+// saem dos recursos da engine — os sistemas `music::*` do crate leem-nos
+// daqui (o adaptador registava-se junto dos sistemas de música no `app.rs`).
+pub mod audio_host;
 pub mod audit;
 pub mod bake;
 pub mod bridge;
@@ -86,7 +91,12 @@ pub use bevy_engine_core::vitals;
 pub mod luau;
 pub mod menus;
 pub mod meshopt;
-pub mod music;
+// Música/buses/ducking/reverb movidos ao `bevy_ext_audio` (exit4/G1); o
+// caminho `viber::music` reexporta o módulo e os TypePaths `viber::music::`
+// ficam congelados lá. O adaptador de host é o `audio_host` — o
+// `music_driver`/`script_sound_loops` do crate leem `AudioWorldState`/
+// `AudioPaths` em vez dos recursos da engine.
+pub use bevy_ext_audio::music as music;
 pub mod nav;
 pub mod netplay;
 pub mod particles;
