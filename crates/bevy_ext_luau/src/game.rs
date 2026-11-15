@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(json.get("s"), Some(&json!("x")));
         assert_eq!(json.get("b"), Some(&json!(true)));
 
-        restore_game_json(&game_to_json(&other) /* vazio */);
+        restore_game_json(&game_to_json_store(&other) /* vazio */);
         // restore sobre o PROCESSO: semear por patch e ver no snapshot.
         let mut kv = BTreeMap::new();
         kv.insert("n".to_string(), json!(7));
