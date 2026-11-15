@@ -6,34 +6,39 @@ use bevy::math::Rot2;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use crate::player::Player;
-use crate::recipes::spawn::OrbitCamera;
-use crate::terrain::runtime::TerrainRuntime;
+use bevy_ext_core::Player;
+use crate::camera::OrbitCamera;
+use bevy_ext_terrain_runtime::runtime::TerrainRuntime;
 
 /// The minimap player arrow (rotation mirrors the camera heading).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapArrow;
 
 /// A quest dot on the minimap (positioned at a nearby NPC's world spot).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapDot;
 
 /// The signed landmark ("A Nota", `travel::Waypoint`): an anchor pinned to
 /// the map (clamped to the rim when the landmark is out of range).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapAnchor;
 
 /// The baked terrain underlay (one `ImageNode` child of the map panel).
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapTerrain;
 
 /// Um hostil próximo no mapa.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapThreat;
 
 /// Marco da Nota disponível (atalaia ou bioma revelado) no minimapa —
@@ -42,12 +47,14 @@ pub struct MinimapThreat;
 /// `travel::LandmarkBlips`.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapLandmark;
 
 /// Atalaia de agrimensura no minimapa — maior e mais brilhante que o marco
 /// comum: é o "vai aí" que estrutura a exploração.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud::minimap"]
 pub struct MinimapTower;
 
 /// Quantos blips de marcos/atalaias o painel desenha (mais perto 1.º).
@@ -257,7 +264,7 @@ pub fn hud_minimap_update(
     players: Query<&GlobalTransform, With<Player>>,
     // Só os NPC que valem a pena (missão por aceitar/entregar) — o guia.
     markers: Option<Res<crate::hud::markers::HudMarkers>>,
-    threats: Query<&GlobalTransform, With<crate::ai::EnemyCreature>>,
+    threats: Query<&GlobalTransform, With<bevy_ext_ai::ai::EnemyCreature>>,
     runtime: Option<Res<TerrainRuntime>>,
     maps: Query<
         Entity,

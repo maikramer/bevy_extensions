@@ -7,6 +7,7 @@ use bevy::prelude::*;
 
 /// Ponto no mundo com um rótulo (seta de rumo).
 #[derive(Debug, Clone, Reflect)]
+#[type_path = "viber::hud::markers"]
 pub struct HudPoint {
     pub position: Vec3,
     pub label: String,
@@ -14,6 +15,7 @@ pub struct HudPoint {
 
 /// Marco no minimapa/bússola. `tower` escolhe o desenho de atalaia.
 #[derive(Debug, Clone, Reflect)]
+#[type_path = "viber::hud::markers"]
 pub struct HudBlip {
     pub position: Vec3,
     pub tower: bool,
@@ -22,6 +24,7 @@ pub struct HudBlip {
 /// Snapshot do frame. Substituído por inteiro a cada `viber.markers`.
 #[derive(Debug, Clone, Resource, Default, Reflect)]
 #[reflect(Resource)]
+#[type_path = "viber::hud::markers"]
 pub struct HudMarkers {
     pub blips: Vec<HudBlip>,
     pub beacons: Vec<Vec3>,

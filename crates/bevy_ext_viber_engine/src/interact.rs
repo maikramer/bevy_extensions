@@ -26,9 +26,9 @@ use bevy::prelude::*;
 use crate::luau::ScriptInteraction;
 use crate::player::Player;
 
-/// Alcance histórico de interação (m) — a unidade em que o conteúdo foi
-/// autorado. O valor EFETIVO é este × [`range_scale`].
-pub const BASE_RANGE_M: f32 = 3.5;
+/// Alcance histórico de interação (m) — o contrato vive no `bevy_ext_core`
+/// (exit5/G-2; partilhado com o HUD); o caminho continua a resolver aqui.
+pub use bevy_engine_core::BASE_RANGE_M;
 
 /// Escala global dos alcances de interação.
 ///

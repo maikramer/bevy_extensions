@@ -13,12 +13,12 @@
 //! * [`interact`] — prompt, dialogue balloon, key-toggled panels;
 //! * [`compass`] / [`minimap`] — the animated widgets.
 
-use bevy::ecs::reflect::{ReflectComponent, ReflectResource};
+use bevy::ecs::reflect::ReflectComponent;
 
-// A arte do HUD (fonte, gradientes, marcadores) saiu para o
-// `bevy_ext_engine::hud_assets` (onda exit2/hubs) — o caminho
-// `viber::hud::assets` continua a resolver.
-pub use bevy_ext_engine::hud_assets as assets;
+// A arte do HUD (fonte, gradientes, marcadores) já é do próprio crate
+// (`hud_assets`, onda exit2/hubs) — o caminho `viber::hud::assets` continua
+// a resolver.
+pub use crate::hud_assets as assets;
 pub mod compass;
 pub mod elements;
 pub mod interact;
@@ -51,6 +51,7 @@ pub use vitals::{HudHealthFill, HudHealthLabel, health_label_text, hud_health_sy
 /// um mapa vazio.
 #[derive(bevy::prelude::Component, Debug, Clone, Copy, Default, bevy::prelude::Reflect)]
 #[reflect(Component)]
+#[type_path = "viber::hud"]
 pub struct HideInInterior;
 
 /// HUD suprimido por script (`viber.ui.set_visible("hud", false)`).
@@ -66,7 +67,7 @@ pub use bevy_ext_ui::ui::host::HudHidden;
 /// Esconde/repõe os [`HideInInterior`] quando o herói entra/sai de um interior —
 /// ou quando o jogo esconde o HUD (título, morte).
 pub fn hide_world_hud_in_interior(
-    interior: Option<bevy::prelude::Res<crate::worldsys::InteriorLighting>>,
+    interior: Option<bevy::prelude::Res<bevy_ext_core::InteriorLighting>>,
     cinematic: Option<bevy::prelude::Res<crate::cinematic::CinematicPlayback>>,
     hidden: Option<bevy::prelude::Res<HudHidden>>,
     mut panels: bevy::prelude::Query<
