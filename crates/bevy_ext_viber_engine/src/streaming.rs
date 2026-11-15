@@ -85,7 +85,6 @@ pub fn stream_rings(
     mut store: ResMut<ColdStore>,
     editor: Option<Res<crate::editor_camera::EditorCamState>>,
     players: Query<&GlobalTransform, With<crate::player::Player>>,
-    mut host: Option<ResMut<crate::luau::LuaScriptHost>>,
     query: Query<(
         Entity,
         &GlobalTransform,
@@ -128,10 +127,6 @@ pub fn stream_rings(
             spawned.insert(crate::luau::LuaScriptRef { path });
         }
         spawned.insert(record.source.clone());
-        let id = spawned.id();
-        if let (Some(host), Some(json)) = (host.as_mut(), record.state_json.as_deref()) {
-            let _ = host.restore_entity_state(id, json);
-        }
         let _ = key;
     }
     let mut sleep: Vec<(Entity, ColdRecord)> = Vec::new();
@@ -181,8 +176,6 @@ pub fn stream_rings(
         } else {
             base
         };
-        let state_json =
-            script.and_then(|_| host.as_ref().and_then(|h| h.dump_entity_state(entity)));
         sleep.push((
             entity,
             ColdRecord {
@@ -191,7 +184,10 @@ pub fn stream_rings(
                 name: name.map(|n| n.as_str().to_string()),
                 scene: scene.map(|s| s.0.clone()),
                 script: script.map(|s| s.path.clone()),
-                state_json,
+                // Estado de VM por entidade (`viber.state` do host antigo):
+                // morreu com ela — o estado que sobrevive ao hibernar vive no
+                // save do jogo.
+                state_json: None,
                 source: source.clone(),
             },
         ));

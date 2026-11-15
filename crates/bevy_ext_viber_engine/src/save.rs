@@ -111,7 +111,6 @@ fn options_system(
     mut world_save_host_request: (
         Option<Res<WorldSaveKey>>,
         Option<Res<SaveDir>>,
-        Option<ResMut<crate::luau::LuaScriptHost>>,
         Option<ResMut<SaveRequest>>,
         Commands,
         Option<Res<crate::scene_loader::CurrentScene>>,
@@ -145,7 +144,7 @@ fn options_system(
     // `viber.save()` / `viber.load()` (scripts) valem sempre. O slot vem
     // junto: `None` = save legado, `0` = autosave, `1..` = manual.
     let (script_save, script_load, script_slot) = world_save_host_request
-        .3
+        .2
         .as_mut()
         .map(|r| {
             let trio = (r.save, r.load, r.slot);
@@ -192,7 +191,6 @@ fn options_system(
         .1
         .as_deref()
         .and_then(|d| d.0.as_deref());
-    let mut host = world_save_host_request.2.as_deref_mut();
     if (on_system_tab && keys.just_pressed(KeyCode::KeyJ)) || save_requested {
         // O 1.º herói e não `single_mut()`: com 2+ heróis (co-op/mundos de QA)
         // o save recusava-se INTEIRO com "sem herói para gravar" — o resto da
@@ -205,10 +203,9 @@ fn options_system(
         if let Some(position) = hero_state {
             let mut game = capture(position, (mixer.master, mixer.music, mixer.sfx));
             game.volumes_extra = Some((mixer.voice, mixer.ambience));
-            if let Some(host) = host.as_mut() {
-                game.world_kv =
-                    bevy_ext_luau::game::game_to_json_store(&bevy_ext_luau::game::game_store());
-            }
+            // `viber.game()` — o store BMS (único desde a reforma do host).
+            game.world_kv =
+                bevy_ext_luau::game::game_to_json_store(&bevy_ext_luau::game::game_store());
             // Metadados que o menu lê sem abrir o JSON: hora da gravação,
             // tempo de jogo e rótulo (o jogo escreve-os em `viber.game()`).
             // `level`/`gold` NÃO se copiam para o envelope: `SaveGame::level()`
@@ -227,10 +224,10 @@ fn options_system(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
             game.locale = locale.as_deref().map(|locale| locale.lang.clone());
-            if let Some(terrain) = world_save_host_request.6.as_deref() {
+            if let Some(terrain) = world_save_host_request.5.as_deref() {
                 game.terrain_patches = terrain.deltas.export_patches();
             }
-            if let Some(map) = world_save_host_request.7.as_deref() {
+            if let Some(map) = world_save_host_request.6.as_deref() {
                 game.action_keys = map
                     .bindings
                     .iter()
@@ -243,7 +240,7 @@ fn options_system(
                     .collect();
             }
             if let Some(scene) = world_save_host_request
-                .5
+                .4
                 .as_deref()
                 .filter(|scene| scene.switchable())
             {
@@ -291,17 +288,10 @@ fn options_system(
                     if let Some(locale) = locale.as_deref_mut() {
                         locale.set_lang(&lang);
                     }
-                    if let Some(host) = host.as_mut()
-                        && let Some(locale) = locale.as_deref()
-                        && let Some(mut ctx) = host.lua.app_data_mut::<crate::luau::ScriptCtx>()
-                    {
-                        ctx.locale_table = Some(std::sync::Arc::new(locale.table.clone()));
-                        ctx.locale_lang = Some(locale.lang.clone());
-                    }
                 }
                 let patches = game.terrain_patches.clone();
                 let keys = game.action_keys.clone();
-                world_save_host_request.4.queue(move |world: &mut World| {
+                world_save_host_request.3.queue(move |world: &mut World| {
                     // Recortes de terreno PENDENTES (ver `PendingSavePatches`):
                     // importá-los aqui punha-os no runtime da cena velha, que a
                     // troca (se houver) substitui.
@@ -314,15 +304,13 @@ fn options_system(
                         }
                     }
                 });
-                if let Some(host) = host.as_mut() {
-                    bevy_ext_luau::game::restore_game_json(&game.world_kv);
-                }
+                bevy_ext_luau::game::restore_game_json(&game.world_kv);
                 // 1.º herói (ver o save): com 2+ heróis o load morria em
                 // silêncio — "Jogo carregado." sem herói nenhum reposicionado.
                 if let Some((entity, mut transform, mut player)) = heroes.iter_mut().next() {
                     let position = game.position.filter(|p| p.iter().all(|v| v.is_finite()));
                     let current = world_save_host_request
-                        .5
+                        .4
                         .as_deref()
                         .filter(|scene| scene.switchable())
                         .cloned();
@@ -341,7 +329,7 @@ fn options_system(
                             },
                         );
                         request.came_from = game.came_from.clone();
-                        world_save_host_request.4.queue(move |world: &mut World| {
+                        world_save_host_request.3.queue(move |world: &mut World| {
                             if let Err(error) = crate::scene_loader::request_change(world, request)
                             {
                                 bevy::log::warn!(
@@ -353,11 +341,11 @@ fn options_system(
                         let stale = game.scene.is_none()
                             && current.is_some()
                             && world_save_host_request
-                                .6
+                                .5
                                 .as_deref()
                                 .is_some_and(|t| !t.in_field(position[0], position[2]));
                         if stale {
-                            world_save_host_request.4.queue(|world: &mut World| {
+                            world_save_host_request.3.queue(|world: &mut World| {
                                 if let Some((_, pose)) =
                                     crate::scene_loader::find_entry(world, None)
                                 {
@@ -374,7 +362,7 @@ fn options_system(
                         // também, senão o `@back` saía pelo portal da sessão
                         // atual em vez do que o save gravou.
                         let came_from = game.came_from.clone();
-                        world_save_host_request.4.queue(move |world: &mut World| {
+                        world_save_host_request.3.queue(move |world: &mut World| {
                             if let Some(mut current) =
                                 world.get_resource_mut::<crate::scene_loader::CurrentScene>()
                             {
@@ -382,7 +370,7 @@ fn options_system(
                             }
                         });
                         crate::player::settle_after_teleport(
-                            &mut world_save_host_request.4,
+                            &mut world_save_host_request.3,
                             entity,
                             Some(&mut *player),
                         );

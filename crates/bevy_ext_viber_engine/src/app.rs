@@ -944,41 +944,6 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     app.insert_resource(crate::feedback::DamageNumbers2d(damage_numbers_2d));
     // Colheita/destrutíveis são DADOS autorais + regras em Lua. Nenhum
     // plugin de colheita: os props autorais viajam em `ScriptProps` e o Lua lê.
-    // A instalação de `viber.ui` tem de ganhar ao runtime Luau: sem ordem,
-    // um script activado no frame 1 via `luau_on_add` podia ver `viber.ui`
-    // nil (morria — `Added` dispara 1×) ou queimar o warn-once. As três
-    // ordenações seguintes só têm contraparte com a UI E o host Luau: sem um
-    // deles não há `viber.ui` para instalar nem `luau_update` para ordenar.
-    if ui && scripts == ScriptsMode::Compat {
-        app.add_systems(
-            bevy::app::Update,
-            // O handle da VM (`UiScriptHost`) sai ANTES do install — o
-            // `install_ui_script_api` do crate lê O CONTRATO, não o host
-            // Luau deste monólito.
-            (ui::publish_ui_script_host, ui::install_ui_script_api)
-                .chain()
-                .before(luau::luau_on_add)
-                .before(luau::luau_update),
-        );
-        // As mutações que os scripts enfileiram via `viber.ui.*` têm de ser
-        // aplicadas DEPOIS de `luau_update` as produzir — sem ordem, chegavam um
-        // frame tarde (ou em corrida com o produtor). Ordena-se o SET: o
-        // `apply_ui_commands` já vive no `UiSet::Script` e re-adicioná-lo aqui
-        // duplicava a instância no schedule (pânico "more than one instance").
-        // Sem ciclo: a chain luau não referencia UiSets.
-        app.configure_sets(
-            bevy::app::Update,
-            ui::UiSet::Script.after(luau::luau_update),
-        );
-        // E a UI PUBLICA antes dos scripts lerem: os cliques de um frame chegam
-        // ao `on_update` NO MESMO frame, haja como for a ordem arbitrária entre
-        // plugins — sem isto, `viber.ui.clicked(…)` perdia cliques por corrida
-        // (o publish rodava depois do script e limpava a vista).
-        app.configure_sets(
-            bevy::app::Update,
-            (ui::UiSet::Collect, ui::UiSet::Build, ui::UiSet::Bind).before(luau::luau_update),
-        );
-    }
     // O spawn do mundo junta-se ao set do contrato do nav crate: o NavPlugin
     // aplica a `<NavMesh>` e cria o arquipélago DEPOIS dele (Startup). O
     // handle do terreno (`nav::publish_nav_ground`) sai a seguir ao spawn.

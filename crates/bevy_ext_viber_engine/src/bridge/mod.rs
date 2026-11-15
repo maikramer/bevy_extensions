@@ -680,73 +680,17 @@ fn app_info(_params: In<Option<Value>>, _world: &mut World) -> BrpResult {
     }))
 }
 
-/// Recarrega um script Luau no jogo a correndo — o caminho do dock de scripts
-/// do editor (que corre fora do processo). Params: `{"path": "ui/hud.lua"}`.
-fn scripts_reload(params: In<Option<Value>>, world: &mut World) -> BrpResult {
-    let path = params
-        .0
-        .as_ref()
-        .and_then(|value| value.get("path"))
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| invalid("scripts.reload: precisa de `path`".into()))?;
-    // Caminho relativo a `scripts/`: a chave AUTORAL do registry pode trazer o
-    // prefixo histórico `scripts/` (o loader aceita as duas grafias). Sem
-    // normalizar, o reload carregava um SEGUNDO chunk com outra chave e as
-    // entidades continuavam a correr o antigo.
-    let relative = path.strip_prefix("scripts/").unwrap_or(&path).to_string();
-    // entidades primeiro (leitura), indexadas pela chave AUTORAL — depois o
-    // host mutável
-    let mut by_path: std::collections::HashMap<String, Vec<(Entity, Vec3)>> =
-        std::collections::HashMap::new();
-    {
-        let mut query = world.query::<(Entity, &crate::luau::LuaScriptRef, Option<&Transform>)>();
-        for (entity, script, transform) in query.iter(world) {
-            by_path.entry(script.path.clone()).or_default().push((
-                entity,
-                transform.map_or(Vec3::ZERO, |transform| transform.translation),
-            ));
-        }
-    }
-    let Some(mut host) = world.get_resource_mut::<crate::luau::LuaScriptHost>() else {
-        return Err(invalid(
-            "scripts.reload: sem LuauScriptHost (mundo sem scripts?)".into(),
-        ));
-    };
-    let scripts_dir = host.scripts_dir.clone();
-    // Script já carregado (qualquer das grafias) → só ele. Não carregado →
-    // pode ser um módulo do `viber.load`: aí sai do cache e TODOS os scripts
-    // re-correm o top-level (guardam o `return` antigo em locals) — o mesmo
-    // caminho do hot-reload automático. Editar um módulo pelo dock do editor
-    // não fazia nada porque só o registry era consultado.
-    let mut targets: Vec<String> = Vec::new();
-    if let Some(key) = [path.clone(), relative.clone()]
-        .into_iter()
-        .find(|key| host.registry.contains(key))
-    {
-        targets.push(key);
-    } else if crate::luau::game::evict_module(&host.lua, &relative) {
-        targets.extend(host.registry.paths().into_iter().map(str::to_string));
-    } else {
-        return Err(invalid(format!(
-            "scripts.reload: '{path}' não está carregado (nem script nem módulo de viber.load)"
-        )));
-    }
-    let mut reloaded = 0usize;
-    let mut first_error: Option<String> = None;
-    for target in &targets {
-        let entities = by_path.get(target).cloned().unwrap_or_default();
-        match crate::hot_reload::reload_script(&mut host, &scripts_dir, target, &entities) {
-            Ok(count) => reloaded += count,
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
-        }
-    }
-    match first_error {
-        Some(error) => Err(invalid(format!("scripts.reload: {error}"))),
-        None => Ok(json!({ "reloaded": true, "entities": reloaded })),
-    }
+/// Recarrega um script Luau no jogo a correndo — ERA o caminho do dock de
+/// scripts do editor sobre o host antigo (`LuaScriptHost` + hot-reload de
+/// chunks). O host morreu (2026-11-15): os scripts do jogo correm no BMS e o
+/// reload corre pelo watch de assets (gravar o `.lua` recarrega o asset e o
+/// BMS recarrega os contextos dele). O método responde com erro explícito
+/// em vez de falhar em silêncio.
+fn scripts_reload(_params: In<Option<Value>>, _world: &mut World) -> BrpResult {
+    Err(invalid(
+        "scripts.reload: aposentado com o host Luau do monólito — os scripts          do jogo correm no BMS e o reload é o watch de assets (gravar o .lua).          A REPL `viber.lua` continua disponível para avaliar código ao vivo."
+            .into(),
+    ))
 }
 
 fn screenshot_request(_params: In<Option<Value>>, world: &mut World) -> BrpResult {

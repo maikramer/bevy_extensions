@@ -3017,19 +3017,7 @@ pub fn apply_script_spawns(world: &mut World) {
     };
     let mut stats = SpawnStats::default();
     let mut ambient: Option<GlobalAmbientLight> = None;
-    // `self_name`/`self_props` viajam com o pedido: a callback corre DEPOIS do
-    // `ctx` morrer, e ler os componentes exige o `World` (que o `host` já
-    // empresta em `&mut`). Sem estes campos `viber.entity_name()` devolvia nil
-    // e `viber.prop` lia os default em vez dos props do protótipo.
-    type SpawnedMeta = Option<std::sync::Arc<Vec<(String, String)>>>;
-    let mut spawned: Vec<(
-        Entity,
-        Option<mlua::Function>,
-        Option<String>,
-        Vec3,
-        Option<String>,
-        SpawnedMeta,
-    )> = Vec::new();
+    let mut spawned: Vec<(Entity, Option<mlua::Function>)> = Vec::new();
     for ((request, spec), seat_y) in requests.into_iter().zip(seat_ys) {
         let Some(spec) = spec.as_ref() else {
             continue;
@@ -3041,24 +3029,7 @@ pub fn apply_script_spawns(world: &mut World) {
         if let Some(mut t) = world.get_mut::<Transform>(root) {
             t.translation = Vec3::new(request.pos.x, y, request.pos.z);
         }
-        let origin = world
-            .get::<Transform>(root)
-            .map(|t| t.translation)
-            .unwrap_or(request.pos);
-        let self_name = world
-            .get::<Name>(root)
-            .map(|name| name.as_str().to_string());
-        let self_props = world
-            .get::<crate::luau::ScriptProps>(root)
-            .map(|props| props.0.clone());
-        spawned.push((
-            root,
-            request.on_spawned,
-            request.caller_path,
-            origin,
-            self_name,
-            self_props,
-        ));
+        spawned.push((root, request.on_spawned));
     }
     // Devolve os Assets (o mundo não pode ficar sem eles); o ctx tem de
     // morrer ANTES — toma &mut deles.
@@ -3072,28 +3043,15 @@ pub fn apply_script_spawns(world: &mut World) {
         world.insert_resource(gradmesh_materials);
     }
     world.insert_resource(pending);
-    // Callbacks Lua: ctx seedado à entidade nova, argumento = bits.
-    if !spawned.is_empty() {
-        let Some(mut host) = world.get_resource_mut::<crate::luau::LuaScriptHost>() else {
-            return;
-        };
-        let host = &mut *host;
-        for (entity, cb, caller_path, origin, self_name, self_props) in spawned {
-            let Some(cb) = cb else { continue };
-            if let Some(mut c) = host.lua.app_data_mut::<crate::luau::ScriptCtx>() {
-                c.entity = Some(entity);
-                c.path = caller_path;
-                c.origin = origin;
-                c.self_name = self_name;
-                c.self_props = self_props;
-            }
-            let result = {
-                let _budget = host.budget_guard();
-                cb.call::<()>(entity.to_bits() as i64)
-            };
-            if let Err(e) = result {
-                warn!(target: "viber::luau", "viber.spawn_prototype callback: {e}");
-            }
+    // Callbacks Lua: a `Function` é do CONTEXTO BMS do chamador (a ponte
+    // `bms_bridge` guarda-a no `PendingPrototypeSpawn`) — chama-se
+    // directamente com os bits; as closures `viber.*` leem os globals
+    // estáticos, não há ctx por chamada para semear (a VM antiga semeava o
+    // `ScriptCtx` dela; morreu com o host).
+    for (entity, cb) in spawned {
+        let Some(cb) = cb else { continue };
+        if let Err(e) = cb.call::<()>(entity.to_bits() as i64) {
+            warn!(target: "viber::luau", "viber.spawn_prototype callback: {e}");
         }
     }
 }

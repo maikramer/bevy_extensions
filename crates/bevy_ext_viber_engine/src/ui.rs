@@ -9,9 +9,6 @@
 //! * [`publish_ui_world_state`] — o retrato do mundo ([`host::UiWorldState`])
 //!   que os binds do HUD leem (relógio/chuva/zona + `display-name`);
 //! * [`publish_ui_font`] — a fonte do HUD (`UiFont`) para tooltips e listas;
-//! * [`publish_ui_script_host`] — o handle da VM para o
-//!   `install_ui_script_api` do crate instalar `viber.ui` (o dono da VM é o
-//!   host Luau deste monólito).
 //!
 //! Os contratos que o crate definiu no `ui::host` (ScriptInteraction,
 //! ScriptEventQueue, HudHidden, MinimapRange, SceneSource…) são reexportados
@@ -62,20 +59,4 @@ pub fn publish_ui_font(hud: Option<Res<crate::hud::HudAssets>>, mut commands: Co
     }
 }
 
-/// Publica o handle da VM para o `install_ui_script_api` do crate.
-///
-/// O dono da VM é o [`crate::luau::LuaScriptHost`]; `Lua` é `Arc` por
-/// dentro, logo a cópia partilha a MESMA VM. Encadeado ANTES do install (o
-/// `app.rs` mantém a pinagem original contra `luau_on_add`/`luau_update`).
-pub fn publish_ui_script_host(
-    host: Option<Res<crate::luau::LuaScriptHost>>,
-    existing: Option<Res<host::UiScriptHost>>,
-    mut commands: Commands,
-) {
-    let Some(host) = host else {
-        return;
-    };
-    if existing.is_none() {
-        commands.insert_resource(host::UiScriptHost(host.lua.clone()));
-    }
-}
+

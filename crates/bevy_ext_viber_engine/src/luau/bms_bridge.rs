@@ -36,8 +36,6 @@ use crate::vitals::Health;
 
 use super::commands::ScriptCommand;
 use super::components::{LuaScriptRef, ScriptInteraction, ScriptProps, ScriptToast};
-use super::ctx::ScriptCtx;
-use super::host::LuaScriptHost;
 use super::input::key_code_from_str;
 use super::sfx::match_gesture_clip;
 
@@ -1017,16 +1015,11 @@ pub(crate) fn apply_script_command(world: &mut World, command: ScriptCommand) {
             }
         }
         ScriptCommand::SetLocale(lang) => {
-            let seeded = world.get_resource_mut::<crate::locale::Locale>().map(|mut locale| {
+            // O publisher (`publish_host_state`) espelha o `Locale` para o
+            // `ScriptHostState` a cada frame — os contextos BMS leem-no dos
+            // globals no frame seguinte (o ctx da VM antiga morreu com ela).
+            if let Some(mut locale) = world.get_resource_mut::<crate::locale::Locale>() {
                 locale.set_lang(&lang);
-                (locale.lang.clone(), locale.table.clone())
-            });
-            if let Some((active, table)) = seeded
-                && let Some(host) = world.get_resource::<LuaScriptHost>()
-                && let Some(mut ctx) = host.lua.app_data_mut::<ScriptCtx>()
-            {
-                ctx.locale_table = Some(std::sync::Arc::new(table));
-                ctx.locale_lang = Some(active);
             }
         }
         ScriptCommand::Quit => {
@@ -1951,22 +1944,10 @@ fn deliver_group(
     }
 }
 
-/// Membros de um alvo (`nome` ou `@grupo`) segundo os snapshots — o ctx do
-/// host do monólito quando existe; em modo BMS o `ScriptHostState`
-/// publicado (as MESMAS extrações de nomes/grupos do `luau_update`).
+/// Membros de um alvo (`nome` ou `@grupo`) segundo o snapshot do
+/// `ScriptHostState` publicado (as MESMAS extrações de nomes/grupos que o
+/// `luau_update` do host antigo semeava no ctx dele).
 fn host_members(world: &World, target: &bevy_ext_luau::exports::ConnTarget) -> Vec<i64> {
-    if let Some(host) = world.get_resource::<LuaScriptHost>()
-        && let Some(ctx) = host.lua.app_data_ref::<ScriptCtx>()
-    {
-        return match target {
-            bevy_ext_luau::exports::ConnTarget::Name(name) => {
-                ctx.named_entities.get(name).cloned().unwrap_or_default()
-            }
-            bevy_ext_luau::exports::ConnTarget::Group(group) => {
-                ctx.groups.get(group).cloned().unwrap_or_default()
-            }
-        };
-    }
     let Some(state) = world.get_resource::<bevy_ext_luau::ScriptHostState>() else {
         return Vec::new();
     };
@@ -1986,19 +1967,18 @@ fn host_members(world: &World, target: &bevy_ext_luau::exports::ConnTarget) -> V
     }
 }
 
-/// Corre `method(args…)` no contexto do alvo — 1:1 com a entrega do loop
-/// de sinais do `luau_update` (semente de contexto, aviso de método
-/// ausente, erro pcall-style por path). Sem o host do monólito (modo BMS)
-/// o método vai como callback BMS (`ScriptCallbackMessage` com o método
-/// como label — o handler procura a GLOBAL `method` no contexto do alvo).
+/// Corre `method(args…)` no contexto do alvo — entrega BMS
+/// (`ScriptCallbackMessage` com o método como label — o handler procura a
+/// GLOBAL `method` no contexto do alvo; o host antigo do monólito, que
+/// corria o método na VM partilhada com semente de contexto, morreu com ele).
 fn run_on_target(
     world: &mut World,
     target: Entity,
     method: &str,
     args: &[serde_json::Value],
-    sender: Option<i64>,
+    _sender: Option<i64>,
 ) {
-    let Some(path) = world
+    let Some(_path) = world
         .get::<LuaScriptRef>(target)
         .map(|lref| lref.path.clone())
     else {
@@ -2009,48 +1989,7 @@ fn run_on_target(
         );
         return;
     };
-    let origin = scripted_pos(world, target).unwrap_or_default();
-    let range = world
-        .get::<super::components::ScriptInteraction>(target)
-        .map(|interaction| interaction.range);
-    let name = world.get::<Name>(target).map(Name::to_string);
-    let props = world
-        .get::<super::components::ScriptProps>(target)
-        .map(|props| props.0.clone());
-    if let Some(host) = world.get_resource::<LuaScriptHost>()
-        && let Some(mut ctx) = host.lua.app_data_mut::<ScriptCtx>()
-    {
-        ctx.interaction_range = range;
-        ctx.self_name = name;
-        ctx.self_props = props;
-    }
-    // Argumentos JSON → valores Lua (o `viber.emit` BMS empacota em JSON).
-    let packed = {
-        let Some(host) = world.get_resource::<LuaScriptHost>() else {
-            deliver_bms_callback(world, target, method, args);
-            return;
-        };
-        mlua::MultiValue::from_vec(
-            args.iter()
-                .filter_map(|value| bevy_ext_luau::game::json_to_lua(&host.lua, value).ok())
-                .collect(),
-        )
-    };
-    if let Some(mut host) = world.get_resource_mut::<LuaScriptHost>() {
-        match host.run_method(target, &path, origin, method, packed, sender) {
-            Ok(true) => {}
-            Ok(false) => {
-                warn_once(
-                    world,
-                    &format!("signal-method:{path}:{method}"),
-                    &format!("[luau] {path}: não define `function {method}(…)` (alvo de sinal/grupo)"),
-                );
-            }
-            Err(error) => {
-                host.warn_once(&path, &error);
-            }
-        }
-    }
+    deliver_bms_callback(world, target, method, args);
 }
 
 /// Entrega BMS de um método de sinal: `ScriptCallbackMessage` mirando o
@@ -2222,7 +2161,6 @@ struct PublishStateParams<'w, 's> {
 struct PublishStateResources<'w> {
     scene: Option<bevy::ecs::system::Res<'w, crate::scene_loader::CurrentScene>>,
     biome: Option<bevy::ecs::system::Res<'w, crate::ambient::CurrentBiome>>,
-    host: Option<bevy::ecs::system::Res<'w, LuaScriptHost>>,
     prototypes: Option<bevy::ecs::system::Res<'w, crate::recipes::spawn::PrototypeLibrary>>,
     camera_snapshot: Option<bevy::ecs::system::Res<'w, crate::camera::CameraSnapshot>>,
     cinematic: Option<bevy::ecs::system::Res<'w, crate::cinematic::CinematicPlayback>>,
@@ -2297,25 +2235,19 @@ fn publish_host_state(
     state.scene_entry = res.scene.as_ref().and_then(|s| s.entry.clone());
     state.biome = res.biome.as_ref().and_then(|b| b.id.clone());
 
-    // Pasta de scripts (`viber.load`); o publisher do BMS espelha-a no
-    // static do `game` — só `Some` escreve (apps mínimas não limpa).
-    state.scripts_dir = res.host.as_ref().map(|host| host.scripts_dir.clone());
+    // Pasta de scripts (`viber.load`): semeada UMA vez no arranque (o
+    // anfitrião chama `game::set_scripts_dir` no build); o publisher nunca
+    // escreve `None` sobre ela. O static do `game` espelha-se por frame no
+    // `publish_globals` do crate — só `Some` escreve.
+    state.scripts_dir = None;
 
-    // Esquema `--@export` por path — no host antigo vive no ctx (o mesmo
-    // mapa que o `LuaScriptHost::load_script` mantém); em modo BMS o
-    // [`parse_script_exports`] extrai-o dos assets e o publisher copia-o.
+    // Esquema `--@export` por path — em modo BMS o [`parse_script_exports`]
+    // extrai-o dos assets e o publisher copia-o.
     state.exports = res
-        .host
-        .as_ref()
-        .and_then(|host| host.lua.app_data_ref::<ScriptCtx>())
-        .map(|ctx| ctx.exports.clone())
-        .filter(|exports| !exports.is_empty())
-        .unwrap_or_else(|| {
-            res.bms_exports
-                .as_deref()
-                .map(BmsScriptExports::snapshot)
-                .unwrap_or_default()
-        });
+        .bms_exports
+        .as_deref()
+        .map(BmsScriptExports::snapshot)
+        .unwrap_or_default();
 
     // Foco de interação por tecla (o `viber.interacted` do BMS só aceita o
     // vencedor) e o gate de `UiInput` focado (teclas são texto).
