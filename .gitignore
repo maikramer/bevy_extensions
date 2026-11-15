@@ -12,6 +12,8 @@ crates/bevy_ext_physics/Cargo.lock
 
 # Builds dos crates standalone (excluídos da raiz; locks ficam, targets não)
 crates/*/target/
+# Stray de um cargo corrido de dentro de crates/
+/crates/target/
 
 # Worktrees locais de sessões concorrentes
 .worktrees/
