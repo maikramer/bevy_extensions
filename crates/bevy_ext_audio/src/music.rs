@@ -16,7 +16,10 @@ use std::time::Duration;
 
 use bevy::camera::Camera3d;
 use bevy::prelude::*;
-use bevy_ext_core::{AudioMixerSettings, InteriorSceneConfig, Player};
+use bevy_ext_core::{InteriorSceneConfig, Player};
+// Reexportado: os hosts (monólito/Vael) chegam ao mixer pelo caminho
+// histórico `viber::music::AudioMixerSettings` (saves, BRP, painéis).
+pub use bevy_ext_core::AudioMixerSettings;
 use bevy_kira_audio::prelude::{Mix, ReverbHandle};
 use bevy_kira_audio::{AudioChannel, AudioControl, AudioInstance, AudioTween};
 

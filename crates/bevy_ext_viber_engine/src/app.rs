@@ -27,6 +27,8 @@ use bevy::log::info;
 use bevy::time::{Time, Virtual};
 use bevy_kira_audio::AudioApp;
 
+use crate::ai_host;
+use crate::audio_host;
 use crate::bridge;
 use crate::profiler::{Group, timed};
 use crate::recipes::ParsedWorld;
@@ -553,6 +555,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         sfx: Some(sfx_reverb),
         voice: Some(voice_reverb),
     });
+    // O host dos sistemas `music::*` (exit4/G1): espelha cena/bioma/chuva no
+    // `AudioWorldState`, semeia o `AudioPaths` do config e marca o ouvido.
+    app.add_plugins(audio_host::AudioHostPlugin);
     if let Some(port) = bridge_port {
         app.add_plugins(bridge::BridgePlugin { port });
         // O ping passa a identificar o mundo servido — o `viber debug
@@ -851,6 +856,10 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     //   sentidos (`SensesPlugin`) e os vitais das criaturas sem script.
     // - `SimpleAiPlugin` acrescenta a FSM simples da engine (`enemy_ai`).
     // `Off` não regista nenhum dos dois (nem os sentidos).
+    // O host dos plugins `ai` (exit4/G1): o `Ground` do `bevy_ext_ai` passa a
+    // ser o `TerrainRuntime` da engine — o integrador de locomoção amosta o
+    // Y e clampeia à borda pela mesma fonte que o código histórico lia.
+    app.add_plugins(ai_host::AiHostPlugin);
     match ai {
         AiMode::Full => {
             app.add_plugins(crate::ai::AiPlugin);

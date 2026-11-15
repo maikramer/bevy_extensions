@@ -26,7 +26,12 @@
 // Acessibilidade movida ao `bevy_ext_core`; o caminho `viber::a11y` continua
 // a resolver e o recurso é O MESMO (ver o `pub use` na lista em baixo).
 pub mod adaptive_quality;
-pub mod ai;
+// IA movida ao `bevy_ext_ai` (exit4/G1): sentidos (`senses`), FSM simples,
+// serviço e o integrador de locomoção — os TypePaths `viber::ai`/`viber::
+// senses` ficam congelados no crate. O adaptador de host é o `ai_host`
+// (o `Ground` do crate passa a ser o `TerrainRuntime` da engine).
+pub use bevy_ext_ai::ai as ai;
+pub mod ai_host;
 pub mod ambient;
 pub mod animation;
 pub mod app;
@@ -35,6 +40,11 @@ pub mod attachment;
 // caminho `viber::audio_space` reexporta o módulo e o TypePath do
 // `SpatialOneShot` fica congelado lá.
 pub use bevy_ext_audio::audio_space as audio_space;
+// Contratos de HOST do `bevy_ext_audio` (exit4/G1): o espelho
+// `AudioWorldState`, os paths de clips (`AudioPaths`) e o marker `AudioEar`
+// saem dos recursos da engine — os sistemas `music::*` do crate leem-nos
+// daqui (o adaptador registava-se junto dos sistemas de música no `app.rs`).
+pub mod audio_host;
 pub mod audit;
 pub mod bake;
 pub mod bridge;
@@ -86,7 +96,12 @@ pub use bevy_engine_core::vitals;
 pub mod luau;
 pub mod menus;
 pub mod meshopt;
-pub mod music;
+// Música/buses/ducking/reverb movidos ao `bevy_ext_audio` (exit4/G1); o
+// caminho `viber::music` reexporta o módulo e os TypePaths `viber::music::`
+// ficam congelados lá. O adaptador de host é o `audio_host` — o
+// `music_driver`/`script_sound_loops` do crate leem `AudioWorldState`/
+// `AudioPaths` em vez dos recursos da engine.
+pub use bevy_ext_audio::music as music;
 pub mod nav;
 pub mod netplay;
 pub mod particles;
@@ -112,7 +127,10 @@ pub mod scaffold;
 pub mod scene;
 pub mod scene_loader;
 pub mod script_kind;
-pub mod senses;
+// Sentidos (visão/audição da FSM) movidos ao `bevy_ext_ai` (exit4/G1); o
+// caminho `viber::senses` reexporta o módulo e os TypePaths `viber::senses::
+// …` ficam congelados no crate.
+pub use bevy_ext_ai::senses as senses;
 pub mod session;
 pub mod sky;
 pub use bevy_ext_engine::sky_nishita;
