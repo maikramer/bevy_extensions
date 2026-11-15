@@ -37,10 +37,16 @@ pub mod events;
 pub mod exports;
 pub mod game;
 pub mod keys;
+// F8: os módulos IA são INCONDICIONAIS (o `mod imp` é que é cfg-gated —
+// sem a feature, `available()`=false e o jogo segue no fluxo antigo). Assim
+// o shim do monólito resolve em qualquer estado de features e o monólito
+// reencaminha as dele (`nlu = ["dep:celer-nlu", "bevy_ext_luau/nlu"]`).
+pub mod nlu;
 pub mod ownership;
 pub mod props;
 pub mod sfx;
 pub mod surfaces;
+pub mod decision;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -2030,6 +2036,10 @@ fn install_viber_api_with(
     // `entity_hp`/`set_scale`) e props exportados (`prop`/`props`).
     entity::install(lua, &viber, globals.clone())?;
     props::install(lua, &viber, globals.clone())?;
+    // F8: runtimes IA (sem a feature, `available()`=false e o jogo segue no
+    // fluxo antigo — o mesmo contrato do stub do monólito).
+    nlu::install(lua, &viber)?;
+    decision::install(lua, &viber)?;
 
     lua.globals().set("viber", viber)?;
     Ok(())

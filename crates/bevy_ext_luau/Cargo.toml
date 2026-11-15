@@ -19,6 +19,12 @@ log = "0.4"
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# F8 (exit4): runtimes IA do CelerAI — as MESMAS path-deps que o monólito
+# tinha; features `nlu`/`decision` OFF por defeito (sem CelerAI ao lado, os
+# `viber.nlu`/`viber.decision` devolvem available()=false e o jogo segue no
+# fluxo antigo).
+celer-nlu = { version = "0.3.0", path = "../../../CelerAI/crates/nlu", optional = true }
+celer-decision = { version = "0.1.0", path = "../../../CelerAI/crates/decision", optional = true }
 
 [features]
 # Seam sobre o `bevy_ext_ui` (F2): instala `viber.ui` (a superficie Luau da
@@ -27,3 +33,6 @@ serde_json = "1"
 # `UiScriptState` no build do plugin. Default OFF — consumers sem UI nao
 # pagam o `bevy_ext_world` que a UI arrasta.
 ui = ["dep:bevy_ext_ui"]
+nlu = ["dep:celer-nlu"]
+decision = ["dep:celer-decision"]
+# O conjunto de jogo: tudo o que o Vael liga.

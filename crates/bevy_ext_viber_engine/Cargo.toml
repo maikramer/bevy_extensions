@@ -107,8 +107,8 @@ default = ["experimental_pbr_pcss", "luau-jit"]
 ai = ["nlu", "decision"]
 experimental_pbr_pcss = ["bevy/experimental_pbr_pcss"]
 luau-jit = ["mlua/luau-jit"]
-nlu = ["dep:celer-nlu"]
-decision = ["dep:celer-decision"]
+nlu = ["dep:celer-nlu", "bevy_ext_luau/nlu"]
+decision = ["dep:celer-decision", "bevy_ext_luau/decision"]
 
 [patch.crates-io]
 rerecast = { path = "vendor/rerecast" }

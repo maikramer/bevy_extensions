@@ -1092,6 +1092,8 @@ dependencies = [
  "bevy",
  "bevy_ext_core",
  "bevy_mod_scripting",
+ "celer-decision",
+ "celer-nlu",
  "log",
  "mlua",
  "serde",
