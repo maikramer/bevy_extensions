@@ -19,6 +19,13 @@
 // caminho `viber::save::…` continua a resolver e o host Luau escreve O
 // MESMO recurso.
 pub use bevy_save_slots::*;
+//
+// NOTA(exit3/wave-b, peça 5): NÃO há mais nada a extrair daqui. O
+// `apply_save`/`OptionsRows`/`options_system`/`SavePlugin` só têm
+// consumidor neste crate (`app.rs` registra o plugin do binário; os testes
+// do módulo usam `apply_save`) — o jogo e os crates irmãos já consomem o
+// envelope pelo `bevy_save_slots` (o `SaveRequest`/`PendingSavePatches` do
+// Vael são O MESMO tipo do crate). O plugin morre com o binário na wave H.
 
 use bevy::prelude::*;
 
