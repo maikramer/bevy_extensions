@@ -1,0 +1,27 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features -- --nocapture
+      - run: cargo test --no-default-features
+      - run: cargo doc --no-deps --all-features
+      - run: cargo package --locked
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95'
+      - run: cargo check --all-features
