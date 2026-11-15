@@ -1,0 +1,40 @@
+[package]
+name = "bevy_ext_grass"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Relva GPU para Bevy: bake de máscaras a partir do terreno, estilos por bioma, vento e trampling avian3d sobre bevy_grass"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "grass", "foliage", "rendering", "gamedev"]
+categories = ["game-development", "rendering"]
+
+[features]
+default = ["avian"]
+# Ponte de física: colliders avian3d viram interactors da relva.
+avian = ["dep:avian3d", "bevy_grass/avian"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_color",
+    "bevy_image",
+    "bevy_camera",
+] }
+# Pin exato: o crate é pré-release (0.20.6) e o glue de render muda entre
+# versões; subir é uma decisão consciente, não um `cargo update`.
+bevy_grass = { version = "=0.20.6", default-features = false }
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+], optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

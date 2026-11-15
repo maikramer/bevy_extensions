@@ -39,7 +39,6 @@ pub mod frame_pacing;
 pub mod fx_specs;
 pub mod glb_bounds;
 pub mod graphics;
-pub mod grass;
 pub mod hot_reload;
 pub mod hud;
 pub mod ibl;

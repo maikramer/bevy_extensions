@@ -26,8 +26,25 @@ use bevy::color::LinearRgba;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
 
-use crate::grass::day_tint;
 use crate::profiler::{Group, timed};
+
+/// Multiplicador de albedo ao longo do dia (`0` = noite, `1` = dia cheio).
+///
+/// A relva saiu para o Vael (`vael/src/grass`), mas a curva é a mesma dos
+/// props/materiais standard; fica aqui para o `prop_tint` não depender do
+/// módulo da relva.
+fn day_tint(day: f32) -> [f32; 3] {
+    let day = day.clamp(0.0, 1.0);
+    const NIGHT: [f32; 3] = [0.32, 0.36, 0.46];
+    const GOLDEN: [f32; 3] = [1.12, 0.97, 0.80];
+    let warmth = day * (1.0 - day) * 4.0;
+    let mut out = [0.0f32; 3];
+    for i in 0..3 {
+        let neutral = NIGHT[i] + (1.0 - NIGHT[i]) * day;
+        out[i] = neutral * (1.0 - warmth + GOLDEN[i] * warmth);
+    }
+    out
+}
 
 /// Originais de albedo capturados por material + último tint aplicado.
 #[derive(Resource, Default, Reflect)]

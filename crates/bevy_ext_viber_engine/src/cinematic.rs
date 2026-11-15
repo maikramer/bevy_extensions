@@ -813,7 +813,6 @@ fn tick_cinematic(
     mut fx: StreamingBoostParams,
     terrain: Option<Res<crate::terrain::plugin::ChunkLodState>>,
     mesh_lod: Option<Res<crate::render_lod::MeshLodStats>>,
-    grass: Option<Res<crate::grass::GrassField>>,
     pipelines: Option<Res<PipelinesPending>>,
     mut menus: Option<ResMut<crate::menus::MenusOpen>>,
     mut sfx: MessageWriter<crate::ambient::SfxEvent>,
@@ -843,7 +842,6 @@ fn tick_cinematic(
     // O mundo em volta da câmara ainda se está a construir?
     let streaming = terrain.as_deref().is_some_and(|t| t.busy)
         || mesh_lod.as_deref().is_some_and(|m| m.pending > 0)
-        || grass.as_deref().is_some_and(|g| g.busy)
         || pipelines.as_deref().is_some_and(|p| p.get() > 0);
     let skip_pressed = keys
         .as_deref()

@@ -33,7 +33,7 @@ use crate::profiler::{Group, timed};
 use crate::recipes::ParsedWorld;
 use crate::recipes::spawn::{self, PendingWorld};
 use crate::{
-    a11y, ambient, animation, attachment, audio_space, camera, editor_camera, foliage, grass, hud,
+    a11y, ambient, animation, attachment, audio_space, camera, editor_camera, foliage, hud,
     ik, impact, input_map, locale, luau, menus, meshopt, music, nav, netplay, particles, physics,
     physics_fx, player, postfx, profiler, prop_tint, ragdoll, recipes, render_lod, save, sky,
     spawner, streaming, terrain, textures, time_fx, ui, worldsys, xml,
@@ -376,7 +376,7 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     };
     let shader_entities = &main_world.as_ref().unwrap_or(&world).entities;
     let sky_config = sky::SkyConfig::from_world(shader_entities).with_env_override();
-    let water_config = terrain::water_material::WaterSurfaceConfig::from_world(shader_entities);
+    let water_config = terrain::water_material::water_surface_config_from_world(shader_entities);
     let layers_config = terrain::layer_material::TerrainChunkConfig::from_world(shader_entities);
     let shaders_dir = asset_root.join("shaders");
     let _ = std::fs::create_dir_all(&shaders_dir);
@@ -756,11 +756,6 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     app.add_plugins(crate::ibl::SkyIblPlugin);
     app.add_plugins(terrain::TerrainPlugin);
     app.add_plugins(terrain::runtime::TerrainFeaturesPlugin);
-    // Sub-bosque instanciado (a relva que o `<Vegetation>` não consegue ser):
-    // tiles de lâminas fundidas a 16 m à volta da câmara, vento no vertex
-    // shader, paleta por bioma. `VIBER_GRASS=0` desliga; `VIBER_GRASS_DENSITY`
-    // escala as densidades.
-    app.add_plugins(grass::GrassPlugin);
     // Escritor único de samplers/mipmaps das texturas carregadas (o registro
     // `WorldTiledTextures` é consumido aqui; escrever o sampler noutro
     // sistema reabria a corrida clamp/REPEAT das texturas de chão).
@@ -835,6 +830,13 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // viver no ECS, ver `terrain::water_fx`).
     app.add_plugins(terrain::water_waves::WaterWavePlugin);
     app.add_plugins(terrain::water_fx::WaterFxPlugin);
+    // Adaptadores do jogo (fonte do terreno, ambiente, obstáculos Rapier/voxel,
+    // partículas e marcador `WaterBodied`).
+    app.add_plugins(terrain::water_bridge::WaterBridgePlugin);
+    // Corpos que flutuam (barcos/jangadas/bóias): integra Arquimedes por
+    // coluna do casco, currante e encalhe, e publica a velocidade em
+    // `WaterKinematics` para a esteira/salpico acima os ver como nadadores.
+    app.add_plugins(terrain::water_buoyancy::WaterBuoyancyPlugin);
     // Trauma da camera shake — o melee (e o dano recebido) somam aqui.
     app.init_resource::<camera::CameraShake>();
     // Solavanco direcional da câmara no impacto (mola; o combate soma impulsos).
@@ -985,7 +987,10 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
                     // terceira-pessoa não disputa a pose — a câmara de editor é
                     // a única activa (ver `editor_camera`).
                     timed(Group::Player, player::player_movement)
-                        .run_if(editor_camera::editor_camera_inactive),
+                        .run_if(editor_camera::editor_camera_inactive)
+                        // A intenção (basis/salto) tem de estar escrita antes
+                        // da lógica do tnua.
+                        .before(bevy_tnua::prelude::TnuaPipelineSystems::Logic),
                     timed(Group::Camera, camera::third_person_camera)
                         .run_if(editor_camera::editor_camera_inactive),
                     // `viber.camera_free`: substitui a pose DEPOIS do rig de

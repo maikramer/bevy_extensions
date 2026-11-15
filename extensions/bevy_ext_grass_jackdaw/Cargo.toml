@@ -1,0 +1,27 @@
+[package]
+name = "bevy_ext_grass_jackdaw"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Jackdaw editor extension for bevy_ext_grass: settings, biome palettes and inspector categories"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/maikramer/bevy_extensions"
+authors = ["Maikeu Locatelli"]
+publish = false
+
+# Extensão oficial do Jackdaw: projeto standalone; `jd build` gera o shim em
+# `.jackdaw/` e compila contra o SDK do editor.
+[workspace]
+
+[package.metadata.jackdaw]
+label = "Relva (bevy_ext_grass)"
+
+[dependencies]
+# `jd` redireciona estes para o dylib partilhado do SDK do editor.
+bevy = "0.20"
+jackdaw_extension = "0.20"
+jackdaw_api = "0.20"
+
+# Contrato de cena do crate de relva (specs refletidos). Sem `avian` no
+# editor: o painel edita componentes, não simula física.
+bevy_ext_grass = { path = "../../crates/bevy_ext_grass", default-features = false }
