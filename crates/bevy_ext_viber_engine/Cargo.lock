@@ -1057,6 +1057,7 @@ dependencies = [
  "bevy_ext_gltf",
  "bevy_ext_nav",
  "bevy_ext_physics",
+ "bevy_ext_postfx",
  "bevy_ext_save",
  "bevy_ext_scene",
  "bevy_ext_terrain_runtime",

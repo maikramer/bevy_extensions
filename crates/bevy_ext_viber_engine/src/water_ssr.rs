@@ -1101,6 +1101,13 @@ impl Plugin for WaterSsrPlugin {
         }
         info!("viber: water SSR ativo (VIBER_WATER_SSR) — reflexo de cena na água");
         app.add_plugins(ExtractComponentPlugin::<WaterSsr>::default());
+        // O marcador nas câmaras de janela: o postfx extraído não conhece
+        // este tipo (TODO(viber-exit) dele) — o glue corre DEPOIS do attach
+        // da lente, que é quem decide "câmara de janela equipada".
+        app.add_systems(
+            bevy::app::Update,
+            attach_water_ssr_marker.after(bevy_ext_postfx::AttachCameras),
+        );
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
@@ -1134,9 +1141,40 @@ impl Plugin for WaterSsrPlugin {
                 water_ssr_pass
                     .in_set(Core3dSystems::PostProcess)
                     .after(temporal_anti_alias)
+                    // O monólito ditava `aerial_pass.before(water_ssr_pass)`;
+                    // no crate a aresta ficou para o glue (TODO(viber-exit)
+                    // dele): o grade aéreo corre ANTES do reflexo. No braço
+                    // default (EarlyPostProcess) a aresta é redundante mas
+                    // inofensiva — o set já ordena.
+                    .after(bevy_ext_postfx::AerialPass)
                     .before(motion_blur)
                     .before(tonemapping),
             );
+    }
+}
+
+/// Insere o marcador [`WaterSsr`] nas câmaras de janela que a lente do
+/// postfx já equipou (`With<Bloom>` — o filtro "câmara de jogo" é o mesmo do
+/// attach). Idempotente: `Without<WaterSsr>` não re-insere.
+#[allow(clippy::type_complexity)]
+pub fn attach_water_ssr_marker(
+    mut commands: Commands,
+    cameras: Query<
+        (
+            Entity,
+            &bevy::camera::RenderTarget,
+        ),
+        (
+            With<Camera3d>,
+            With<bevy::post_process::bloom::Bloom>,
+            Without<WaterSsr>,
+        ),
+    >,
+) {
+    for (camera, target) in &cameras {
+        if matches!(target, bevy::camera::RenderTarget::Window(_)) {
+            commands.entity(camera).insert(WaterSsr);
+        }
     }
 }
 

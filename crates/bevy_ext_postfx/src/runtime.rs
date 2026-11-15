@@ -870,6 +870,19 @@ pub fn punch_impact(state: &mut PostFxState, stops: f32, bloom_add: f32) {
 
 /// Liga o pós-processamento e mantém exposição/bloom sincronizados com o
 /// bioma do herói.
+/// Set da cadeia de drives do `Update` (`drive_postfx` … `drive_dof_focus`):
+/// quem publica os recursos que a cadeia lê no MESMO frame (o estado da
+/// atmosfera, o foco de DOF da cinemática) ordena-se `.before(FxDrive)`.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FxDrive;
+
+/// Set do [`attach_postfx_to_cameras`]: o glue de integração (DLSS troca o
+/// AA, SSR da água insere o marcador dele) ordena-se `.after(AttachCameras)`
+/// — o sistema em si tem tipos privados na assinatura e não é ordenável
+/// directamente.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AttachCameras;
+
 pub struct PostFxPlugin;
 
 impl Plugin for PostFxPlugin {
@@ -929,7 +942,7 @@ impl Plugin for PostFxPlugin {
                 // Antes do attach: uma câmara nova entra já com os gates em
                 // vigor e só as equipadas (`With<Bloom>`) precisam de sync.
                 sync_postfx_gates,
-                attach_postfx_to_cameras,
+                attach_postfx_to_cameras.in_set(AttachCameras),
                 // O grading lê [`crate::env::AtmosphereState`] do MESMO
                 // frame: quem publica o estado da atmosfera (o drive do céu
                 // do jogo) tem de correr ANTES desta cadeia — no monólito a
@@ -951,7 +964,8 @@ impl Plugin for PostFxPlugin {
                 torch_pool_drive,
                 drive_dof_focus,
             )
-                .chain(),
+                .chain()
+                .in_set(FxDrive),
         );
         if volumetrics_enabled() {
             app.add_systems(
@@ -966,6 +980,10 @@ impl Plugin for PostFxPlugin {
 /// Equipa cada `Camera3d` que ainda não tem pós-processamento. Corre no
 /// `Update` (e não num startup) porque a câmara do mundo nasce dentro do
 /// spawn exclusivo, depois dos startup systems normais.
+///
+/// O glue de integração ordena-se pelo set [`AttachCameras`] — o sistema tem
+/// tipos privados na assinatura e não é ordenável directamente (ver os
+/// TODO(viber-exit) abaixo).
 #[allow(clippy::type_complexity)]
 fn attach_postfx_to_cameras(
     mut commands: Commands,
@@ -2539,6 +2557,12 @@ fn aerial_after_taa() -> bool {
 /// errado (flashes/piscadelas). O `aerial_pass` nascia com `after(taa)` +
 /// `before(tonemapping)` apenas, ou seja ambíguo contra o `water_ssr_pass`,
 /// o `motion_blur`, o `bloom`, o DOF e o effect stack.
+/// Set do [`aerial_pass`] no grafo `Core3d`: o integrador do SSR da água
+/// ordena o passe dele contra este set (o sistema tem tipos privados na
+/// assinatura e não é ordenável directamente).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AerialPass;
+
 fn aerial_schedule_configs()
 -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system::ScheduleSystem> {
     use bevy::ecs::schedule::IntoScheduleConfigs as _;
@@ -2546,11 +2570,12 @@ fn aerial_schedule_configs()
         // Braço histórico (A/B `VIBER_AERIAL_AFTER_TAA=1`): no MESMO set do
         // passe de SSR da água do integrador — TODO(viber-exit): no monólito
         // havia `.before(water_ssr::water_ssr_pass)` aqui; quem trouxer o
-        // SSR ordena o passe dele contra `aerial_pass` (público) no glue.
+        // SSR ordena o passe dele contra o set [`AerialPass`] no glue.
         // Contra o primeiro passe built-in (`motion_blur`, que já está
         // `before(bloom)`) a ordem continua dita à mão.
         aerial_pass
             .in_set(Core3dSystems::PostProcess)
+            .in_set(AerialPass)
             .after(temporal_anti_alias)
             .before(motion_blur)
             .before(tonemapping_pass)
@@ -2577,6 +2602,9 @@ fn aerial_schedule_configs()
 /// O passe: triângulo fullscreen com `post_process_write` (padrão
 /// `water_ssr`). DEPOIS do TAA e ANTES do tonemap — o grade corre em HDR
 /// linear (o desat linear é o fisicamente correcto).
+///
+/// O integrador do SSR da água ordena o passe dele contra o set
+/// [`AerialPass`] (ver [`aerial_schedule_configs`]).
 fn aerial_pass(
     view: ViewQuery<(&ViewTarget, &AerialViewGpu, &AerialPipelineId)>,
     pipeline_cache: Res<PipelineCache>,

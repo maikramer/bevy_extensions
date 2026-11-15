@@ -75,6 +75,11 @@ bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
 # congelados no crate. O mesmo `bevy_rerecast` do monólito — o `[patch]` do
 # vendor/rerecast aplica-se ao workspace inteiro.
 bevy_ext_nav = { version = "0.1.0", path = "../bevy_ext_nav" }
+# Pós-processamento extraído (shim `src/postfx.rs`); os contratos de estado
+# do céu (`AtmosphereState`/`SunState`/`BiomeRegions`…, TypePaths
+# `viber::worldsys`) vivem no `env` do crate e o `worldsys` do monólito
+# reexporta-os — os drives continuam AQUI.
+bevy_ext_postfx = { version = "0.1.0", path = "../bevy_ext_postfx" }
 # Terreno volumétrico extraído (shim `pub use … as terrain` em `lib.rs`); os
 # TypePaths `viber::terrain::…` estão congelados no crate.
 bevy_ext_terrain_runtime = { version = "0.1.0", path = "../bevy_ext_terrain_runtime" }

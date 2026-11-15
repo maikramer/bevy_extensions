@@ -33,9 +33,9 @@ pub use adaptive::{
 pub use runtime::{
     BASE_BLOOM, BASE_EV100, ExternalExposure, MAX_BLOOM, MAX_DARKEN_EV, MAX_KICK_EV,
     NIGHT_BLOOM_INTENSITY, NIGHT_BLOOM_LF_BOOST, NIGHT_BLOOM_THRESHOLD, NIGHT_VIGNETTE,
-    PostFxPlugin, PostFxState, QualityGates, clear_scene_profile, fx_forced_off,
-    fx_gate_generation, fx_off, fx_runtime_toggle, resolve_profile, set_quality_gates,
-    set_scene_profile,
+    AttachCameras, AerialPass, FxDrive, PostFxPlugin, PostFxState, QualityGates,
+    clear_scene_profile, fx_forced_off, fx_gate_generation, fx_off, fx_runtime_toggle,
+    resolve_profile, set_quality_gates, set_scene_profile,
 };
 pub use toggle::{DEFAULT_BINDINGS, PostFxDebugTogglePlugin, PostFxToggleBindings, parse_bindings};
 
