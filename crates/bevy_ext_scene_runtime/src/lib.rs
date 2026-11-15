@@ -86,7 +86,7 @@ pub mod music {
 
 /// `nav` — o reset de navmesh por cena vive no `bevy_ext_nav`.
 pub mod nav {
-    pub use bevy_ext_nav::reset_for_scene;
+    pub use bevy_ext_nav::{NavMeshTag, NavGroundHandle, WorldSpawned, reset_for_scene};
 }
 
 /// `physics` — colisores declarativos e corpos Rapier: o crate
