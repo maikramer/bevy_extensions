@@ -1,4 +1,7 @@
 /target
+# Baseline de perf A/B (12 GB de cargo cache; o binário velho para comparar
+# com o actual). Fora do git — é regenerável com um checkout antigo + build.
+/target_baseline/
 # Estado/build do Jackdaw nas extensões (19 GB no checkout local; os bundles
 # .jdext vão para os assets do GitHub Release, não para o git).
 extensions/*/.jackdaw/
