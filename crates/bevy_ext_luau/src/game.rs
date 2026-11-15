@@ -296,6 +296,12 @@ pub fn apply_patch(
         .iter()
         .filter_map(|(key, value)| {
             let gv = match value {
+                // `null` REMOVE a chave (o `__newindex` do proxy mapeia o
+                // `nil` para `Null`). Antes caía no `_ => None` e o patch de
+                // remoção era silenciosamente descartado — o gate do
+                // `state_sync` ficava preso no jogo depois de um save
+                // escrito com a autoridade ligada.
+                serde_json::Value::Null => GameValue::Null,
                 serde_json::Value::Bool(flag) => GameValue::Bool(*flag),
                 serde_json::Value::Number(number) => {
                     GameValue::Num(number.as_f64().unwrap_or(0.0))
@@ -339,6 +345,82 @@ pub fn game_proxy(lua: &Lua) -> mlua::Result<Table> {
     let viber: Table = lua.globals().get("viber")?;
     let game: Function = viber.get("game")?;
     game.call(())
+}
+
+/// Snapshot dos primitivos de `viber.game()` **desta VM** (proxy incluído).
+///
+/// É o equivalente de [`game_to_json`] pela tabela da VM em vez do store do
+/// PROCESSO: um módulo que lê e escreve pelo proxy fica sempre na mesma
+/// fonte (apps com store próprio e testes com uma VM à mão — o
+/// `game_to_json`/`apply_patch` COMPAT apontam sempre ao store do processo,
+/// que numa VM de teste não é o mesmo).
+///
+/// Tabelas/funções (overlay de sessão) ficam de fora, como no save; `nil`
+/// entra como `null` (o `GameStore::Null`).
+pub fn game_snapshot_vm(lua: &Lua) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    let Ok(game) = game_proxy(lua) else {
+        return out;
+    };
+    // O proxy guarda tudo atrás de metamétodos: o `pairs` cru do mlua não o
+    // vê. Com `__iter` (o proxy do `install`) iteramos pela função; numa
+    // tabela simples (teste) o `pairs` cru serve.
+    let iter = game
+        .metatable()
+        .and_then(|mt| mt.get::<Option<Function>>("__iter").ok().flatten());
+    if let Some(iter) = iter {
+        let Ok(next) = iter.call::<Function>(game.clone()) else {
+            return out;
+        };
+        loop {
+            let Ok(values) = next.call::<MultiValue>(()) else {
+                break;
+            };
+            if values.is_empty() {
+                break;
+            }
+            let mut values = values.into_iter();
+            let (Some(key), Some(value)) = (values.next(), values.next()) else {
+                break;
+            };
+            insert_primitive_json(&mut out, key, value);
+        }
+    } else {
+        for (key, value) in game.pairs::<Value, Value>().flatten() {
+            insert_primitive_json(&mut out, key, value);
+        }
+    }
+    out
+}
+
+/// `chave`/`valor` Lua → mapa JSON plano. Chaves não-string e valores
+/// não-primitivos (tabelas/funções) ficam de fora.
+fn insert_primitive_json(
+    out: &mut BTreeMap<String, serde_json::Value>,
+    key: Value,
+    value: Value,
+) {
+    let Value::String(key) = key else {
+        return;
+    };
+    let Ok(key) = key.to_str() else {
+        return;
+    };
+    let json = match value {
+        Value::Nil => serde_json::Value::Null,
+        Value::Boolean(flag) => serde_json::Value::Bool(flag),
+        Value::Integer(number) => serde_json::Value::Number(serde_json::Number::from(number)),
+        Value::Number(number) => match serde_json::Number::from_f64(number) {
+            Some(number) => serde_json::Value::Number(number),
+            None => return,
+        },
+        Value::String(text) => match text.to_str() {
+            Ok(text) => serde_json::Value::String(text.to_string()),
+            Err(_) => return,
+        },
+        _ => return,
+    };
+    out.insert(key.to_string(), json);
 }
 
 /// Tira `path` do cache do `viber.load` (hot-reload de um módulo). Devolve
@@ -696,6 +778,17 @@ fn sync_generation(
 
 
 
+/// Lock de teste para o store partilhado do processo: os testes que semeiam
+/// `viber.game()` não podem correr em paralelo (o static é por-processo).
+///
+/// NÃO é `#[cfg(test)]`: os testes do JOGO (crate `vael`) compilam o crate
+/// como dependência, onde o `cfg(test)` do `bevy_ext_luau` está DESLIGADO —
+/// o lock tem de existir nessa compilação também.
+#[doc(hidden)]
+pub mod test_support {
+    pub static PROCESS_STORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,8 +800,10 @@ mod tests {
     }
 
     /// O store de `viber.game()` é do PROCESSO — os testes que o tocam tomam
-    /// este lock (correr em paralelo apagava estado uns dos outros).
-    static PROCESS_STORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// este lock (correr em paralelo apagava estado uns dos outros). O lock
+    /// é o MESMO que os testes do jogo usam (`test_support`): dois statics
+    /// distintos não exclusavam nada.
+    use super::test_support::PROCESS_STORE_TEST_LOCK;
 
     fn fresh_store() -> Arc<RwLock<GameStore>> {
         Arc::new(RwLock::new(GameStore::default()))
@@ -874,5 +969,46 @@ mod tests {
         install(&lua, &viber, fresh_store()).expect("instala");
         let called: mlua::Table = lua.load("return viber.state()").eval().expect("state");
         assert_eq!(called.to_pointer(), per_entity.to_pointer());
+    }
+
+    #[test]
+    fn apply_patch_null_remove_a_chave() {
+        let _lock = PROCESS_STORE_TEST_LOCK.lock().expect("lock");
+        let lua = Lua::new();
+        restore_game_json(&BTreeMap::new());
+        let mut patch = BTreeMap::new();
+        patch.insert("gate".to_string(), json!(true));
+        apply_patch(&lua, &patch);
+        assert_eq!(game_snapshot().get("gate"), Some(&GameValue::Bool(true)));
+        patch.insert("gate".to_string(), serde_json::Value::Null);
+        apply_patch(&lua, &patch);
+        assert!(
+            !game_snapshot().contains_key("gate"),
+            "`null` no patch tem de remover a chave"
+        );
+    }
+
+    #[test]
+    fn game_snapshot_vm_le_o_proxy_e_ignora_tabelas() {
+        let lua = Lua::new();
+        let viber = lua.create_table().expect("viber");
+        lua.globals().set("viber", viber.clone()).expect("global");
+        install(&lua, &viber, fresh_store()).expect("instala");
+        lua.load(
+            r#"local g = viber.game()
+               g.hp = 7
+               g.nome = "herói"
+               g.ligado = true
+               g.sumido = nil
+               g.sessao = { nao = "persiste" }"#,
+        )
+        .exec()
+        .expect("semear");
+        let snapshot = game_snapshot_vm(&lua);
+        assert_eq!(snapshot.get("hp"), Some(&serde_json::json!(7)));
+        assert_eq!(snapshot.get("nome"), Some(&serde_json::json!("herói")));
+        assert_eq!(snapshot.get("ligado"), Some(&serde_json::json!(true)));
+        assert!(!snapshot.contains_key("sessao"), "tabela de sessão não entra");
+        assert!(!snapshot.contains_key("sumido"));
     }
 }
