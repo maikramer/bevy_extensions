@@ -481,7 +481,7 @@ impl TerrainEdit {
 }
 
 /// Falloff suave `1 → 0` em `t = d/raio` (smootherstep), com o corte a 1.
-pub(crate) fn falloff(t: f32) -> f32 {
+pub fn falloff(t: f32) -> f32 {
     if t >= 1.0 {
         return 0.0;
     }
@@ -491,7 +491,7 @@ pub(crate) fn falloff(t: f32) -> f32 {
 
 /// Perfil ASSINADO da cratera (fracção da profundidade): tigela NEGATIVA
 /// até 0.7·r, rebordo POSITIVO 0.7..1.0·r (zeros em t=0.7 e t=1 — contínuo).
-pub(crate) fn crater_profile(t: f32) -> f32 {
+pub fn crater_profile(t: f32) -> f32 {
     const RIM: f32 = 0.7;
     if t >= 1.0 {
         0.0

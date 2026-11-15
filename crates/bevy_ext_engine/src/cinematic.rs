@@ -40,20 +40,44 @@ use bevy_ext_world::XmlNode;
 // Contratos extraídos (bevy_ext_core): os mesmos que `player`/`menus`/
 // `ambient` do monólito reexportam.
 use bevy_ext_core::{MenusOpen, Player, SfxEvent};
-// TODO(viber-exit): `app::RunMode`, `camera::camera_offset`,
-// `hud::assets::HudAssets`, `luau` (fila de eventos e gate de SFX),
-// `recipes::spawn::OrbitCamera`, `render_lod`, `scene::pose` (formatadores)
-// e `terrain::plugin::ChunkLodState` ainda vivem no monólito.
-use viber::app::RunMode;
-use viber::camera::camera_offset;
-use viber::hud::assets::HudAssets;
-use viber::luau::{ScriptEventQueue, ScriptGameEvent, sfx_clip_from_str};
-use viber::recipes::spawn::OrbitCamera;
-use viber::render_lod::MeshLodStats;
-use viber::scene::pose::{format_num, format_vec3};
-use viber::terrain::plugin::ChunkLodState;
+// Contratos fora do monólito: modo da App, câmara, HUD art, fila de eventos
+// de scripting, câmara de órbita, stats de LOD e o ChunkLodState do runtime
+// de terreno.
+use crate::app::RunMode;
+use crate::camera::{OrbitCamera, camera_offset};
+use crate::hud_assets::HudAssets;
+use crate::luau::{ScriptEventQueue, ScriptGameEvent, sfx_clip_from_str};
+use crate::render_lod::MeshLodStats;
+use bevy_ext_terrain_runtime::plugin::ChunkLodState;
 
 use crate::grass::GrassField;
+
+/// `"x y z"` com até 4 casas decimais, sem zeros à direita (`"4.5 0 -2.25"`).
+/// Réplica local dos formatadores de `scene::pose` do monólito (pure fns —
+/// o próprio `scene/pose` sai para crate próprio noutra onda).
+pub fn format_vec3(v: Vec3) -> String {
+    format!(
+        "{} {} {}",
+        format_num(v.x),
+        format_num(v.y),
+        format_num(v.z)
+    )
+}
+
+/// Número curto (até 4 casas), sem zeros à direita nem `-0`.
+pub fn format_num(value: f32) -> String {
+    format_num_with(value, 4)
+}
+
+/// Como [`format_num`], com `decimals` casas.
+pub fn format_num_with(value: f32, decimals: i32) -> String {
+    let scale = 10f64.powi(decimals);
+    let rounded = (value as f64 * scale).round() / scale;
+    // `-0` não tem lugar num ficheiro de mundo.
+    let rounded = if rounded == 0.0 { 0.0 } else { rounded };
+    let text = format!("{rounded:.*}", decimals as usize);
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
 
 // ── dados ───────────────────────────────────────────────────────────────
 

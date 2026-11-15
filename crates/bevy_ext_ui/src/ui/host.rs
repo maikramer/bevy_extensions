@@ -8,7 +8,6 @@
 //! // TODO(viber-exit): cada tipo abaixo indica o seu destino quando o domínio
 //! // for extraído; o host deixa de depender deste crate para os definir.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -22,54 +21,10 @@ use bevy_ext_world::xml::NodeOrigin;
 /// Uma string `@chave` resolve; sem entrada, fica a string original para o
 /// jogo em PT não partir. `VIBER_LANG` escolhe o idioma (default `pt`).
 ///
-/// // TODO(viber-exit): mover para o futuro crate de locale; o `TypePath`
-/// // histórico está congelado para os saves/BRP não mudarem de mão.
-#[derive(Resource, Clone, Debug, Default, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::locale"]
-pub struct Locale {
-    pub lang: String,
-    pub table: HashMap<String, String>,
-    /// Pasta dos `locale/<lang>.json` (para a troca em runtime).
-    pub dir: std::path::PathBuf,
-}
-
-impl Locale {
-    /// Resolve uma chave `@nome` contra a tabela; sem entrada (ou sem `@`),
-    /// devolve o texto original — o mesmo contrato de `dialogue::localized`.
-    pub fn resolve(&self, text: &str) -> String {
-        let Some(key) = text.strip_prefix('@') else {
-            return text.to_string();
-        };
-        self.table
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| text.to_string())
-    }
-
-    /// Carrega `dir/<lang>.json`. Um ficheiro ausente deixa a tabela vazia
-    /// (as strings originais ficam) — o jogo não parte.
-    pub fn load(dir: &std::path::Path, lang: &str) -> Self {
-        let path = dir.join(format!("{lang}.json"));
-        let table = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<HashMap<String, String>>(&text).ok())
-            .unwrap_or_default();
-        Self {
-            lang: lang.to_string(),
-            table,
-            dir: dir.to_path_buf(),
-        }
-    }
-
-    /// Troca o idioma sem reiniciar.
-    pub fn set_lang(&mut self, lang: &str) {
-        if lang.is_empty() || lang == self.lang {
-            return;
-        }
-        *self = Self::load(&self.dir, lang);
-    }
-}
+/// Definição CANÓNICA no `bevy_ext_core::locale` (onda exit2/luau; TypePath
+/// `viber::locale` congelado lá) — o jogo e a UI leem O MESMO recurso: este
+/// módulo reexporta o tipo, o monólito (`viber::locale`) também.
+pub use bevy_ext_core::locale::Locale;
 
 // ── luau (contratos do host de scripting) ────────────────────────────────
 

@@ -24,7 +24,6 @@ use bevy::app::{App, PluginGroup};
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::{Res, ResMut};
 use bevy::log::info;
-use bevy::prelude::Resource;
 use bevy::time::{Time, Virtual};
 use bevy_kira_audio::AudioApp;
 
@@ -36,18 +35,13 @@ use crate::{
     a11y, ambient, animation, attachment, audio_space, camera, editor_camera, foliage, hud,
     ik, impact, input_map, locale, luau, menus, meshopt, music, nav, netplay, particles, physics,
     physics_fx, player, postfx, profiler, prop_tint, ragdoll, recipes, render_lod, save, sky,
-    spawner, streaming, terrain, textures, time_fx, ui, worldsys, xml,
+    spawner, streaming, terrain, terrain_host, textures, time_fx, ui, worldsys, xml,
 };
 
-/// Para quê a App é montada.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
-pub enum RunMode {
-    /// `viber run`: o jogo.
-    #[default]
-    Game,
-    /// Modo de edição in-process: cena congelada.
-    Edit,
-}
+// Para quê a App é montada — o enum saiu para o `bevy_ext_core` (contrato
+// de partilha: o runtime de cena e o host têm de ver o MESMO resource). O
+// caminho `crate::app::RunMode` mantém-se.
+pub use bevy_engine_core::RunMode;
 
 /// De onde vêm os scripts de comportamento.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -789,7 +783,8 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
             .init_resource::<save::PendingSavePatches>()
             .add_systems(
                 bevy::app::Last,
-                save::apply_pending_save_patches.after(crate::scene_loader::drive_scene_loader),
+                save::apply_pending_save_patches::<crate::scene_loader::SceneLoader>
+                    .after(crate::scene_loader::drive_scene_loader),
             );
     } else {
         app.add_plugins(save::SavePlugin);

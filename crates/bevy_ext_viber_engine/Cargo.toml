@@ -7,7 +7,18 @@ description = "Viber runtime de gameplay — transição do monólito para o Vae
 license = "MIT OR Apache-2.0"
 publish = false
 
+# Workspace PRÓPRIO (vazio): o crate fica fora dos members da raiz (a família
+# `bevy_ext_*` que consome é compilada pelos paths `../…` deste diretório) e
+# sem esta tabela o cargo subia até ao workspace da raiz e recusava o pacote
+# não-membro. Quando a extração terminar e entrar nos members da raiz,
+# apagar esta tabela.
+[workspace]
+
 [lib]
+# O nome histórico (`main.rs` e os testes importam `viber::…`); o package
+# chama-se bevy_ext_viber_engine para a migração, mas a lib é e continua a
+# ser a `viber`.
+name = "viber"
 path = "src/lib.rs"
 
 [dependencies]
@@ -19,6 +30,13 @@ bevy_ext_gltf = { version = "0.1.0", path = "../bevy_ext_gltf" }
 bevy_voxel_terrain = { version = "0.1.0", path = "../bevy_voxel_terrain" }
 bevy_ext_scene = { version = "0.1.0", path = "../bevy_ext_scene" }
 bevy_ext_water = { version = "0.1.0", path = "../bevy_ext_water" }
+# Crates extraídos na onda exit2/hubs: o monólito reexporta os módulos que
+# saíram (corpse/ik, feedback, render_lod, sky_nishita, camera_glue) e o jogo
+# continua a ver `viber::…`; o ECS partilha UM tipo por contrato. A feature
+# `luau` liga o `ScriptGameEvent::to_table` (mlua). `physics`/`ragdoll`/
+# `editor_camera` continuam reais no monólito (código mais novo, Avian).
+bevy_ext_physics = { version = "0.1.0", path = "../bevy_ext_physics" }
+bevy_ext_engine = { version = "0.1.0", path = "../bevy_ext_engine", features = ["luau"] }
 base64 = "0.23"
 bevy = { version = "0.20.1", features = [
     "bevy_remote", "wav", "jpeg", "webp", "basis-universal",
@@ -53,8 +71,17 @@ bevy_landmass = "0.13"
 landmass_rerecast = "0.4"
 bevy_gradmesh = "0.3.9"
 bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
+# BGM driver extraído (shim `src/music.rs`); os TypePaths `viber::music`
+# estão congelados no crate de áudio.
+bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
+# Terreno volumétrico extraído (shim `pub use … as terrain` em `lib.rs`); os
+# TypePaths `viber::terrain::…` estão congelados no crate.
+bevy_ext_terrain_runtime = { version = "0.1.0", path = "../bevy_ext_terrain_runtime" }
 
 [dev-dependencies]
+# Nos testes deste crate o debug render do rapier não se registra (ver
+# `bevy_ext_physics` feature `headless`): os apps de teste não têm gizmos.
+bevy_ext_physics = { version = "0.1.0", path = "../bevy_ext_physics", features = ["headless"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 wesl = "0.6.0"

@@ -27,68 +27,15 @@ use crate::terrain::water::{LakeSpec, RiverSpec};
 
 /// Marker for `<OrbitCamera>`: keeps its offset from a named target.
 ///
-/// Target-less cameras in worlds with a `<PlayerGLTF>` are third-person
-/// cameras: [`crate::camera::third_person_camera`] drives them (decoupled
-/// follow, terrain collision), and [`crate::player::player_movement`] steers
-/// their yaw with A/D. Cameras with a `target` stay on the rigid follow.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct OrbitCamera {
-    pub target: Option<String>,
-    pub distance: f32,
-    pub height: f32,
-    /// `Some` only when the world set `pitch` explicitly; it overrides
-    /// `height` as the ring seed (see [`orbit_camera_follow`]).
-    pub pitch_deg: Option<f32>,
-    /// Live orbit pitch (degrees) — seeded from `pitch_deg` or from
-    /// `atan(height/distance)`.
-    pub pitch_state_deg: f32,
-    /// Steered orbit yaw (degrees) — A/D in [`crate::player::player_movement`].
-    pub yaw_deg: f32,
-    /// Degrees per pixel of mouse drag (parsed for XML parity; the runtime
-    /// is gamepad-style and never reads the mouse).
-    pub mouse_sensitivity: f32,
-    pub min_distance: f32,
-    pub max_distance: f32,
-    // --- third-person smoothing config (ThirdPersonCamera) ---
-    /// Position follow time constant in seconds (larger = more lag on
-    /// sprints).
-    pub follow_lag: f32,
-    /// Yaw follow time constant in seconds (larger = the camera turns
-    /// slower/later than the steering).
-    pub turn_lag: f32,
-    /// Minimum clearance above the terrain (0 disables camera collision).
-    pub min_terrain_distance: f32,
-    // --- third-person smoothing state ---
-    /// Smoothed follow point the camera orbits and looks at; decoupled from
-    /// the raw character transform so view jitter can't accumulate.
-    pub follow_point: Vec3,
-    /// Lagged yaw the camera actually orbits at; trails [`Self::yaw_deg`].
-    pub smooth_yaw_deg: f32,
-    /// Current (post-collision, micro-smoothed) camera position.
-    pub current_pos: Vec3,
-    /// Whether the smoothed state has been seeded onto the target.
-    pub initialized: bool,
-}
-
-impl OrbitCamera {
-    /// Height above the target the camera aims at (meters).
-    ///
-    /// `height` doubles as the pitch seed when the world gives no explicit
-    /// `pitch`; either way it describes how far above the target's origin the
-    /// framing sits, so it is the pivot too. Falls back to chest height for
-    /// worlds that set neither.
-    pub fn pivot_height(&self) -> f32 {
-        if self.height > 0.0 {
-            self.height
-        } else {
-            DEFAULT_ORBIT_PIVOT_HEIGHT
-        }
-    }
-}
+/// Movido ao `bevy_ext_engine::camera` (onda exit2/hubs; TypePath
+/// `viber::recipes::spawn` congelado lá) — reexportado aqui para
+/// `viber::recipes::spawn::OrbitCamera` continuar a resolver e para o
+/// spawn, o `player_movement` e a câmara (`camera_glue`) partilharem
+/// UM tipo.
+pub use bevy_ext_engine::camera::OrbitCamera;
 
 /// Look-at height used when a world sets no `height` (meters).
-pub const DEFAULT_ORBIT_PIVOT_HEIGHT: f32 = 1.2;
+pub use bevy_ext_engine::camera::DEFAULT_ORBIT_PIVOT_HEIGHT;
 
 /// Camera spawned automatically when the world has none: slow orbit at origin.
 #[derive(Debug, Component, Reflect)]
@@ -141,17 +88,11 @@ impl GltfScenePending {
     }
 }
 
-/// Declarative terrain collected from the entity tree, consumed by the
-/// terrain runtime ([`crate::terrain::runtime`]) at startup.
-#[derive(Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct PendingTerrain {
-    pub base_dir: Option<PathBuf>,
-    #[reflect(ignore)]
-    pub terrain: Option<TerrainSpec>,
-    #[reflect(ignore)]
-    pub features: TerrainFeatures,
-}
+// Declarative terrain collected from the entity tree, consumed by the
+// terrain runtime ([`crate::terrain::runtime`]) at startup. O tipo vive no
+// `bevy_ext_terrain_runtime` (TypePath `viber::recipes::spawn` congelado
+// lá); o caminho `crate::recipes::spawn::PendingTerrain` mantém-se.
+pub use crate::terrain::runtime::PendingTerrain;
 
 fn is_ground_feature(kind: &EntityKind) -> bool {
     matches!(
@@ -945,9 +886,12 @@ enum MeshKey {
     Capsule(u32, u32),
 }
 
-fn mesh_key(shape: &Shape) -> MeshKey {
+/// Cache key for the engine's standard-material primitive meshes. Procedural
+/// shapes return `None`: the engine draws a bounds-box fallback and the
+/// gradmesh path (ou o plugin do jogo) troca o mesh real.
+fn mesh_key(shape: &Shape) -> Option<MeshKey> {
     let bits = |v: f32| v.to_bits();
-    match shape {
+    Some(match shape {
         Shape::Cuboid { half_size } => MeshKey::Cuboid(half_size.map(bits)),
         Shape::Sphere { radius } => MeshKey::Sphere(bits(*radius)),
         Shape::Cylinder {
@@ -959,7 +903,36 @@ fn mesh_key(shape: &Shape) -> MeshKey {
             radius,
             half_height,
         } => MeshKey::Capsule(bits(*radius), bits(*half_height)),
+        // Procedural shapes (and rounded boxes) have no Bevy primitive mesh.
+        Shape::RoundedCuboid { .. }
+        | Shape::Cone { .. }
+        | Shape::Pyramid { .. }
+        | Shape::Torus { .. }
+        | Shape::Lathe { .. }
+        | Shape::Sweep { .. }
+        | Shape::Extruded { .. } => return None,
+    })
+}
+
+/// Primitivas sem mesh Bevy: bounds box conservadora (o centro pode estar
+/// fora da origem — perfil de lathe, path de sweep).
+fn fallback_mesh(shape: &Shape) -> Mesh {
+    let bounds = bevy_ext_scene::primitives::bounds(shape);
+    let half = bounds.half.max(Vec3::splat(1e-3));
+    let mut mesh = Mesh::from(Cuboid::new(half.x * 2.0, half.y * 2.0, half.z * 2.0));
+    // The bounds may be off-centre (lathe profile, sweep path): bake the
+    // centre into the positions so the fallback sits where the real mesh will.
+    if bounds.center != Vec3::ZERO
+        && let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    {
+        for position in positions {
+            position[0] += bounds.center.x;
+            position[1] += bounds.center.y;
+            position[2] += bounds.center.z;
+        }
     }
+    mesh
 }
 
 /// Chave de cache de materiais: a spec canonizada em bits (f32 não é
@@ -1131,7 +1104,11 @@ pub struct StaticWorld(pub bool);
 /// Plane/Cuboid) NÃO entram na cache — `scale_primitive_uvs` assa a
 /// translation do mundo nas UVs.
 fn primitive_mesh_handle(ctx: &mut SpawnCtx, shape: &Shape) -> Handle<Mesh> {
-    let key = mesh_key(shape);
+    let Some(key) = mesh_key(shape) else {
+        // Procedural shape (gradmesh desligado/minimal app): bounds box
+        // conservadora até o plugin do jogo trocar o mesh real.
+        return ctx.meshes.add(fallback_mesh(shape));
+    };
     if let Some(handle) = ctx.mesh_cache.get(&key) {
         return handle.clone();
     }
@@ -2455,6 +2432,39 @@ fn gradmesh_shape(
             detail,
         ),
         Shape::Plane { .. } => return None,
+        // `Box round="…"` — o mesmo cuboid com roundness do autor.
+        Shape::RoundedCuboid { half_size, roundness } => GradShape::cuboid(
+            Vec3::new(half_size[0], half_size[1], half_size[2]) * 2.0,
+            roundness,
+            detail,
+        ),
+        Shape::Cone {
+            half_height,
+            radius,
+            ..
+        } => GradShape::cone(radius, half_height * 2.0, detail),
+        Shape::Pyramid {
+            sides,
+            radius,
+            half_height,
+            ..
+        } => GradShape::pyramid(sides, radius, half_height * 2.0, detail),
+        // Ângulos do XML em graus; o gradmesh consome radianos.
+        Shape::Torus {
+            radius,
+            thickness,
+            start_deg,
+            span_deg,
+        } => GradShape::torus(
+            radius,
+            thickness,
+            start_deg.to_radians(),
+            span_deg.to_radians(),
+            detail,
+        ),
+        // Lathe/Sweep/Extruded não têm mapeamento direto aqui ainda: caem no
+        // fallback de bounds box + `PrimitivePart` (o plugin do jogo troca).
+        Shape::Lathe { .. } | Shape::Sweep { .. } | Shape::Extruded { .. } => return None,
     })
 }
 
@@ -2528,6 +2538,9 @@ fn primitive_mesh(shape: &Shape) -> Mesh {
             radius,
             half_height,
         } => Mesh::from(Capsule3d::new(*radius, *half_height * 2.0)),
+        // Procedural shapes: a conservative bounds box until the game's
+        // plugin swaps in the real mesh.
+        other => fallback_mesh(other),
     }
 }
 
@@ -3038,6 +3051,7 @@ mod gradmesh_tests {
             texture: Some("/assets/stone/albedo.ktx2".into()),
             texture_tile: Some(2.0),
             normal_map: Some("/assets/stone/normal.ktx2".into()),
+            preset: None,
         }
     }
 

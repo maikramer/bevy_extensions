@@ -292,10 +292,19 @@ fn apply_settings(settings: Res<GrassSettings>, mut bg: ResMut<BgGrassSettings>)
 /// `GrassSettingsSpec` autorado → [`GrassSettings`] de runtime.
 fn sync_settings_spec(
     specs: Query<&GrassSettingsSpec>,
+    changed: Query<(), Changed<GrassSettingsSpec>>,
     mut removed: RemovedComponents<GrassSettingsSpec>,
     resource: Res<GrassSettingsSpecValue>,
     mut settings: ResMut<GrassSettings>,
 ) {
+    // Só quando os specs mudam: aplicar em todos os frames desfaria o toggle
+    // do profiler (que escreve `GrassSettings.enabled`).
+    let dirty = changed.iter().next().is_some()
+        || removed.read().next().is_some()
+        || resource.is_changed();
+    if !dirty {
+        return;
+    }
     let spec = specs.iter().next().or(resource.0.as_ref());
     if let Some(spec) = spec {
         let next = GrassSettings {
@@ -310,7 +319,7 @@ fn sync_settings_spec(
         if *settings != next {
             *settings = next;
         }
-    } else if removed.read().next().is_some() || resource.is_changed() {
+    } else {
         let caps = (settings.instance_capacity, settings.max_chunk_slices);
         let mut next = GrassSettings::default();
         next.instance_capacity = caps.0;

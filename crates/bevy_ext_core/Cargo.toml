@@ -18,5 +18,12 @@ keywords = ["bevy", "gamedev", "engine", "contracts"]
 categories = ["game-development"]
 
 [dependencies]
-# Only the ECS/reflect/math re-exports: no window, render or audio stack.
-bevy = { workspace = true, features = ["std"] }
+# ECS/reflect/math + a camada de animação (contrato `CharacterAnimator`/
+# `FrozenAnimation`: `AnimationNodeIndex`/`AnimationGraphHandle` do glTF).
+# `std` traz o `bevy_input` (teclado/gamepad do contrato `input_map`).
+bevy = { workspace = true, features = ["std", "bevy_animation"] }
+# `A11y`/`Action`/`Binding`/`ActionMap`/`ActionState` viajam nos saves e
+# opções (serialize/deserialize).
+serde = { workspace = true }
+# `Locale::load` lê `locale/<lang>.json` (mapa chave → string).
+serde_json = { workspace = true }

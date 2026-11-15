@@ -7,11 +7,18 @@
 //! The types here were moved out of the `viber` monolith in Phase 1; the root
 //! re-exports them so existing `viber::…` paths keep working.
 
+pub mod a11y;
+pub mod animation;
+pub mod dialogue;
+pub mod input_map;
+pub mod locale;
 pub mod rng;
 pub mod script_kind;
+pub mod vitals;
 
 pub use rng::Rng;
 pub use script_kind::{KILL_XP, kill_xp, script_kind};
+pub use vitals::{DEFAULT_HEALTH, Health, Hostile};
 
 use bevy::math::Vec3;
 use bevy::prelude::*;
@@ -51,6 +58,21 @@ impl MenusOpen {
     pub fn any(&self) -> bool {
         self.modal || self.shop || self.travel || self.map || self.cinematic
     }
+}
+
+/// Para quê a App foi montada: o jogo de si próprio, ou o editor
+/// in-process (cena congelada, portais e trocas de cena silenciados).
+///
+/// Nascido em `viber::app`; o runtime de cena (`bevy_ext_scene_runtime`) e
+/// o host leem o MESMO resource — um enum pequeno de mais para pagar uma
+/// dependência entre crates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
+pub enum RunMode {
+    /// `viber run`: o jogo.
+    #[default]
+    Game,
+    /// Modo de edição in-process: cena congelada.
+    Edit,
 }
 
 /// A toast requested by a script (`viber.toast`) or by gameplay code.
@@ -284,7 +306,7 @@ pub struct ScriptCameraFree {
     pub look: Vec3,
 }
 
-#[derive(Debug, Clone, Default, Resource, Reflect)]
+#[derive(Debug, Clone, Copy, Default, Resource, Reflect)]
 #[reflect(Resource)]
 #[type_path = "viber::camera"]
 pub struct CameraSnapshot {
@@ -678,43 +700,11 @@ impl Default for EngineRainVisuals {
 // como contrato e que o monólito re-exporta nos módulos originais
 // (`viber::ai`, `viber::vitals`, `viber::physics`, `viber::ragdoll`,
 // `viber::scene_loader`) durante a transição.
-
-/// Default HP pool (also the HUD fallback when no `Health` exists yet).
-pub const DEFAULT_HEALTH: f32 = 100.0;
-
-/// HP pool, clamped to `0..=max` by `apply_damage` / `heal_full`.
-#[derive(Debug, Clone, Copy, PartialEq, Component, Reflect)]
-#[reflect(Component, Default)]
-// Preserva o TypePath do BRP/`viber.ecs` depois da extração.
-#[type_path = "viber::vitals"]
-pub struct Health {
-    pub current: f32,
-    pub max: f32,
-}
-
-impl Default for Health {
-    fn default() -> Self {
-        Self {
-            current: DEFAULT_HEALTH,
-            max: DEFAULT_HEALTH,
-        }
-    }
-}
-
-/// Alvo hostil genérico. O mundo autora `hostile="true"`; o spawner de
-/// criaturas (`<Creature role="enemy">`) também a insere. A engine NÃO infere
-/// hostilidade pelo path do script.
-///
-/// `require(Health)`: um hostil autorado SEM `health="…"` ficava sem pool e
-/// era imune a `entity_damage`/dano radial (o `ensure_creature_vitals` que o
-/// devia cobrir nunca foi registado num schedule). O default só entra quando
-/// não há `Health` no bundle; quem autora o HP continua a mandar.
-#[derive(Debug, Clone, Copy, Default, Component, Reflect)]
-#[reflect(Component, Default)]
-#[require(Health)]
-// Preserva o TypePath do BRP/`viber.ecs` depois da extração.
-#[type_path = "viber::vitals"]
-pub struct Hostile;
+//
+// Os vitais (`Health`/`Hostile`/dano) são a definição CANÓNICA de
+// [`crate::vitals`] — o monólito (`viber::vitals`), o `bevy_ext_engine` e o
+// `bevy_ext_ai` re-exportam esse módulo; a raiz mantém os três nomes para
+// quem os lia aqui.
 
 /// Velocity-space locomotion shared by the Rust FSM (`enemy_ai`) and the
 /// Luau scripts (`viber.move_towards` / `move_by` / `face_towards`).

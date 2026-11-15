@@ -19,11 +19,9 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::math::Vec3;
 use bevy::prelude::*;
 
-// TODO(viber-exit): `profiler` (Group/timed), `terrain::runtime` e
-// `camera::camera_offset` ainda vivem no monólito.
-use viber::camera::camera_offset;
-use viber::profiler::{Group, timed};
-use viber::terrain::runtime::TerrainRuntime;
+use crate::camera::camera_offset;
+use crate::profiler::{Group, timed};
+use bevy_ext_terrain_runtime::runtime::{TerrainRuntime, bootstrap};
 
 /// Pitch mínimo (graus) — um pouco abaixo do horizonte para enquadrar
 /// vales/linhas de água sem expor o nadir do céu.
@@ -197,7 +195,7 @@ impl Plugin for EditorCameraPlugin {
             bevy::app::Startup,
             // DEPOIS do bootstrap do terreno: o alvo de arranque é a cota
             // real em (0,0) quando o mundo tem terreno (senão, a origem).
-            spawn_editor_camera.after(viber::terrain::runtime::bootstrap),
+            spawn_editor_camera.after(bootstrap),
         )
         .add_systems(
             bevy::app::Update,

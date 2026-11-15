@@ -22,16 +22,17 @@ members = [
     "crates/bevy_ext_ai",
     "crates/bevy_ext_water",
     "crates/bevy_ext_grass",
-]
-# Crates que ainda dependem do `viber` em path: compilam standalone (lock
-# próprio) até a onda de desacoplamento final. O monólito em transição
-# (`bevy_ext_viber_engine`) entra aqui para `cargo test`/`metadata` correrem
-# dentro da pasta dele (path-deps ao CelerAI).
-exclude = [
-    "crates/bevy_ext_viber_engine",
-    "crates/bevy_ext_scene_runtime",
     "crates/bevy_ext_physics",
     "crates/bevy_ext_engine",
+]
+# Standalone (fora do workspace): o plugin Jackdaw WIP e o scene_runtime.
+# O monólito (`bevy_ext_viber_engine`) continua fora: tem CelerAI por path,
+# vendor/rerecast próprio e um mlua vendored — mas agora DEPENDE dos members
+# (`bevy_ext_physics`/`bevy_ext_engine`, que já não o dep).
+exclude = [
+    "crates/bevy_voxel_terrain_jackdaw",
+    "crates/bevy_ext_scene_runtime",
+    "crates/bevy_ext_viber_engine",
 ]
 resolver = "3"
 
@@ -67,6 +68,8 @@ bevy_ext_elements = { version = "0.1.0", path = "crates/bevy_ext_elements" }
 bevy_ext_flora = { version = "0.1.0", path = "crates/bevy_ext_flora" }
 bevy_ext_gradmesh = { version = "0.1.0", path = "crates/bevy_ext_gradmesh" }
 bevy_ext_scene = { version = "0.1.0", path = "crates/bevy_ext_scene" }
+bevy_ext_physics = { version = "0.1.0", path = "crates/bevy_ext_physics" }
+bevy_ext_engine = { version = "0.1.0", path = "crates/bevy_ext_engine" }
 bevy_rapier3d = "0.37"
 # O jogo e os crates vivos usam Avian; os crates extraídos ainda por portar
 # mantêm o Rapier nas suas próprias linhas.

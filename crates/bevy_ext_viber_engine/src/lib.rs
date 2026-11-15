@@ -12,7 +12,16 @@
     clippy::type_complexity
 )]
 
-pub mod a11y;
+// NOTA(exit2/scene): `config`, `interact`, `meshopt`, `particles`,
+// `animation` (o `AnimatedScene`), `hud` e `music` têm GÉMEOS no
+// `bevy_ext_scene_runtime` — este crate mantém as cópias porque as retirar
+// (com shim para o scene_runtime) é CICLO enquanto o scene_runtime depender
+// deste crate pela ponte do `luau` (onda exit2/luau). Quando a ponte morrer,
+// apagar as cópias e re-exportar daí. O `terrain` e o `physics` JÁ são shims
+// para os crates extraídos; `a11y`/`locale`/`vitals`/`camera`/`feedback`/
+// `editor_camera` também (core/engine, exit2/luau).
+// Acessibilidade movida ao `bevy_ext_core`; o caminho `viber::a11y` continua
+// a resolver e o recurso é O MESMO (ver o `pub use` na lista em baixo).
 pub mod adaptive_quality;
 pub mod ai;
 pub mod ambient;
@@ -23,17 +32,28 @@ pub mod audio_space;
 pub mod audit;
 pub mod bake;
 pub mod bridge;
-pub mod camera;
+// Câmara de jogo (third-person/script/FX) movida ao `bevy_ext_engine`
+// (onda exit2/luau); os contratos (`OrbitCamera`, `ScriptCameraFree`,
+// `CameraSnapshot`) são do `bevy_ext_core` — o caminho `viber::camera`
+// reexporta o módulo e os tipos são OS MESMOS no jogo.
+pub use bevy_ext_engine::camera_glue as camera;
 pub mod cinematic;
 pub mod cinematic_cli;
 pub mod config;
-pub mod corpse;
+// Módulo movido ao `bevy_ext_physics` (onda exit2/hubs); o caminho
+// `viber::corpse` continua a resolver e o tipo é o MESMO no jogo.
+pub use bevy_ext_physics::corpse;
 pub mod decal_fx;
 pub mod dialogue;
 pub mod dlss;
 pub mod draw_diag;
+// Câmara de editor movida ao `bevy_ext_engine` (onda exit2/hubs); o
+// `EditorCameraPlugin` é o MESMO tipo no jogo.
 pub mod editor_camera;
-pub mod feedback;
+// Feedback de impacto movido ao `bevy_ext_engine` (onda exit2/hubs); o
+// caminho `viber::feedback` reexporta o módulo — o `FeedbackPlugin`
+// registado no `app.rs` é o do engine (mesma mensagem para o Vael).
+pub use bevy_ext_engine::feedback;
 pub mod foliage;
 pub mod frame_pacing;
 pub mod fx_specs;
@@ -42,12 +62,20 @@ pub mod graphics;
 pub mod hot_reload;
 pub mod hud;
 pub mod ibl;
-pub mod ik;
+pub use bevy_ext_physics::ik;
 pub mod impact;
 pub mod input_map;
 pub mod interact;
 pub mod lint;
-pub mod locale;
+// Acessibilidade movida ao `bevy_ext_core` (onda exit2/luau); o caminho
+// `viber::a11y` reexporta o módulo — um só recurso `A11y` no jogo.
+pub use bevy_engine_core::a11y;
+// Texto localizado movido ao `bevy_ext_core` (onda exit2/luau); o host de
+// UI (`bevy_ext_ui::ui::host`) reexporta O MESMO `Locale`.
+pub use bevy_engine_core::locale;
+// Vitais (`Health`/`Hostile`/dano) movidos ao `bevy_ext_core` (onda
+// exit2/luau); `bevy_ext_engine` e `bevy_ext_ai` reexportam o MESMO módulo.
+pub use bevy_engine_core::vitals;
 pub mod luau;
 pub mod menus;
 pub mod meshopt;
@@ -70,7 +98,7 @@ pub mod prune;
 pub mod ragdoll;
 pub mod recipes;
 pub mod reflect;
-pub mod render_lod;
+pub use bevy_ext_engine::render_lod;
 pub mod rng;
 pub mod save;
 pub mod scaffold;
@@ -80,7 +108,7 @@ pub mod script_kind;
 pub mod senses;
 pub mod session;
 pub mod sky;
-pub mod sky_nishita;
+pub use bevy_ext_engine::sky_nishita;
 pub mod spawn_gate;
 pub mod spawner;
 pub mod streaming;
@@ -90,7 +118,6 @@ pub mod textures;
 pub mod time_fx;
 pub mod ui;
 pub mod vinst;
-pub mod vitals;
 pub mod water_ssr;
 pub mod worldsys;
 pub mod xml;

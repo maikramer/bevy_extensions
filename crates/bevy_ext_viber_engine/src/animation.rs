@@ -47,6 +47,16 @@ use bevy::animation::transition::AnimationTransitions;
 use bevy::animation::{AnimationPlayer, RepeatAnimation};
 use bevy::prelude::*;
 
+// O CONTRATO de animação saiu para o `bevy_ext_core` (onda exit2/hubs): os
+// tipos reflectidos mantêm o TypePath `viber::animation` congelado lá e o
+// ragdoll/IK (`bevy_ext_physics`) e a folhagem (`bevy_ext_engine`) leem o
+// MESMO tipo. Este módulo fica com os SISTEMAS (bind, drive, freeze) e os
+// helpers de motion (`next_state`, gates).
+pub use bevy_engine_core::animation::{
+    AnimState, CharacterAnimator, FrozenAnimation, LocomotionBlendNodes, normalize_clip_name,
+    resolve_clip, resolve_with_fallback,
+};
+
 /// Cross-fade applied when a character switches locomotion clip.
 pub const CLIP_BLEND: Duration = Duration::from_millis(180);
 /// Cross-fade into a one-shot action (attack, gesture) — snappier, the hit has
@@ -215,15 +225,6 @@ pub fn locomotion_weights(speed: f32, gates: MotionGates, speeds: MotionSpeeds) 
     }
     let u = (speed - speeds.walk) / (run_edge - speeds.walk);
     (0.0, 1.0 - u, u)
-}
-
-/// Nós do blend 1D de locomoção, quando o ficheiro tem idle, walk e run distintos.
-#[derive(Debug, Clone, Copy, Reflect)]
-pub struct LocomotionBlendNodes {
-    pub blend: AnimationNodeIndex,
-    pub idle: AnimationNodeIndex,
-    pub walk: AnimationNodeIndex,
-    pub run: AnimationNodeIndex,
 }
 
 /// The two speed thresholds that pick a locomotion state, as a unit.
@@ -590,70 +591,6 @@ pub struct BoundAnimation;
 #[derive(Debug, Component, Default, Reflect)]
 #[reflect(Component)]
 pub struct ManualAnimation;
-
-/// A bound character: clip names plus the graph node for each one, and the
-/// small amount of per-character playback state the drivers need.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct CharacterAnimator {
-    /// Clip names as the file spells them, in file order.
-    pub clip_names: Vec<String>,
-    /// Graph node per clip, parallel to `clip_names`.
-    pub nodes: Vec<AnimationNodeIndex>,
-    /// Clip length in seconds, parallel to `clip_names`. Drives how long a
-    /// one-shot action owns the rig.
-    pub durations: Vec<f32>,
-    /// The entity carrying the `AnimationPlayer` (a scene descendant).
-    pub player: Entity,
-    /// Locomotion state the motion driver last asked for. Kept across actions
-    /// so the hysteresis in [`next_state`] has memory.
-    pub state: Option<AnimState>,
-    /// Graph node actually asserted on the player. The clip is only replayed
-    /// when this changes, which is what keeps playback continuous.
-    pub current: Option<AnimationNodeIndex>,
-    /// Seconds left in the one-shot action that owns the rig, if any.
-    pub action_time: f32,
-    /// A terminal clip (death) holds the last pose forever.
-    pub locked: bool,
-    /// Seconds spent off the ground (airborne debounce).
-    pub air_time: f32,
-    /// Low-passed planar speed (m/s) measured from real displacement.
-    pub speed: f32,
-    /// Previous world position, for that measurement.
-    pub last_pos: Option<Vec3>,
-    /// Blend idle/walk/run, quando o ficheiro tem os três clips.
-    pub locomotion: Option<LocomotionBlendNodes>,
-}
-
-impl CharacterAnimator {
-    /// Graph node for a state, honouring the fallback chain.
-    pub fn node_for(&self, state: AnimState) -> Option<AnimationNodeIndex> {
-        resolve_with_fallback(&self.clip_names, state).and_then(|i| self.nodes.get(i).copied())
-    }
-
-    /// Graph node for the first clip whose name satisfies `pred`, matched
-    /// against the *normalized* name.
-    pub fn node_matching(&self, pred: impl Fn(&str) -> bool) -> Option<AnimationNodeIndex> {
-        self.clip_names
-            .iter()
-            .position(|name| pred(&normalize_clip_name(name)))
-            .and_then(|i| self.nodes.get(i).copied())
-    }
-
-    /// Length in seconds of the clip behind `node`.
-    pub fn duration_of(&self, node: AnimationNodeIndex) -> f32 {
-        self.nodes
-            .iter()
-            .position(|n| *n == node)
-            .and_then(|i| self.durations.get(i).copied())
-            .unwrap_or(0.0)
-    }
-
-    /// True while a one-shot or terminal clip owns the rig.
-    pub fn is_busy(&self) -> bool {
-        self.locked || self.action_time > 0.0
-    }
-}
 
 /// Convenience alias — every playback helper needs the same pair of components
 /// off the scene's `AnimationPlayer` entity.
@@ -1499,17 +1436,6 @@ pub const ANIM_FREEZE_MIN_DISTANCE: f32 = 70.0;
 /// creature pacing along the boundary does not flip archetypes every frame.
 const ANIM_FREEZE_HYSTERESIS: f32 = 0.9;
 
-/// The graph handle of a rig parked by [`freeze_distant_animation`].
-///
-/// Bevy's `animate_targets` evaluates every curve of every bone of every
-/// player each frame — `paused` included, it only stops the clock — and the
-/// written bone transforms then dirty `transform_propagate` and the skin
-/// upload. Taking the `AnimationGraphHandle` away is what makes a rig cost
-/// nothing: its targets bail on the first lookup and the player's clock
-/// stops, so the clip resumes where it left off when the handle comes back.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct FrozenAnimation(pub AnimationGraphHandle);
 
 /// Distance past which a character's rig stops animating.
 fn freeze_distance(activation: Option<&crate::luau::ScriptActivation>) -> f32 {

@@ -877,8 +877,20 @@ pub const HERO_FLOAT_HEIGHT: f32 = 0.04;
 /// Distância acima de `float_height` onde a spring ainda puxa para o chão
 /// (descer degraus sem flutuar).
 pub const HERO_CLING_DISTANCE: f32 = 0.30;
-/// Raio do sensor de chão do tnua (um disco à altura da pegada).
+/// Raio do sensor de chão do tnua (um disco dentro da cápsula).
 pub const HERO_SENSOR_RADIUS: f32 = HERO_RADIUS * 0.97;
+/// Altura do disco do sensor acima da pegada.
+///
+/// O tnua lança o sensor a partir da ORIGEM do corpo, que no herói são os
+/// pés. Com o disco aí, uma aterragem dura (−18 m/s a 64 Hz) acabava com o
+/// colisor em CONTACTO com o chão: o disco ficava coplanar com a superfície,
+/// o shape cast (`ignore_origin_penetration`) descartava o hit e o tnua dava
+/// "airborne" com `vy = 0` — o herói ficava preso ~0.2 s com a animação a
+/// piscar Jump/Fall até o `recover_stuck_ground` o desencravar (medido no
+/// jogo, 2026-11-14). Elevado dentro da cápsula, o disco vê sempre o chão até
+/// esta profundidade de penetração; o `float_height` do tnua soma a mesma
+/// altura, por isso os pés continuam a [`HERO_FLOAT_HEIGHT`] do chão.
+pub const HERO_SENSOR_LIFT: f32 = 0.10;
 
 /// Ações do herói. O `Jump` usa `TnuaBuiltinJumpConfig::height` do asset;
 /// o knockback entra na `desired_motion` (ver `player_movement`).
@@ -902,11 +914,18 @@ pub fn hero_controller_bundle() -> impl Bundle {
         // mão); sem o componente o toggle não existia e não havia como parar.
         bevy_tnua::TnuaToggle::Enabled,
         TnuaController::<HeroScheme>::default(),
-        TnuaAvian3dSensorShape(avian3d::prelude::Collider::cylinder(
-            HERO_SENSOR_RADIUS,
-            0.0,
-        )),
+        TnuaAvian3dSensorShape(hero_sensor_shape()),
     )
+}
+
+/// Disco do sensor de chão, [`HERO_SENSOR_LIFT`] acima da pegada.
+pub fn hero_sensor_shape() -> avian3d::prelude::Collider {
+    use avian3d::prelude::Collider;
+    Collider::compound(vec![(
+        Vec3::Y * HERO_SENSOR_LIFT,
+        Quat::IDENTITY,
+        Collider::cylinder(HERO_SENSOR_RADIUS, 0.0),
+    )])
 }
 
 /// Config do tnua para o herói. `speed: 1.0` faz `desired_motion` ser a
@@ -917,7 +936,8 @@ pub fn hero_config(jump_height: f32) -> HeroSchemeConfig {
     HeroSchemeConfig {
         basis: TnuaBuiltinWalkConfig {
             speed: 1.0,
-            float_height: HERO_FLOAT_HEIGHT,
+            // Medido a partir do disco elevado (ver `HERO_SENSOR_LIFT`).
+            float_height: HERO_FLOAT_HEIGHT + HERO_SENSOR_LIFT,
             cling_distance: HERO_CLING_DISTANCE,
             spring_strength: 400.0,
             spring_dampening: 1.2,

@@ -13,6 +13,11 @@
 //! Os `defs` das quests são estáticos (embutidos) — só os ESTADOS viajam no
 //! ficheiro, como os serializers por módulo da referência.
 
+// O envelope, os slots e a ponte de save/load (`SaveGame`, `SaveRequest`,
+// `PendingSavePatches`, `apply_pending_save_patches`, ...) têm definição
+// CANÓNICA no `bevy_save_slots` (`bevy_ext_save`, onda exit2/luau) — o
+// caminho `viber::save::…` continua a resolver e o host Luau escreve O
+// MESMO recurso.
 pub use bevy_save_slots::*;
 
 use bevy::prelude::*;
@@ -21,6 +26,16 @@ use crate::luau::ScriptToast;
 use crate::menus::MenusOpen;
 use crate::music::AudioMixerSettings;
 use crate::player::Player;
+
+/// O `SceneLoader` do runtime de cena pode estar a meio de uma troca — o
+/// contrato [`bevy_save_slots::SceneSwitchBusy`] implementado sobre ele para
+/// o [`apply_pending_save_patches`] esperar (os recortes iam cair no runtime
+/// que a troca substitui).
+impl bevy_save_slots::SceneSwitchBusy for crate::scene_loader::SceneLoader {
+    fn busy(&self) -> bool {
+        crate::scene_loader::SceneLoader::busy(self)
+    }
+}
 
 // ── plugin ──────────────────────────────────────────────────────────────
 
@@ -39,58 +54,10 @@ impl Plugin for SavePlugin {
             // próprio frame do load (o loader ainda parecia Idle).
             .add_systems(
                 bevy::app::Last,
-                apply_pending_save_patches.after(crate::scene_loader::drive_scene_loader),
+                apply_pending_save_patches::<crate::scene_loader::SceneLoader>
+                    .after(crate::scene_loader::drive_scene_loader),
             );
     }
-}
-
-/// Recortes de terreno de um save à espera do `TerrainRuntime` certo.
-///
-/// Importar logo no load punha-os no runtime da cena VELHA: num load que
-/// troca de cena, a troca substitui o `TerrainRuntime` e os recortes
-/// perdiam-se — ou caíam no terreno PEQUENO da cena errada (o menu tem o seu
-/// próprio campo). Ficam pendentes; [`apply_pending_save_patches`] importa-os
-/// no primeiro runtime vivo fora de uma troca (na mesma cena: no fim do
-/// próprio frame do load).
-#[derive(Debug, Default, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct PendingSavePatches(pub Vec<crate::terrain::delta::DeltaPatch>);
-
-/// Consome [`PendingSavePatches`] assim que haja terreno vivo e nenhuma troca
-/// em curso (`import_patches` sobe a revisão — o mesher volta a cozer as
-/// colunas tocadas, valha importar cedo ou tarde).
-pub fn apply_pending_save_patches(
-    mut pending: ResMut<PendingSavePatches>,
-    mut runtime: Option<ResMut<crate::terrain::runtime::TerrainRuntime>>,
-    loader: Option<Res<crate::scene_loader::SceneLoader>>,
-) {
-    if pending.0.is_empty() {
-        return;
-    }
-    let Some(runtime) = runtime.as_deref_mut() else {
-        return; // sala sem terreno: espera pela volta ao campo principal
-    };
-    if loader
-        .as_deref()
-        .is_some_and(crate::scene_loader::SceneLoader::busy)
-    {
-        return;
-    }
-    std::sync::Arc::make_mut(&mut runtime.deltas).import_patches(&pending.0);
-    pending.0.clear();
-}
-
-/// Pedido de save/load vindo de SCRIPT (`viber.save()` / `viber.load()`) —
-/// o `LuaScriptHost` não pode chamar o sistema de save de dentro do Luau, e o
-/// host sem ficheiro `world_kv` não teria como persistir num mundo
-/// `gameplay: none`. Consumido (e limpo) pelo `options_system`.
-#[derive(Debug, Default, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct SaveRequest {
-    pub save: bool,
-    pub load: bool,
-    /// `None` = save legado; `0` = autosave; `1..` = slot manual.
-    pub slot: Option<u32>,
 }
 
 /// Linha selecionada na tab Opções (0=master, 1=música, 2=sfx, 3=save,
@@ -734,81 +701,6 @@ mod tests {
         assert_eq!(
             legacy.get("quest_states"),
             Some(&serde_json::json!({"city_wolves": [1, []]}))
-        );
-    }
-
-    /// Os recortes de terreno de um load ESPERAM por terreno vivo: importá-los
-    /// no runtime da cena velha perdia-os na troca (ou caía no campo pequeno
-    /// da cena errada). Sem `TerrainRuntime` fica pendente; com um, importa e
-    /// limpa.
-    #[test]
-    fn test_pending_save_patches_wait_for_a_live_terrain() {
-        use bevy::ecs::system::RunSystemOnce as _;
-
-        fn small_runtime() -> crate::terrain::runtime::TerrainRuntime {
-            let spec = crate::terrain::spec::TerrainSpec {
-                world_size: 128.0,
-                max_height: 40.0,
-                seed: 5,
-                ..crate::terrain::spec::TerrainSpec::default()
-            };
-            let map = crate::terrain::heightmap::HeightMapU16::procedural(
-                &spec,
-                spec.resolution.max(1) as usize,
-            );
-            let grid = crate::terrain::brush::BrushGrid::from_height_map(
-                &map,
-                spec.world_size,
-                spec.max_height,
-                spec.height_smoothing,
-            )
-            .expect("grid builds");
-            crate::terrain::runtime::TerrainRuntime {
-                spec,
-                grid: std::sync::Arc::new(grid),
-                water: vec![],
-                roads: vec![],
-                pads: vec![],
-                voxel: std::sync::Arc::new(crate::terrain::voxel::VoxelField::default()),
-                deltas: std::sync::Arc::new(crate::terrain::delta::DeltaGrid::default()),
-                paint: std::sync::Arc::new(crate::terrain::paint::PaintGrid::default()),
-                splat_tuning: Default::default(),
-            }
-        }
-
-        let mut app = App::new();
-        app.init_resource::<PendingSavePatches>();
-        app.world_mut().resource_mut::<PendingSavePatches>().0.push(
-            crate::terrain::delta::DeltaPatch {
-                min: [0.0, 0.0],
-                step: [1.0, 1.0],
-                cols: 2,
-                rows: 2,
-                data: vec![1.0, 2.0, 3.0, 4.0],
-            },
-        );
-        // Sem terreno vivo (interior/menu à espera): fica pendente.
-        app.world_mut()
-            .run_system_once(apply_pending_save_patches)
-            .unwrap();
-        assert_eq!(
-            app.world().resource::<PendingSavePatches>().0.len(),
-            1,
-            "sem terreno os recortes esperam"
-        );
-        // Terreno vivo: importa e limpa o pendente.
-        app.insert_resource(small_runtime());
-        app.world_mut()
-            .run_system_once(apply_pending_save_patches)
-            .unwrap();
-        assert!(app.world().resource::<PendingSavePatches>().0.is_empty());
-        let runtime = app
-            .world()
-            .resource::<crate::terrain::runtime::TerrainRuntime>();
-        assert_eq!(
-            runtime.deltas.export_patches().len(),
-            1,
-            "o recorte entrou no runtime vivo"
         );
     }
 }

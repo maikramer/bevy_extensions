@@ -16,6 +16,7 @@ use bevy::prelude::*;
 pub mod nodes;
 pub mod primitives;
 pub mod world_nodes;
+pub mod recipes;
 
 pub use nodes::{
     AuthoredProp, AuthoredProps, FloraStation, ModelLod, ParticleEmitter, ParticleSpec, PortalSpec,
