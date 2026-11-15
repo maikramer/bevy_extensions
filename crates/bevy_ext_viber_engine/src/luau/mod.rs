@@ -27,6 +27,7 @@
 //! `App` with the world's `scripts/` directory.
 
 pub mod api;
+pub mod bms_bridge;
 pub mod commands;
 pub mod components;
 pub mod contacts;
@@ -135,6 +136,9 @@ impl bevy::app::Plugin for LuauScriptPlugin {
         app.init_resource::<crate::recipes::spawn::PendingScriptSpawns>();
         app.insert_resource(host);
         app.init_resource::<contacts::ContactBook>();
+        // Avisos 1× + mapa-sombra de HP dos comandos — o `luau_update` e a
+        // ponte BMS (`bms_bridge`) partilham-no.
+        app.init_resource::<bms_bridge::ScriptWarnState>();
         // Hot-reload de scripts (VIBER_HOT_RELOAD=0 desliga): watcher sobre
         // <world>/scripts/; a recarga corre antes do chain de scripts para o
         // frame seguinte já usar o chunk novo. Watcher a falhar = warn e a
