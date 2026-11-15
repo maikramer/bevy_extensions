@@ -831,4 +831,48 @@ mod tests {
         let array: mlua::Table = table.raw_get("d").expect("d");
         assert_eq!(array.raw_len(), 2);
     }
+
+    #[test]
+    fn game_proxy_le_e_escreve_no_store() {
+        let lua = Lua::new();
+        let viber = lua.create_table().expect("viber");
+        lua.globals().set("viber", viber.clone()).expect("global");
+        install(&lua, &viber, fresh_store()).expect("instala");
+        let game = game_proxy(&lua).expect("proxy");
+        // `set` atravessa o `__newindex`; `get` o `__index` — os raw_* liam
+        // a tabela crua e não viam nada.
+        game.set("hp", 7).expect("escrever hp");
+        game.set("nome", "herói").expect("escrever nome");
+        assert_eq!(game.get::<i64>("hp").expect("hp"), 7);
+        assert_eq!(game.get::<String>("nome").expect("nome"), "herói");
+        // `nil` remove a chave (o `__newindex` mapeia para `Null`).
+        game.set("hp", mlua::Value::Nil).expect("remover hp");
+        assert!(game.get::<mlua::Value>("hp").expect("hp").is_nil());
+        // O MESMO proxy em cada chamada (identidade, não snapshot).
+        assert_eq!(
+            game_proxy(&lua).expect("proxy").to_pointer(),
+            game.to_pointer()
+        );
+    }
+
+    #[test]
+    fn state_instalado_pelo_host_nao_e_pisado() {
+        let lua = Lua::new();
+        let viber = lua.create_table().expect("viber");
+        // O host do monólito instala `state` (per-entidade) ANTES do
+        // `game::install`; o per-VM tem de o deixar em paz.
+        let per_entity = lua.create_table().expect("estado");
+        let per_entity_fn = per_entity.clone();
+        viber
+            .set(
+                "state",
+                lua.create_function(move |_, ()| Ok(per_entity_fn.clone()))
+                    .expect("fn state"),
+            )
+            .expect("viber.state");
+        lua.globals().set("viber", viber.clone()).expect("global");
+        install(&lua, &viber, fresh_store()).expect("instala");
+        let called: mlua::Table = lua.load("return viber.state()").eval().expect("state");
+        assert_eq!(called.to_pointer(), per_entity.to_pointer());
+    }
 }

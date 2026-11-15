@@ -46,6 +46,7 @@ pub mod ownership;
 pub mod props;
 pub mod sfx;
 pub mod surfaces;
+pub mod timers;
 pub mod decision;
 
 use std::collections::{HashSet, VecDeque};
@@ -263,6 +264,7 @@ impl Plugin for VaelScriptingPlugin {
             .add_systems(
                 PreUpdate,
                 (
+                    timers::tick_timers,
                     publish_globals,
                     publish_input,
                     game::apply_game_patches,
@@ -2056,6 +2058,7 @@ fn install_viber_api_with(
     // `entity_hp`/`set_scale`) e props exportados (`prop`/`props`).
     entity::install(lua, &viber, globals.clone())?;
     props::install(lua, &viber, globals.clone())?;
+    timers::install(lua, &viber)?;
     // F8: runtimes IA (sem a feature, `available()`=false e o jogo segue no
     // fluxo antigo — o mesmo contrato do stub do monólito).
     nlu::install(lua, &viber)?;
