@@ -200,6 +200,19 @@ pub struct ScriptGlobals {
     toasts: VecDeque<String>,
     /// Id da cinemática em curso (`viber.cinematic_playing()`); `None` fora.
     cinematic: Option<String>,
+    /// Acessibilidade publicada (`viber.a11y`): escala de legendas, shake,
+    /// hit-stop e hold de interação (o jogo desenha; a engine aplica).
+    a11y: (f32, bool, bool, bool),
+    /// Papel de rede (`viber.net_role`): "off" | "host" | "join".
+    net_role: Option<String>,
+    /// Tabela do locale ativo para `viber.localize` (chaves `@nome`).
+    locale_table: Option<std::collections::HashMap<String, String>>,
+    /// Idioma ativo (`viber.locale.get()`).
+    locale_lang: Option<String>,
+    /// Metadados dos 4 slots (`viber.save_slots`), JSON do sidecar.
+    save_slots: Option<Vec<Vec<(String, serde_json::Value)>>>,
+    /// Grupos por entidade (`viber.group`/`in_group`): bits → nomes.
+    groups: std::collections::HashMap<i64, Vec<String>>,
     input: InputSnapshot,
     /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
     /// move-os para as mensagens no Update.
@@ -2350,8 +2363,368 @@ fn install_viber_api_with(
         })?,
     )?;
 
+    // ── F7-b (fala/UI de texto/acessibilidade) ──────────────────────────
+
+    // viber.say(texto[, segs][, orador]) — o jogo apresenta a fala; o
+    // orador explícito (bits) existe para callbacks noutro script.
+    let say_globals = globals.clone();
+    viber.set(
+        "say",
+        lua.create_function(move |lua, (text, secs, speaker): (String, Option<f32>, Option<i64>)| {
+            let secs = secs.unwrap_or(0.0);
+            if !secs.is_finite() || secs < 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.say: segundos têm de ser finitos e >= 0",
+                ));
+            }
+            let speaker = match speaker {
+                Some(bits) => Some(commands::entity_from_id(bits)?),
+                None => script_entity_opt(lua),
+            };
+            push_command(&say_globals, commands::ScriptCommand::Say { text, secs, speaker });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.quit() — AppExit limpo; o save é responsabilidade do jogo.
+    let quit_globals = globals.clone();
+    viber.set(
+        "quit",
+        lua.create_function(move |_, ()| {
+            push_command(&quit_globals, commands::ScriptCommand::Quit);
+            Ok(())
+        })?,
+    )?;
+
+    // viber.a11y() -> {subtitle_scale, shake, hitstop, interact_hold} — o
+    // publisher publica o snapshot; a11y_set enfileira as mudanças.
+    let a11y_globals = globals.clone();
+    viber.set(
+        "a11y",
+        lua.create_function(move |lua, ()| {
+            let out = lua.create_table()?;
+            let (subtitle_scale, shake, hitstop, interact_hold) = a11y_globals
+                .read()
+                .map(|globals| globals.a11y)
+                .unwrap_or_default();
+            out.raw_set("subtitle_scale", subtitle_scale)?;
+            out.raw_set("shake", shake)?;
+            out.raw_set("hitstop", hitstop)?;
+            out.raw_set("interact_hold", interact_hold)?;
+            Ok(out)
+        })?,
+    )?;
+    let a11y_set_globals = globals.clone();
+    viber.set(
+        "a11y_set",
+        lua.create_function(move |_, opts: mlua::Table| {
+            let subtitle_scale = opts.raw_get::<f32>("subtitle_scale").ok();
+            if subtitle_scale.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+                return Err(mlua::Error::runtime(
+                    "viber.a11y_set: subtitle_scale tem de ser finito e > 0",
+                ));
+            }
+            push_command(&a11y_set_globals, commands::ScriptCommand::A11ySet {
+                subtitle_scale,
+                shake: opts.raw_get::<bool>("shake").ok(),
+                hitstop: opts.raw_get::<bool>("hitstop").ok(),
+                interact_hold: opts.raw_get::<bool>("interact_hold").ok(),
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.net_role() -> "off" | "host" | "join" (VIBER_NET no arranque).
+    let net_globals = globals.clone();
+    viber.set(
+        "net_role",
+        lua.create_function(move |_, ()| {
+            Ok(net_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.net_role.clone())
+                .unwrap_or_else(|| "off".to_string()))
+        })?,
+    )?;
+
+    // viber.markers{blips, beacons, waypoint} — o HUD do mundo lê o snapshot
+    // publicado; aqui só se valida e enfileira.
+    let markers_globals = globals.clone();
+    viber.set(
+        "markers",
+        lua.create_function(move |_, spec: mlua::Table| {
+            fn point(row: &mlua::Table) -> Option<Vec3> {
+                let x: f32 = row.raw_get("x").ok()?;
+                let y: f32 = row.raw_get("y").ok()?;
+                let z: f32 = row.raw_get("z").ok()?;
+                (x.is_finite() && y.is_finite() && z.is_finite()).then_some(Vec3::new(x, y, z))
+            }
+            fn points(table: mlua::Table, cap: usize) -> mlua::Result<Vec<Vec3>> {
+                let mut out = Vec::new();
+                for row in table.sequence_values::<mlua::Table>() {
+                    if out.len() >= cap {
+                        break;
+                    }
+                    if let Some(pos) = point(&row?) {
+                        out.push(pos);
+                    }
+                }
+                Ok(out)
+            }
+            let mut blips = Vec::new();
+            if let Ok(rows) = spec.raw_get::<mlua::Table>("blips") {
+                for row in rows.sequence_values::<mlua::Table>() {
+                    if blips.len() >= 32 {
+                        break;
+                    }
+                    let row = row?;
+                    let Some(pos) = point(&row) else { continue };
+                    let tower: bool = row.raw_get("tower").unwrap_or(false);
+                    blips.push((pos, tower));
+                }
+            }
+            let beacons = spec
+                .raw_get::<mlua::Table>("beacons")
+                .ok()
+                .map(|rows| points(rows, 16))
+                .transpose()?
+                .unwrap_or_default();
+            let waypoint = spec
+                .raw_get::<mlua::Table>("waypoint")
+                .ok()
+                .and_then(|row| {
+                    let pos = point(&row)?;
+                    let label: String = row.raw_get("label").unwrap_or_default();
+                    Some((pos, label))
+                });
+            push_command(&markers_globals, commands::ScriptCommand::SetMarkers { blips, beacons, waypoint });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.prompt(key, label) — prompt de interação de MUNDO; vazio limpa.
+    let prompt_globals = globals.clone();
+    viber.set(
+        "prompt",
+        lua.create_function(move |_, (key, label): (Option<String>, Option<String>)| {
+            let (key, label) = match (key, label) {
+                (Some(key), Some(label)) if !label.trim().is_empty() => (key, label),
+                _ => (String::new(), String::new()),
+            };
+            push_command(&prompt_globals, commands::ScriptCommand::Prompt { key, label });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.localize(texto) — resolve as chaves `@nome` do locale ativo (a
+    // tabela é publicada pelo publisher; sem ela devolve o texto cru).
+    let localize_globals = globals.clone();
+    viber.set(
+        "localize",
+        lua.create_function(move |_, text: String| {
+            let table = localize_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.locale_table.clone());
+            Ok(bevy_ext_core::dialogue::localized(&text, table.as_ref()))
+        })?,
+    )?;
+
+    // viber.locale.get()/set(lang) — idioma ativo em runtime.
+    let locale_get_globals = globals.clone();
+    let locale_get = lua.create_function(move |_, ()| {
+        Ok(locale_get_globals
+            .read()
+            .ok()
+            .and_then(|globals| globals.locale_lang.clone()))
+    })?;
+    let locale_set_globals = globals.clone();
+    let locale_set = lua.create_function(move |_, lang: String| {
+        let lang = lang.trim().to_ascii_lowercase();
+        if lang.is_empty()
+            || !lang
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(mlua::Error::runtime(
+                "viber.locale.set: idioma inválido (use 'pt', 'en', …)",
+            ));
+        }
+        push_command(&locale_set_globals, commands::ScriptCommand::SetLocale(lang));
+        Ok(())
+    })?;
+    let locale_table = lua.create_table()?;
+    locale_table.set("get", locale_get)?;
+    locale_table.set("set", locale_set)?;
+    viber.set("locale", locale_table)?;
+
+    // viber.save_slots() — metadados dos 4 slots para o menu de continuar
+    // (o publisher publica `save_slots` como JSON; aqui vira tabela).
+    let slots_globals = globals.clone();
+    viber.set(
+        "save_slots",
+        lua.create_function(move |lua, ()| {
+            let table = lua.create_table()?;
+            let rows = slots_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.save_slots.clone())
+                .unwrap_or_default();
+            for (index, row) in rows.iter().enumerate() {
+                let item = lua.create_table()?;
+                for (key, value) in row {
+                    match value {
+                        serde_json::Value::String(text) => item.set(key.as_str(), text.as_str())?,
+                        serde_json::Value::Number(n) => item.set(key.as_str(), n.as_f64())?,
+                        serde_json::Value::Bool(b) => item.set(key.as_str(), *b)?,
+                        _ => item.set(key.as_str(), value.to_string())?,
+                    }
+                }
+                table.set(index + 1, item)?;
+            }
+            Ok(table)
+        })?,
+    )?;
+
+    // ── sinais e grupos (o par signal/groups do Godot, com ligações como
+    // DADO: `connect-<sinal>` do nó, grupos em `groups="…"` publicados) ──
+
+    // viber.group(nome) -> {bits…} — membros publicados do grupo (ordem
+    // estável por bits).
+    let group_globals = globals.clone();
+    viber.set(
+        "group",
+        lua.create_function(move |lua, name: String| {
+            let out = lua.create_table()?;
+            let mut bits: Vec<i64> = group_globals
+                .read()
+                .map(|globals| {
+                    globals
+                        .groups
+                        .iter()
+                        .filter(|(_, groups)| groups.iter().any(|g| g == &name))
+                        .map(|(bits, _)| *bits)
+                        .collect()
+                })
+                .unwrap_or_default();
+            bits.sort_unstable();
+            for (i, bits) in bits.iter().enumerate() {
+                out.raw_set(i as u32 + 1, *bits)?;
+            }
+            Ok(out)
+        })?,
+    )?;
+
+    // viber.in_group(nome[, id]) — o próprio script (ou o id) pertence?
+    let in_group_globals = globals.clone();
+    viber.set(
+        "in_group",
+        lua.create_function(move |lua, (name, id): (String, Option<i64>)| {
+            let bits = match id {
+                Some(bits) => bits,
+                None => match script_entity_opt(lua) {
+                    Some(entity) => entity.to_bits() as i64,
+                    None => return Ok(false),
+                },
+            };
+            Ok(in_group_globals
+                .read()
+                .map(|globals| {
+                    globals
+                        .groups
+                        .get(&bits)
+                        .is_some_and(|groups| groups.iter().any(|g| g == &name))
+                })
+                .unwrap_or(false))
+        })?,
+    )?;
+
+    // viber.emit(sinal, …) — entrega aos `connect-<sinal>` do emissor.
+    let emit_globals = globals.clone();
+    viber.set(
+        "emit",
+        lua.create_function(move |lua, (signal, args): (String, mlua::MultiValue)| {
+            let args: Vec<serde_json::Value> = args
+                .into_iter()
+                .map(|value| mlua_serde_to_json(value))
+                .collect();
+            let emitter = script_entity_opt(lua);
+            push_command(&emit_globals, commands::ScriptCommand::EmitSignal { emitter, signal, args });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.call_group(grupo, método, …) — chama o método em todos os membros.
+    let call_globals = globals.clone();
+    viber.set(
+        "call_group",
+        lua.create_function(move |_, (group, method, args): (String, String, mlua::MultiValue)| {
+            let args: Vec<serde_json::Value> = args
+                .into_iter()
+                .map(|value| mlua_serde_to_json(value))
+                .collect();
+            push_command(&call_globals, commands::ScriptCommand::CallGroup {
+                group,
+                method,
+                args,
+                sender: None,
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.sender() — dentro de um handler, quem emitiu (bits); nil fora.
+    let sender_globals = globals.clone();
+    viber.set(
+        "sender",
+        lua.create_function(move |lua, ()| {
+            match lua
+                .named_registry_value::<Option<i64>>("viber_signal_sender")?
+            {
+                Some(bits) => bits.into_lua(lua),
+                None => Ok(mlua::Value::Nil),
+            }
+        })?,
+    )?;
+
     lua.globals().set("viber", viber)?;
     Ok(())
+}
+
+/// Um valor Lua → JSON (o args de sinais/grupos viaja como JSON; a entrega
+/// converte de volta no contexto do alvo). Tabelas viram objectos/arrays.
+fn mlua_serde_to_json(value: mlua::Value) -> serde_json::Value {
+    use mlua::Value as V;
+    match value {
+        V::Nil => serde_json::Value::Null,
+        V::Boolean(b) => serde_json::Value::Bool(b),
+        V::Integer(i) => serde_json::Value::from(i),
+        V::Number(n) => serde_json::Value::from(n),
+        V::String(text) => serde_json::Value::String(text.to_string_lossy().to_string()),
+        V::Table(table) => {
+            // Sequência 1..n → array; caso contrário objecto.
+            let len = table.raw_len();
+            if len > 0 {
+                let mut list = Vec::with_capacity(len);
+                for i in 1..=len {
+                    list.push(mlua_serde_to_json(table.raw_get::<mlua::Value>(i).unwrap_or(V::Nil)));
+                }
+                serde_json::Value::Array(list)
+            } else {
+                let mut map = serde_json::Map::new();
+                for pair in table.pairs::<mlua::Value, mlua::Value>() {
+                    let Ok((key, value)) = pair else { continue };
+                    let key = match key {
+                        V::String(text) => text.to_string_lossy().to_string(),
+                        other => format!("{other:?}"),
+                    };
+                    map.insert(key, mlua_serde_to_json(value));
+                }
+                serde_json::Value::Object(map)
+            }
+        }
+        other => serde_json::Value::String(format!("{other:?}")),
+    }
 }
 
 /// Entidade alvo de `entity_*`: `id` explícito OU a entidade do script

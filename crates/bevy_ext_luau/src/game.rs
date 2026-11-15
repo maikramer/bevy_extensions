@@ -328,6 +328,19 @@ pub fn game_to_json(_lua: &Lua) -> BTreeMap<String, serde_json::Value> {
     game_to_json_process()
 }
 
+/// A tabela `viber.game()` da VM dada — o MESMO proxy que o Lua usa.
+///
+/// Os sistemas Rust do jogo leem/escrevem o estado por aqui desde que o
+/// `viber_game` do registry morreu (exit4/F3): o estado plano vive no store
+/// do processo e o proxy atravessa-o. Usar `get`/`set` (metamétodos), NUNCA
+/// `raw_get`/`raw_set` — os primitivos estão atrás do `__index`/`__newindex`
+/// e uma leitura crua via a tabela vazia. `set(k, Nil)` remove a chave.
+pub fn game_proxy(lua: &Lua) -> mlua::Result<Table> {
+    let viber: Table = lua.globals().get("viber")?;
+    let game: Function = viber.get("game")?;
+    game.call(())
+}
+
 /// Tira `path` do cache do `viber.load` (hot-reload de um módulo). Devolve
 /// `true` se estava carregado. Portado do monólito — opera no registry da
 /// VM dada (o host do monólito e os contextos BMS usam a mesma chave
@@ -388,12 +401,19 @@ end"#,
     }
 
     // viber.state() — tabela real da própria VM (por entidade no BMS).
-    let state = lua.create_table()?;
-    lua.set_named_registry_value("viber_state", state.clone())?;
-    viber.set(
-        "state",
-        lua.create_function(move |_, ()| Ok(state.clone()))?,
-    )?;
+    // NÃO pisa um `state` já instalado: o host do monólito registou o dele
+    // (per-entity, `viber_states[entidade]`) ANTES de chamar este install, e
+    // o per-VM aqui colidia as chaves de scripts de entidades diferentes no
+    // mesmo `st` (o `st.cd` da hotbar virava a tabela de cool-downs das
+    // habilidades e o `math.max` rebentava no `on_update`).
+    if !viber.contains_key("state")? {
+        let state = lua.create_table()?;
+        lua.set_named_registry_value("viber_state", state.clone())?;
+        viber.set(
+            "state",
+            lua.create_function(move |_, ()| Ok(state.clone()))?,
+        )?;
+    }
 
     // viber.load(path) — corre um chunk de `scripts/` num env próprio UMA
     // vez por VM e devolve o `return` (cache em `viber_modules`). A chave

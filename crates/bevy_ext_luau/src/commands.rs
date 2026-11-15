@@ -248,6 +248,60 @@ pub enum ScriptCommand {
         radius: f32,
         strength: f32,
     },
+    // ── F7-b (fala/UI de texto/acessibilidade) ───────────────────────────
+    /// Fala (`viber.say(texto[, segs][, orador])`): o jogo apresenta no
+    /// balão próprio (`ExternalSayPresenter`); sem ele, o balão nativo.
+    Say {
+        text: String,
+        secs: f32,
+        speaker: Option<Entity>,
+    },
+    /// Fecha o jogo (`viber.quit`) — `AppExit` limpo; o save é do jogo.
+    Quit,
+    /// Acessibilidade (`viber.a11y_set{…}`): o jogo desenha; a engine aplica.
+    A11ySet {
+        subtitle_scale: Option<f32>,
+        shake: Option<bool>,
+        hitstop: Option<bool>,
+        interact_hold: Option<bool>,
+    },
+    /// Marcadores do HUD do mundo (`viber.markers{…}`): blips (cap 32),
+    /// beacons (cap 16) e o waypoint com rótulo.
+    SetMarkers {
+        blips: Vec<(Vec3, bool)>,
+        beacons: Vec<Vec3>,
+        waypoint: Option<(Vec3, String)>,
+    },
+    /// Prompt de interação de MUNDO (`viber.prompt(key, label)`); vazio limpa.
+    Prompt { key: String, label: String },
+    /// Idioma ativo (`viber.locale.set(lang)`); a tabela recarrega no frame
+    /// seguinte (`Say`/`toast`/UI resolvem as chaves `@…`).
+    SetLocale(String),
+    // ── sinais ───────────────────────────────────────────────────────────
+    /// `viber.emit(sinal, args…)`: entrega aos `connect-<sinal>` do nó
+    /// emissor. A integração resolve os alvos e corre os handlers no
+    /// contexto de cada um (o `viber.sender()` vê quem emitiu).
+    EmitSignal {
+        emitter: Option<Entity>,
+        signal: String,
+        args: Vec<serde_json::Value>,
+    },
+    /// `viber.call_group(grupo, método, args…)`: chama o método em todos
+    /// os membros publicados do grupo.
+    CallGroup {
+        group: String,
+        method: String,
+        args: Vec<serde_json::Value>,
+        sender: Option<Entity>,
+    },
+    /// Timer a disparar (`viber.after`/`viber.every` vencidos): o host BMS
+    /// reenfileira a callback no contexto do path que a criou.
+    TimerFire {
+        path: String,
+        id: String,
+        /// `None` = one-shot (`after`); `Some(period)` = repetição (`every`).
+        period: Option<f64>,
+    },
 }
 
 /// Alcance BASE autorado de interação (o default do `set_interaction`),
