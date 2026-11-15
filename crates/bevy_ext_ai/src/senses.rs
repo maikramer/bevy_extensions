@@ -241,22 +241,12 @@ pub fn hear_combat(
     }
 }
 
-/// Entidade conduzida por um script Luau (`scripts/<path>` relativo ao
-/// diretório do mundo).
-///
-/// WIRED-BY-ORCHESTRATOR: inserido pelo passo de spawn; os sentidos só o
-/// observam para EXCLUIR criaturas scriptadas da FSM nativa (o script
-/// manda).
-// TODO(viber-exit): o dono histórico é o host Luau da engine
-// (`viber::luau::components`); quando o host aí entrar, mover o marcador
-// para lá — o caminho de reflexão fica intacto.
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component)]
-#[type_path = "viber::luau"]
-pub struct LuaScriptRef {
-    /// Script path relative to `world_dir/scripts/` (e.g. `"doors/gate.lua"`).
-    pub path: String,
-}
+/// Entidade conduzida por um script Luau — movida ao `bevy_ext_core`
+/// (exit4/G1); O MESMO tipo que o spawner insere e o host Luau observa. Os
+/// sentidos só o observam para EXCLUIR criaturas scriptadas da FSM nativa
+/// (o script manda). Caminho de reflexão congelado no core
+/// (`viber::luau::components::LuaScriptRef`).
+pub use bevy_ext_core::LuaScriptRef;
 
 /// FSM das criaturas sem script. Com linha de visão persegue; atrás de um
 /// volume, não. Um som leva-a ao sítio e, se não vir ninguém, desiste.

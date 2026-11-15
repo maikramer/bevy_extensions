@@ -74,6 +74,9 @@ bevy_kira_audio = { version = "0.27.1", features = ["ogg", "spatial"] }
 # BGM driver extraído (shim `src/music.rs`); os TypePaths `viber::music`
 # estão congelados no crate de áudio.
 bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
+# IA (sentidos/FSM/locomoção) movida ao crate (exit4/G1); o monólito
+# reexporta os módulos `ai`/`senses` e publica o host (`Ground`).
+bevy_ext_ai = { version = "0.1.0", path = "../bevy_ext_ai" }
 # Navegação extraída (shim `src/nav/mod.rs`); os TypePaths `viber::nav` estão
 # congelados no crate. O mesmo `bevy_rerecast` do monólito — o `[patch]` do
 # vendor/rerecast aplica-se ao workspace inteiro.

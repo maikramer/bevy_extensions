@@ -1027,6 +1027,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ext_ai"
+version = "0.1.0"
+dependencies = [
+ "avian3d",
+ "bevy",
+ "bevy_ext_core",
+ "bevy_ext_physics",
+]
+
+[[package]]
 name = "bevy_ext_audio"
 version = "0.1.0"
 dependencies = [
@@ -1187,6 +1197,7 @@ dependencies = [
  "bevy",
  "bevy-tnua",
  "bevy-tnua-avian3d",
+ "bevy_ext_ai",
  "bevy_ext_audio",
  "bevy_ext_core",
  "bevy_ext_engine",

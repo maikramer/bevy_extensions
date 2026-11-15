@@ -1,20 +1,7 @@
 //! Marca de morte/cadáver.
 //!
-//! A ENGINE NÃO DECIDE o que a morte significa: `viber.entity_damage` só
-//! aplica dano e emite `kill`; o jogo toca o clip, marca `viber.corpse(id)`
-//! e despawna quando quiser. [`Corpse`] serve de filtro para IA/projéteis não
-//! continuarem a tratar o corpo como vivo.
+//! A definição canónica vive no `bevy_ext_physics` (exit4/G1 — o mesmo tipo
+//! que o `viber::corpse` do monólito reexporta); aqui fica só o reexport
+//! para os caminhos históricos do crate (`bevy_ext_ai::corpse::Corpse`).
 
-use bevy::prelude::*;
-
-/// TTL de referência de um cadáver (s). O despawn é do jogo.
-pub const CORPSE_LIFETIME: f32 = 1.4;
-
-/// Morto/em fade. Quem o tem fica fora das queries de alvo vivo.
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component)]
-// Preserva o TypePath do BRP/`viber.ecs` depois da extração.
-#[type_path = "viber::corpse"]
-pub struct Corpse {
-    pub timer: f32,
-}
+pub use bevy_ext_physics::corpse::{CORPSE_LIFETIME, Corpse};

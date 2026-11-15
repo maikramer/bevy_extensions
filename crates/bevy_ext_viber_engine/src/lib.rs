@@ -26,7 +26,12 @@
 // Acessibilidade movida ao `bevy_ext_core`; o caminho `viber::a11y` continua
 // a resolver e o recurso é O MESMO (ver o `pub use` na lista em baixo).
 pub mod adaptive_quality;
-pub mod ai;
+// IA movida ao `bevy_ext_ai` (exit4/G1): sentidos (`senses`), FSM simples,
+// serviço e o integrador de locomoção — os TypePaths `viber::ai`/`viber::
+// senses` ficam congelados no crate. O adaptador de host é o `ai_host`
+// (o `Ground` do crate passa a ser o `TerrainRuntime` da engine).
+pub use bevy_ext_ai::ai as ai;
+pub mod ai_host;
 pub mod ambient;
 pub mod animation;
 pub mod app;
@@ -122,7 +127,10 @@ pub mod scaffold;
 pub mod scene;
 pub mod scene_loader;
 pub mod script_kind;
-pub mod senses;
+// Sentidos (visão/audição da FSM) movidos ao `bevy_ext_ai` (exit4/G1); o
+// caminho `viber::senses` reexporta o módulo e os TypePaths `viber::senses::
+// …` ficam congelados no crate.
+pub use bevy_ext_ai::senses as senses;
 pub mod session;
 pub mod sky;
 pub use bevy_ext_engine::sky_nishita;

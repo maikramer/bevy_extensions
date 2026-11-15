@@ -79,6 +79,9 @@ mod tests {
             LocomotionProfile::type_path(),
             "viber::animation::LocomotionProfile"
         );
-        assert_eq!(LuaScriptRef::type_path(), "viber::luau::LuaScriptRef");
+        assert_eq!(
+            LuaScriptRef::type_path(),
+            "viber::luau::components::LuaScriptRef"
+        );
     }
 }
