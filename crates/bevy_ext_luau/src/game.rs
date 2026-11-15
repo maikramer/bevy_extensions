@@ -187,7 +187,7 @@ pub fn apply_game_patches() {
 /// aqui (tabelas/funções nunca chegaram ao mapa). Números integrais saem
 /// como inteiros JSON (o estado da tabela de VM do Viber chegava ao save
 /// como `Integer`; o JSON do save não muda).
-pub fn game_to_json(store: &Arc<RwLock<GameStore>>) -> BTreeMap<String, serde_json::Value> {
+pub fn game_to_json_store(store: &Arc<RwLock<GameStore>>) -> BTreeMap<String, serde_json::Value> {
     let Ok(store) = store.read() else {
         return BTreeMap::new();
     };
@@ -198,10 +198,10 @@ pub fn game_to_json(store: &Arc<RwLock<GameStore>>) -> BTreeMap<String, serde_js
         .collect()
 }
 
-/// [`game_to_json`] sobre o store do PROCESSO (o save do monólito/adapter
-/// não tem o handle do store).
+/// Snapshot JSON do store do PROCESSO (o save do monólito/adapter não tem
+/// o handle do store).
 pub fn game_to_json_process() -> BTreeMap<String, serde_json::Value> {
-    game_to_json(&game_store())
+    game_to_json_store(&game_store())
 }
 
 /// `GameValue` → JSON: integral → `i64`, o resto `f64` (NaN/inf caem — o
@@ -281,6 +281,51 @@ pub fn restore_game_json(kv: &BTreeMap<String, serde_json::Value>) {
     if let Ok(mut store) = game_store().write() {
         store.replace(map);
     }
+}
+
+/// COMPAT (exit4/F3): a assinatura que o jogo (Vael) chamava quando o
+/// estado vivia na tabela `viber_game` da VM. O `lua` ficou na assinatura
+/// por compatibilidade de chamadas — o estado agora vive no STORE do
+/// processo, e a escrita é imediata (o monólito escrevia com `raw_set`
+/// sem fila). `Null` remove a chave; não-primitivos são ignorados.
+pub fn apply_patch(
+    _lua: &Lua,
+    patch: &std::collections::BTreeMap<String, serde_json::Value>,
+) {
+    let map: BTreeMap<String, GameValue> = patch
+        .iter()
+        .filter_map(|(key, value)| {
+            let gv = match value {
+                serde_json::Value::Bool(flag) => GameValue::Bool(*flag),
+                serde_json::Value::Number(number) => {
+                    GameValue::Num(number.as_f64().unwrap_or(0.0))
+                }
+                serde_json::Value::String(text) => GameValue::Str(text.clone()),
+                _ => return None,
+            };
+            Some((key.clone(), gv))
+        })
+        .collect();
+    if let Ok(mut store) = game_store().write() {
+        for (key, value) in map {
+            match value {
+                GameValue::Null => {
+                    store.map.remove(&key);
+                }
+                other => {
+                    store.map.insert(key, other);
+                }
+            }
+        }
+    }
+}
+
+/// COMPAT (exit4/F3): a assinatura que o jogo chamava para serializar o
+/// estado da VM — agora é o snapshot do store do processo (o `lua` fica
+/// só por compatibilidade de chamadas). A variante que recebe o store é
+/// [`game_to_json_store`].
+pub fn game_to_json(_lua: &Lua) -> BTreeMap<String, serde_json::Value> {
+    game_to_json_process()
 }
 
 /// Tira `path` do cache do `viber.load` (hot-reload de um módulo). Devolve
@@ -663,7 +708,7 @@ mod tests {
             ]);
             guard.apply_patches();
         }
-        let json = game_to_json(&store);
+        let json = game_to_json_store(&store);
         assert_eq!(json.get("n"), Some(&json!(7)), "integral sai como inteiro");
         assert_eq!(json.get("s"), Some(&json!("x")));
         assert_eq!(json.get("b"), Some(&json!(true)));

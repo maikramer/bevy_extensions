@@ -206,7 +206,8 @@ fn options_system(
             let mut game = capture(position, (mixer.master, mixer.music, mixer.sfx));
             game.volumes_extra = Some((mixer.voice, mixer.ambience));
             if let Some(host) = host.as_mut() {
-                game.world_kv = bevy_ext_luau::game::game_to_json(&bevy_ext_luau::game::game_store());
+                game.world_kv =
+                    bevy_ext_luau::game::game_to_json_store(&bevy_ext_luau::game::game_store());
             }
             // Metadados que o menu lê sem abrir o JSON: hora da gravação,
             // tempo de jogo e rótulo (o jogo escreve-os em `viber.game()`).

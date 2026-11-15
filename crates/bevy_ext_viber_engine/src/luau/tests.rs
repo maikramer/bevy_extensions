@@ -1346,7 +1346,8 @@ fn test_game_kv_roundtrip_ignores_complex_values() {
         .expect("chunk kv");
     // exit4/F3: o save serializa o STORE do processo (o overlay de sessão
     // nunca entra — tabelas/funções vivem só na VM).
-    let json = bevy_ext_luau::game::game_to_json(&bevy_ext_luau::game::game_store());
+    let json =
+        bevy_ext_luau::game::game_to_json_store(&bevy_ext_luau::game::game_store());
     assert_eq!(json.get("n"), Some(&serde_json::json!(7)));
     assert_eq!(json.get("s"), Some(&serde_json::json!("x")));
     assert_eq!(json.get("b"), Some(&serde_json::json!(true)));
