@@ -161,17 +161,36 @@ pub fn editor_camera_inactive(state: Option<Res<EditorCamState>>) -> bool {
     state.is_none_or(|state| !state.active)
 }
 
+/// Query element accepted by [`active_camera_eye`]: keeps `Camera` and
+/// `RenderTarget` optional so headless `MinimalPlugins` tests spawning bare
+/// `Camera3d` work identically while real renders skip inactive or offscreen
+/// `Camera3d` entities (such as `bevy_flora` impostor bake cameras).
+pub type EyeCameraQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static GlobalTransform,
+        Option<&'static Camera>,
+        Option<&'static bevy::camera::RenderTarget>,
+    ),
+    With<Camera3d>,
+>;
+
+pub use bevy_ext_core::camera::is_window_camera;
+
 /// O olho activo do momento: a câmara de editor quando existe (modo free),
-/// senão a primeira `Camera3d` (a do jogo). Quem segue "a câmara" — domo do
-/// céu (`sky_follow_camera`), culling/LOD (`render_lod`), relva (`grass`) —
-/// TEM de usar isto: com `--camera free` há DUAS `Camera3d` no mundo (a de
-/// jogo inactiva) e `iter().next()` devolve uma arbitrária — o domo ficava
-/// preso ao herói e o LOD cullava as árvores vistas da câmara de editor.
+/// senão a primeira `Camera3d` activa em janela (a do jogo, ignorando
+/// câmaras offscreen como o bake de impostores da flora).
 pub fn active_camera_eye<'w>(
     editor: &'w Query<&GlobalTransform, With<EditorCamera>>,
-    cameras: &'w Query<&GlobalTransform, With<Camera3d>>,
+    cameras: &'w EyeCameraQuery<'w, '_>,
 ) -> Option<&'w GlobalTransform> {
-    editor.iter().next().or_else(|| cameras.iter().next())
+    editor.iter().next().or_else(|| {
+        cameras
+            .iter()
+            .find(|(_, cam, target)| is_window_camera(*cam, *target))
+            .map(|(tf, _, _)| tf)
+    })
 }
 
 /// Câmara livre de editor, ligada por `viber run --camera free`. Aditivo por

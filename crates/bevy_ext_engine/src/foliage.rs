@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{Collider, RigidBody};
+use avian3d::prelude::{Collider, RigidBody};
 
 // Contratos fora do monólito: animação congelada no core, marca de script e
 // colisor pendente nos crates próprios.
@@ -144,7 +144,7 @@ fn tile_center(key: IVec2) -> Vec2 {
 
 pub fn batch_tiles(
     mut commands: Commands,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: crate::editor_camera::EyeCameraQuery,
     editor_camera: Query<&GlobalTransform, With<crate::editor_camera::EditorCamera>>,
     mut mesh_assets: ResMut<Assets<Mesh>>,
     foliage: Query<(Entity, &GlobalTransform, &SimpleFoliage, &Visibility)>,

@@ -9,6 +9,7 @@
 
 pub mod a11y;
 pub mod animation;
+pub mod camera;
 pub mod dialogue;
 pub mod input_map;
 pub mod locale;

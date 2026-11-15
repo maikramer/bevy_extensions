@@ -1,13 +1,19 @@
-//! BGM driver — shim para o [`bevy_ext_audio::music`].
+//! BGM driver: loops every `<MusicLayer>` at volume 0 and crossfades the
+//! layer matching the player's zone (ported from the example's `bgmZone`).
 //!
-//! O driver BGM (loops kira por `<MusicLayer>`, crossfade por zona, buses
-//! tipados) foi extraído para o `bevy_ext_audio` — os TypePaths históricos
-//! (`viber::music::…`) estão congelados lá. O caminho `crate::music::…`
-//! mantém-se para os consumidores do monólito não mudarem; o
-//! [`AudioMixerSettings`] é contrato do `bevy_ext_core` (o crate de áudio
-//! importa-o a privado, por isso o re-export aqui repõe o caminho antigo).
+//! **Backend kira** ([`bevy_kira_audio`]): dois buses tipados
+//! ([`MusicBus`]/[`SfxBus`]) recebem os volumes do [`AudioMixerSettings`] via
+//! [`mixer_sync`] — um som NOVO não precisa de saber do mixer, o bus aplica-o
+//! a tudo o que está a tocar (incl. one-shots a meio). O crossfade
+//! ([`fade_step`]) continua linear em espaço LINEAR (puro + testado); a
+//! conversão para dB acontece só na fronteira ([`linear_to_db`]).
 
-pub use bevy_ext_audio::music::*;
+use std::time::Duration;
+
+use bevy::prelude::*;
+use bevy_kira_audio::prelude::{Mix, ReverbHandle};
+use bevy_kira_audio::{AudioChannel, AudioControl, AudioInstance, AudioTween};
+
 pub use bevy_engine_core::AudioMixerSettings;
 
 /// Piso de silêncio em dB — kira trata ≤ −60 dB como inaudível.

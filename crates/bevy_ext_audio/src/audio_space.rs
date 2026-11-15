@@ -79,7 +79,7 @@ fn ensure_listener(
     }
     if let Some((camera, _, _)) = cameras
         .iter()
-        .find(|(_, cam, target)| crate::editor_camera::is_window_camera(*cam, *target))
+        .find(|(_, cam, target)| bevy_ext_core::camera::is_window_camera(*cam, *target))
     {
         commands
             .entity(camera)
