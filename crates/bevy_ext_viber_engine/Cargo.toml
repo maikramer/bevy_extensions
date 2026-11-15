@@ -18,6 +18,7 @@ bevy_save_slots = { package = "bevy_ext_save", version = "0.1.0", path = "../bev
 bevy_ext_gltf = { version = "0.1.0", path = "../bevy_ext_gltf" }
 bevy_voxel_terrain = { version = "0.1.0", path = "../bevy_voxel_terrain" }
 bevy_ext_scene = { version = "0.1.0", path = "../bevy_ext_scene" }
+bevy_ext_water = { version = "0.1.0", path = "../bevy_ext_water" }
 base64 = "0.23"
 bevy = { version = "0.20.1", features = [
     "bevy_remote", "wav", "jpeg", "webp", "basis-universal",
@@ -36,9 +37,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 flate2 = "1"
-bevy_rapier3d = { version = "0.37", default-features = false, features = [
-    "dim3", "async-collider", "debug-render-3d",
-] }
+avian3d = { version = "0.8", features = ["bevy_diagnostic"] }
+# Controller do herói: o Avian não traz character controller com chão/autostep.
+bevy-tnua = "0.33"
+bevy-tnua-avian3d = "0.13"
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 meshopt = "0.7"

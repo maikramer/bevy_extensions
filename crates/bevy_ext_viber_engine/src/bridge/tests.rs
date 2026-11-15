@@ -452,8 +452,8 @@ fn lua_app(port: u16) -> App {
         Transform::from_xyz(1.0, 2.0, 3.0).with_scale(Vec3::splat(2.0)),
         bevy::render::mesh::Mesh3d(cube),
         bevy::pbr::MeshMaterial3d(material),
-        bevy_rapier3d::prelude::Collider::cuboid(0.5, 0.5, 0.5),
-        bevy_rapier3d::prelude::RigidBody::Fixed,
+        avian3d::prelude::Collider::cuboid(1.0, 1.0, 1.0),
+        avian3d::prelude::RigidBody::Static,
         bevy::light::PointLight {
             intensity: 1200.0,
             shadow_maps_enabled: true,
@@ -1585,8 +1585,8 @@ fn test_bridge_lua_control_round4() {
     );
     let mut query = app.world_mut().query::<(
         &Name,
-        Option<&bevy_rapier3d::prelude::Collider>,
-        Option<&bevy_rapier3d::prelude::RigidBody>,
+        Option<&avian3d::prelude::Collider>,
+        Option<&avian3d::prelude::RigidBody>,
     )>();
     let spawned = query
         .iter(app.world())
@@ -1743,13 +1743,8 @@ fn test_bridge_raycast_headless() {
     app.add_plugins(crate::physics::PhysicsPlugin { debug: false });
     {
         let world = app.world_mut();
-        // O plugin insere o contexto em PreStartup, que já correu antes de
-        // plugins pós-primeiro-update — spawnamos à mão o mesmo par; os
-        // sistemas Sync do Rapier (Update) registam os colliders no set.
-        world.spawn((
-            bevy_rapier3d::prelude::RapierContextSimulation::default(),
-            bevy_rapier3d::prelude::RapierConfiguration::new(1.0),
-        ));
+        // O Avian não tem entidade de contexto: o `PhysicsPlugin` regista as
+        // árvores de colliders no primeiro `update`.
         // Cubo collider a 5 m de altura — raio de cima deve apanhar o TOPO.
         let mut meshes = world.resource_mut::<bevy::asset::Assets<bevy::mesh::Mesh>>();
         let cube = meshes.add(bevy::mesh::Mesh::from(bevy::shape::Cuboid::new(
@@ -1759,7 +1754,7 @@ fn test_bridge_raycast_headless() {
             Name::new("alvo"),
             Transform::from_xyz(0.0, 5.0, 0.0),
             bevy::render::mesh::Mesh3d(cube),
-            bevy_rapier3d::prelude::Collider::cuboid(0.5, 0.5, 0.5),
+            avian3d::prelude::Collider::cuboid(1.0, 1.0, 1.0),
         ));
     }
     app.update();

@@ -1532,8 +1532,11 @@ fn attach_physics(entity: &mut EntityWorldMut, ctx: &mut SpawnCtx, spec: &Entity
             // Rapier aplica a escala do `GlobalTransform` ao collider — passar
             // a escala do spec aqui dava escala² ao colisor.
             if let EntityKind::Primitive { shape, .. } = &spec.kind {
-                entity.insert(crate::physics::collider_for_shape(shape, Vec3::ONE));
+                // O papel ANTES do collider: o Avian lê `CollisionEventsEnabled`
+                // ao criar o proxy da árvore (`Add<Collider>`) e não tem
+                // observer para a flag — inserida depois, não tem efeito.
                 crate::physics::stamp_collider_role(entity, trigger, scripted);
+                entity.insert(crate::physics::collider_for_shape(shape, Vec3::ONE));
             } else {
                 entity.insert(PendingCollider {
                     shape: ColliderShape::Auto,
@@ -1578,23 +1581,24 @@ fn attach_physics(entity: &mut EntityWorldMut, ctx: &mut SpawnCtx, spec: &Entity
 /// eventos ficam na entidade que segura o collider.
 fn place_immediate(
     entity: &mut EntityWorldMut,
-    collider: bevy_rapier3d::prelude::Collider,
+    collider: avian3d::prelude::Collider,
     transform: Transform,
     trigger: bool,
     scripted: bool,
 ) {
     if transform.translation == Vec3::ZERO {
-        entity.insert(collider);
         crate::physics::stamp_collider_role(entity, trigger, scripted);
+        entity.insert(collider);
         return;
     }
-    // Rapier positions a collider by its own entity transform, so
-    // `pos-offset-y` becomes a child holding the shape; the render mesh
-    // keeps the entity's placement untouched.
+    // O collider é posicionado pelo transform da própria entidade, por isso
+    // `pos-offset-y` vira um filho que segura a forma; a malha renderizada
+    // mantém a colocação da entidade intacta.
     let parent = entity.id();
     entity.world_scope(|world| {
-        let mut child = world.spawn((Name::new("collider"), collider, transform, ChildOf(parent)));
+        let mut child = world.spawn((Name::new("collider"), transform, ChildOf(parent)));
         crate::physics::stamp_collider_role(&mut child, trigger, scripted);
+        child.insert(collider);
     });
 }
 
@@ -2082,15 +2086,15 @@ fn spawn_entity(
         EntityKind::NpcBody => {
             entity.insert((
                 Visibility::Inherited,
-                // Corpo do NPC: o herói deixava de o atravessar (cápsula de
+                // Corpo do NPC: o herói deixa de o atravessar (cápsula de
                 // ~1,8 m nos pés do NPC, como a do herói).
-                bevy_rapier3d::prelude::RigidBody::Fixed,
-                bevy_rapier3d::prelude::Collider::compound(vec![(
+                avian3d::prelude::RigidBody::Static,
+                avian3d::prelude::Collider::compound(vec![(
                     Vec3::Y * NPC_CAPSULE_CENTER,
                     Quat::IDENTITY,
-                    bevy_rapier3d::prelude::Collider::capsule_y(
-                        NPC_CAPSULE_HALF_HEIGHT,
+                    avian3d::prelude::Collider::capsule(
                         NPC_CAPSULE_RADIUS,
+                        NPC_CAPSULE_HALF_HEIGHT * 2.0,
                     ),
                 )]),
             ));
@@ -2177,13 +2181,10 @@ fn spawn_entity(
             entity.insert((
                 GltfScenePending::single(handle),
                 crate::player::Player::default(),
-                // Character controller: the hero is moved by code but has to be
-                // stopped by the world's static colliders (walls, buildings,
-                // props), so Rapier resolves the motion instead of the
-                // transform being written blind.
-                bevy_rapier3d::prelude::RigidBody::KinematicPositionBased,
+                // Corpo dinâmico + tnua: o controller resolve o movimento
+                // contra os colliders estáticos (paredes, edifícios, props).
+                crate::player::hero_controller_bundle(),
                 crate::player::hero_collider(),
-                crate::player::hero_controller(),
             ));
         }
         // Ground features + `<Terrain>` + spawner groups return before the

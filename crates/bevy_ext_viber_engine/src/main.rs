@@ -2637,7 +2637,7 @@ fn print_prof_tab(tab: &str, value: &serde_json::Value) {
             );
             if let Some(rapier) = value.get("rapier") {
                 println!(
-                    "rapier corpos {}  colisores {}  juntas {}  dt {:.4}",
+                    "avian  corpos {}  colisores {}  juntas {}  dt {:.4}",
                     rapier["bodies"].as_u64().unwrap_or(0),
                     rapier["colliders"].as_u64().unwrap_or(0),
                     rapier["impulse_joints"].as_u64().unwrap_or(0),

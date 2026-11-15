@@ -61,9 +61,9 @@ pub fn pick_method(params: In<Option<Value>>, world: &mut World) -> BrpResult {
     // utilizador VÊ. Ganha o hit mais próximo entre os dois.
     let max_toi = params.max_toi.unwrap_or(100.0).max(0.0);
     let aabb_hit = pick_instance_aabb(world, ray.origin, *ray.direction, max_toi);
-    let rapier_toi = out.get("toi").and_then(Value::as_f64).map(|toi| toi as f32);
-    let use_aabb = match (aabb_hit, rapier_toi) {
-        (Some((_, aabb_toi)), Some(rapier_toi)) => aabb_toi < rapier_toi,
+    let physics_toi = out.get("toi").and_then(Value::as_f64).map(|toi| toi as f32);
+    let use_aabb = match (aabb_hit, physics_toi) {
+        (Some((_, aabb_toi)), Some(physics_toi)) => aabb_toi < physics_toi,
         (Some(_), None) => true,
         (None, _) => false,
     };

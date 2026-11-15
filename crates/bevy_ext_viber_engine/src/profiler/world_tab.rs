@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{Collider, RigidBody, Sensor, Sleeping};
+use avian3d::prelude::{Collider, RigidBody, Sensor, Sleeping};
 
 use crate::ai::EnemyCreature;
 use crate::corpse::Corpse;
@@ -97,16 +97,29 @@ pub struct WorldSnapshot {
 /// Nome do corpo de um `RigidBody` — os mesmos rótulos da referência.
 fn body_type_name(body: &RigidBody) -> &'static str {
     match body {
-        RigidBody::Fixed => "fixed",
+        RigidBody::Static => "fixed",
         RigidBody::Dynamic => "dynamic",
-        RigidBody::KinematicPositionBased => "kinematic-pos",
-        RigidBody::KinematicVelocityBased => "kinematic-vel",
+        RigidBody::Kinematic => "kinematic",
     }
 }
 
 /// Forma resumida de um colisor (via `ShapeType` do parry).
 fn collider_shape_name(collider: &Collider) -> String {
-    format!("{:?}", collider.raw.shape_type())
+    use avian3d::parry::shape::TypedShape;
+    match collider.shape_scaled().as_typed_shape() {
+        TypedShape::Ball(_) => "Ball".into(),
+        TypedShape::Cuboid(_) => "Cuboid".into(),
+        TypedShape::Capsule(_) => "Capsule".into(),
+        TypedShape::Cylinder(_) => "Cylinder".into(),
+        TypedShape::TriMesh(_) => "TriMesh".into(),
+        TypedShape::Compound(_) => "Compound".into(),
+        TypedShape::ConvexPolyhedron(_) => "ConvexPolyhedron".into(),
+        other => format!("{other:?}")
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or("Shape")
+            .to_string(),
+    }
 }
 
 /// Rótulo de uma entidade: `Name` → script → colisor → rigidbody → `#eid`
@@ -322,9 +335,7 @@ pub fn snapshot(world: &mut World, nearby_radius: f32, frame: u64) -> WorldSnaps
     // Segundo passe (só na lista final): sensor/dormindo — não participam do
     // filtro "interessante", só refinam tags.
     for entry in &mut nearby {
-        if let Some(sleeping) = world.get::<Sleeping>(entry.handle)
-            && sleeping.sleeping
-        {
+        if world.get::<Sleeping>(entry.handle).is_some() {
             entry.tags.push("sleeping");
         }
         if world.get::<Sensor>(entry.handle).is_some() {
@@ -456,12 +467,9 @@ mod tests {
 
     #[test]
     fn test_body_type_names() {
-        assert_eq!(body_type_name(&RigidBody::Fixed), "fixed");
+        assert_eq!(body_type_name(&RigidBody::Static), "fixed");
         assert_eq!(body_type_name(&RigidBody::Dynamic), "dynamic");
-        assert_eq!(
-            body_type_name(&RigidBody::KinematicPositionBased),
-            "kinematic-pos"
-        );
+        assert_eq!(body_type_name(&RigidBody::Kinematic), "kinematic");
     }
 
     #[test]

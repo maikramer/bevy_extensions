@@ -784,13 +784,12 @@ fn template_footprint_radius(
 /// termina com colisão).
 ///
 /// `moving` (criaturas de `DynamicSpawner`) insere também um
-/// `RigidBody::KinematicPositionBased`: um collider sem corpo é FIXED no
-/// Rapier e não acompanha o Transform que a IA/scripts escrevem — ficava
-/// fantasma no sítio de nascimento ("lobo-parede"). Com o corpo kinematic o
-/// plugin sincroniza (`set_next_kinematic_position` em `Changed<
-/// GlobalTransform>`) e o collider — próprio, filho ou pendente, ligado ao
-/// ancestral com corpo por `collider_offset` — segue a criatura. Mesmo
-/// caminho do herói (`PlayerGltf` em `recipes/spawn.rs`).
+/// `RigidBody::Kinematic`: um collider sem corpo é ESTÁTICO no Avian e não
+/// acompanha o Transform que a IA/scripts escrevem — ficava fantasma no sítio
+/// de nascimento ("lobo-parede"). Com o corpo kinematic o plugin de física
+/// sincroniza (`GlobalTransform` → `Position`) e o collider — próprio, filho
+/// ou pendente — segue a criatura. Mesmo caminho do herói (`PlayerGltf` em
+/// `recipes/spawn.rs`).
 fn apply_template_collider(
     entity: &mut bevy::ecs::system::EntityCommands,
     shape: &crate::physics::ColliderShape,
@@ -814,29 +813,31 @@ fn apply_template_collider(
         | crate::physics::ColliderShape::Cylinder { .. }
         | crate::physics::ColliderShape::Capsule { .. } => {
             if let Some((collider, offset)) = crate::physics::immediate_collider(shape) {
+                // O papel ANTES do collider (o Avian lê a flag ao criar o
+                // proxy da árvore e não observa `CollisionEventsEnabled`).
                 if offset.translation == Vec3::ZERO {
-                    entity.insert(collider);
                     if trigger {
-                        entity.insert(bevy_rapier3d::prelude::Sensor);
+                        entity.insert(avian3d::prelude::Sensor);
                     }
                     if scripted {
-                        entity.insert(crate::physics::scripted_collision_bits());
+                        entity.insert(avian3d::prelude::CollisionEventsEnabled);
                     }
+                    entity.insert(collider);
                 } else {
                     let parent = entity.id();
                     let mut commands = entity.commands();
                     let mut child = commands.spawn((
                         Name::new("collider"),
-                        collider,
                         offset,
                         bevy::ecs::hierarchy::ChildOf(parent),
                     ));
                     if trigger {
-                        child.insert(bevy_rapier3d::prelude::Sensor);
+                        child.insert(avian3d::prelude::Sensor);
                     }
                     if scripted {
-                        child.insert(crate::physics::scripted_collision_bits());
+                        child.insert(avian3d::prelude::CollisionEventsEnabled);
                     }
+                    child.insert(collider);
                 }
             }
         }

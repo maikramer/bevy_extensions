@@ -15,8 +15,8 @@
 //! solta-se no primeiro frame, no Y autorado. [`GATE_TIMEOUT_S`] é a rede de
 //! segurança de uma coluna que nunca chega a assar (longe do herói).
 
+use avian3d::prelude::{LinearVelocity, RigidBodyDisabled};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{KinematicCharacterController, RigidBodyDisabled, Velocity};
 
 use crate::player::Player;
 use crate::worldsys::EngineConfigs;
@@ -190,11 +190,10 @@ fn hold_gated(
         &mut Transform,
         &mut SpawnGated,
         Option<&mut Player>,
-        Option<&mut KinematicCharacterController>,
-        Option<&mut Velocity>,
+        Option<&mut LinearVelocity>,
     )>,
 ) {
-    for (entity, mut transform, mut gate, player, controller, velocity) in &mut gated {
+    for (entity, mut transform, mut gate, player, velocity) in &mut gated {
         gate.waited += time.delta_secs();
         let is_player = player.is_some();
         let release = match runtime.as_deref() {
@@ -212,11 +211,11 @@ fn hold_gated(
         if let Some(mut player) = player {
             player.vel_y = 0.0;
         }
-        if let Some(mut controller) = controller {
-            controller.translation = Some(Vec3::ZERO);
-        }
+        // O `RigidBodyDisabled` (inserido no gate) já congela o corpo; zero a
+        // velocidade para o corpo não arrancar com o impulso do frame em que
+        // é reativado.
         if let Some(mut velocity) = velocity {
-            *velocity = Velocity::zero();
+            velocity.0 = Vec3::ZERO;
         }
         if !release {
             transform.translation = gate.hold;

@@ -23,9 +23,9 @@ use std::sync::Arc;
 use bevy::ecs::entity_disabling::Disabled;
 use bevy::ecs::message::Messages;
 use bevy::ecs::system::In;
+use avian3d::prelude::{Collider, PhysicsTime as _, RigidBody};
 use bevy::prelude::*;
 use bevy::shape::{Cuboid, Sphere};
-use bevy_rapier3d::prelude::{Collider, RapierContextSimulation, RigidBody};
 
 use crate::terrain::TerrainChunkMaterial;
 use bevy_landmass::AgentState;
@@ -86,8 +86,9 @@ pub struct LightInfo {
     pub color: Option<[f32; 3]>,
 }
 
-/// Tempos do ÚLTIMO step de física (`viber.debug.physics`) — contadores do
-/// Rapier (`RapierContextSimulation.pipeline.counters`).
+/// Tempos do ÚLTIMO step de física (`viber.debug.physics`). O Avian não
+/// expõe os contadores internos do pipeline: o tempo vem das âncoras do
+/// profiler (`physics.step`) e as fases ficam a zero.
 pub struct PhysicsInfo {
     pub enabled: bool,
     pub step_ms: f64,
@@ -1267,21 +1268,71 @@ fn build_view(world: &mut World) -> DebugView {
             stats.player_vel_y = player.vel_y;
         }
     }
-    // Física: `RapierContextSimulation` é COMPONENTE (contexto default).
-    let physics = world.iter_entities().find_map(|e| {
-        let sim = e.get::<RapierContextSimulation>()?;
-        let counters = &sim.pipeline.counters;
-        Some(PhysicsInfo {
-            enabled: counters.enabled(),
-            step_ms: counters.step_time.time_ms(),
-            collision_detection_ms: counters.stages.collision_detection_time.time_ms(),
-            solver_ms: counters.stages.solver_time.time_ms(),
-            ccd_ms: counters.stages.ccd_time.time_ms(),
-            islands_ms: counters.stages.island_construction_time.time_ms(),
-            ncontacts: counters.solver.ncontacts,
-            nconstraints: counters.solver.nconstraints,
-        })
-    });
+    // Física: o Avian não expõe os contadores do pipeline. O tempo do passo
+    // vem das âncoras do profiler (`physics.step`); o resto fica a zero.
+    // Física: o Avian expõe os tempos por estágio no `DiagnosticsStore`
+    // (`bevy_diagnostic` + `PhysicsDiagnosticsPlugin`). Sem eles
+    // (testes/headless) as fases ficam a zero; o `step_ms` cai para a âncora
+    // do profiler (`physics.step`).
+    let physics = world
+        .get_resource::<Time<avian3d::prelude::Physics>>()
+        .map(|time| {
+            let store = world.get_resource::<bevy::diagnostic::DiagnosticsStore>();
+            let ms = |paths: &[&'static str]| {
+                store.map_or(0.0, |store| {
+                    paths
+                        .iter()
+                        .map(|path| {
+                            let path = bevy::diagnostic::DiagnosticPath::new(*path);
+                            store.get(&path).and_then(|d| d.value()).unwrap_or(0.0)
+                        })
+                        .sum()
+                })
+            };
+            let count = |path: &'static str| {
+                store.map_or(0, |store| {
+                    let path = bevy::diagnostic::DiagnosticPath::new(path);
+                    store.get(&path).and_then(|d| d.value()).unwrap_or(0.0) as usize
+                })
+            };
+            let step_ms = {
+                let reported = ms(&["avian/total_step_time"]);
+                if reported > 0.0 {
+                    reported
+                } else {
+                    crate::profiler::timed::systems_snapshot(0.0)
+                        .into_iter()
+                        .find(|s| s.name == "physics.step")
+                        .map(|s| s.last_ms as f64)
+                        .unwrap_or(0.0)
+                }
+            };
+            PhysicsInfo {
+                enabled: !time.is_paused(),
+                step_ms,
+                collision_detection_ms: ms(&[
+                    "avian/collision/broad_phase",
+                    "avian/collision/update_contacts",
+                ]),
+                solver_ms: ms(&[
+                    "avian/solver/prepare_constraints",
+                    "avian/solver/update_velocity_increments",
+                    "avian/solver/integrate_velocities",
+                    "avian/solver/warm_start",
+                    "avian/solver/solve_constraints",
+                    "avian/solver/integrate_positions",
+                    "avian/solver/relax_velocities",
+                    "avian/solver/apply_restitution",
+                    "avian/solver/store_impulses",
+                    "avian/solver/finalize",
+                ]),
+                ccd_ms: ms(&["avian/solver/swept_ccd"]),
+                // O Avian não tem "ilhas" (não há um estágio equivalente).
+                islands_ms: 0.0,
+                ncontacts: count("avian/collision/contact_count"),
+                nconstraints: count("avian/solver/contact_constraint_count"),
+            }
+        });
     // Assets e cache de arquétipos: os nomes de componentes repetem-se por
     // arquétipo (partilhados via Arc); meshes/materiais resolvem-se já no
     // snapshot — os closures Lua não têm acesso a `Assets`.
@@ -1861,9 +1912,9 @@ fn color_rgb(color: Color) -> [f32; 3] {
     [srgba.red, srgba.green, srgba.blue]
 }
 
-/// Resumo do shape de um `Collider` Rapier (downcasts parry).
+/// Resumo do shape de um `Collider` do Avian (downcasts parry).
 fn collider_summary(collider: &Collider) -> ColliderSummary {
-    let shape = &collider.raw;
+    let shape = collider.shape_scaled();
     let mut summary = ColliderSummary {
         shape: "outro".into(),
         half_extents: None,
@@ -2238,7 +2289,7 @@ pub const DEBUG_API_DOCS: &[(&str, &str, &str)] = &[
         "material(id)",
         "{base_color,metallic,roughness,unlit,texturas{w,h}}",
     ),
-    ("collider", "collider(id)", "resumo do shape Rapier"),
+    ("collider", "collider(id)", "resumo do shape do collider (Avian/parry)"),
     (
         "health",
         "health(id)",
@@ -2328,7 +2379,7 @@ pub const DEBUG_API_DOCS: &[(&str, &str, &str)] = &[
         "{path,exists,bytes,mtime} do save",
     ),
     ("stats", "stats()", "agregados do mundo inteiro (cap-free)"),
-    ("physics", "physics()", "tempos do último step do Rapier"),
+    ("physics", "physics()", "tempos do último step de física"),
     (
         "colliders",
         "colliders(radius?)",
@@ -2504,7 +2555,7 @@ pub const DEBUG_API_DOCS: &[(&str, &str, &str)] = &[
     (
         "physics_set",
         "physics_set{...}",
-        "gravidade e/ou pausa do pipeline Rapier",
+        "gravidade e/ou pausa do passo de física",
     ),
     (
         "set_camera",
@@ -5186,19 +5237,28 @@ fn apply_one(world: &mut World, op: DebugOp, warnings: &mut Vec<String>) -> bool
             }
         }
         DebugOp::PhysicsSet { gravity, paused } => {
-            let mut q = world.query::<&mut bevy_rapier3d::prelude::RapierConfiguration>();
-            if let Some(mut conf) = q.iter_mut(world).next() {
-                if let Some(g) = gravity {
-                    conf.gravity = g.0;
-                }
-                if let Some(p) = paused {
-                    conf.physics_pipeline_active = !p;
-                }
-                true
-            } else {
-                warnings.push("sem RapierConfiguration (PhysicsPlugin?)".into());
-                false
+            let mut touched = false;
+            if let Some(g) = gravity
+                && let Some(mut res) = world.get_resource_mut::<avian3d::prelude::Gravity>()
+            {
+                res.0 = g.0;
+                touched = true;
             }
+            if let Some(p) = paused
+                && let Some(mut time) =
+                    world.get_resource_mut::<Time<avian3d::prelude::Physics>>()
+            {
+                if p {
+                    time.pause();
+                } else {
+                    time.unpause();
+                }
+                touched = true;
+            }
+            if !touched {
+                warnings.push("sem física (PhysicsPlugin?)".into());
+            }
+            touched
         }
         DebugOp::Save => queue_ui_action(world, "save", warnings),
         DebugOp::Load => queue_ui_action(world, "load", warnings),
@@ -5631,15 +5691,15 @@ fn spawn_primitive(
         warnings.push("Assets<Mesh> indisponível — spawn ignorado".into());
         return false;
     };
-    let (mesh, rapier) = match shape {
+    let (mesh, shape_collider) = match shape {
         PrimitiveShape::Box(dims) => (
             Mesh::from(Cuboid::new(dims.x, dims.y, dims.z)),
-            Collider::cuboid(dims.x * 0.5, dims.y * 0.5, dims.z * 0.5),
+            Collider::cuboid(dims.x, dims.y, dims.z),
         ),
-        PrimitiveShape::Sphere(radius) => (Mesh::from(Sphere::new(radius)), Collider::ball(radius)),
+        PrimitiveShape::Sphere(radius) => (Mesh::from(Sphere::new(radius)), Collider::sphere(radius)),
         PrimitiveShape::Cylinder(radius, height) => (
             Mesh::from(Cylinder::new(radius, height)),
-            Collider::cylinder(height * 0.5, radius),
+            Collider::cylinder(radius, height),
         ),
     };
     let mesh = meshes.add(mesh);
@@ -5661,7 +5721,7 @@ fn spawn_primitive(
         Visibility::default(),
     ));
     if collider {
-        entity.insert((rapier, RigidBody::Fixed));
+        entity.insert((shape_collider, RigidBody::Static));
     }
     true
 }

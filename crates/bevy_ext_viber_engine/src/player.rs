@@ -5,10 +5,23 @@
 //! with a 100 ms input buffer, 100 ms coyote time and a 0.2 s cooldown. The
 //! camera itself (decoupled follow, terrain collision) lives in
 //! [`crate::camera`].
+//!
+//! O corpo é DINÂMICO (Avian) e o movimento é resolvido pelo `bevy-tnua`
+//! (`TnuaBuiltinWalk` + `TnuaBuiltinJump`); o autostep do Rapier é agora
+//! [`probe_steps`]. A intenção horizontal continua a ser calculada aqui, com o
+//! mesmo low-pass/feel de antes.
 
+use avian3d::prelude::{
+    Collider, LinearVelocity, Position, Rotation, ShapeCastConfig, SpatialQuery, SpatialQueryFilter,
+};
 use bevy::math::Quat;
 use bevy::math::Vec3;
 use bevy::prelude::*;
+use bevy_tnua::builtins::{
+    TnuaBuiltinJump, TnuaBuiltinJumpConfig, TnuaBuiltinWalk, TnuaBuiltinWalkConfig,
+};
+use bevy_tnua::prelude::{TnuaConfig, TnuaController};
+use bevy_tnua_avian3d::prelude::TnuaAvian3dSensorShape;
 
 use crate::camera::low_pass_factor;
 use crate::recipes::spawn::OrbitCamera;
@@ -98,27 +111,9 @@ pub fn physics_ground_below(
     max_drop: f32,
     exclude: &[Entity],
 ) -> Option<f32> {
-    use bevy_rapier3d::prelude::{
-        QueryFilter, RapierContextColliders, RapierContextSimulation, RapierQueryPipeline,
-        RapierRigidBodySet,
-    };
-    use bevy_rapier3d::rapier::parry::query::DefaultQueryDispatcher;
-    let context = world
-        .iter_entities()
-        .find(|e| e.contains::<RapierContextSimulation>())
-        .map(|e| e.id())?;
-    let simulation = world.get::<RapierContextSimulation>(context)?;
-    let colliders = world.get::<RapierContextColliders>(context)?;
-    let bodies = world.get::<RapierRigidBodySet>(context)?;
-    // Sensores (triggers/volumes) não são chão. `exclude_collider`/
-    // `exclude_rigid_body` só guardam UM par, por isso as exclusões extra
-    // (herói + prop do destino) vão por predicado.
-    //
-    // O predicado recebe a entidade DO COLLIDER: um collider com offset
-    // (poço, torre) ou pendente (`PendingCollider` de malha) vive numa
-    // entidade FILHA do prop, e excluir só o id do prop deixava o raio
-    // acertar naquela criança — o herói pousava EM CIMA do poço/torre que
-    // era o destino. A exclusão desce a hierarquia (filhos, netos…).
+    // O raio acerta a entidade DO COLLIDER: um collider com offset (poço,
+    // torre) ou pendente vive numa entidade FILHA do prop, por isso a
+    // exclusão desce a hierarquia (filhos, netos…).
     let mut skip = exclude.to_vec();
     let mut stack: Vec<Entity> = exclude.to_vec();
     while let Some(entity) = stack.pop() {
@@ -131,22 +126,19 @@ pub fn physics_ground_below(
             }
         }
     }
-    let keep = |entity: Entity, _collider: &bevy_rapier3d::rapier::geometry::Collider| {
-        !skip.contains(&entity)
-    };
-    let filter = QueryFilter::default().exclude_sensors().predicate(&keep);
-    let origin = Vec3::new(x, from_y, z);
-    let distance = RapierQueryPipeline::new_scoped(
-        &simulation.broad_phase,
-        colliders,
-        bodies,
-        &filter,
-        &DefaultQueryDispatcher,
-        |pipeline| pipeline.cast_ray(origin, Vec3::NEG_Y, max_drop, true),
-    )
-    .map(|(_, toi)| toi)?;
-    // `toi == 0`: origem dentro de geometria sólida.
-    (distance > 0.01).then_some(from_y - distance)
+    let hit = crate::physics::ray_from_world(
+        world,
+        crate::physics::RayQuery {
+            origin: Vec3::new(x, from_y, z),
+            dir: Vec3::NEG_Y,
+            max_distance: max_drop,
+            solid: true,
+            include_sensors: false,
+            exclude: skip,
+        },
+    )?;
+    // `distance == 0`: origem dentro de geometria sólida.
+    (hit.distance > 0.01).then_some(from_y - hit.distance)
 }
 
 /// Y de aterragem de um teleporte resolvido contra a FÍSICA.
@@ -387,12 +379,17 @@ pub fn player_movement(
             Entity,
             &mut Transform,
             &mut Player,
-            Option<&mut bevy_rapier3d::prelude::KinematicCharacterController>,
-            Option<&bevy_rapier3d::prelude::KinematicCharacterControllerOutput>,
+            Option<&mut TnuaController<HeroScheme>>,
+            Option<&mut LinearVelocity>,
             Option<&mut TeleportSettle>,
             // Mutável: o empurrão do herói é aplicado E decaído aqui, no
             // mesmo passo (o `physics_fx` salta os players de propósito).
             Option<&mut crate::physics_fx::Knockback>,
+            // Pose autoritativa do corpo: o writeback do Avian reescreve o
+            // `Transform` a partir daqui, por isso o chão analítico, o
+            // resgate e a rotação escrevem AQUI.
+            Option<&mut Position>,
+            Option<&mut Rotation>,
         ),
         // `own_system("locomotion")` cala este sistema por completo (kart).
         Without<Camera>,
@@ -409,9 +406,10 @@ pub fn player_movement(
         .as_ref()
         .is_some_and(|owners| owners.owns(crate::luau::ownership::SYSTEM_LOCOMOTION))
     {
-        for (_, _, _, controller, _, _, _) in &mut players {
+        for (_, _, _, controller, _, _, _, _, _) in &mut players {
             if let Some(mut controller) = controller {
-                controller.translation = Some(Vec3::ZERO);
+                controller.initiate_action_feeding();
+                controller.basis = TnuaBuiltinWalk::default();
             }
         }
         return;
@@ -422,10 +420,16 @@ pub fn player_movement(
     // persiste e é reaplicado em todos os steps (o herói deslizava com o
     // menu aberto e, se estava em salto, subia indefinidamente).
     if menus.any() {
-        for (_, _, mut player, controller, _, _, _) in &mut players {
+        for (_, _, mut player, controller, velocity, _, _, _, _) in &mut players {
             player.vel_y = 0.0;
             if let Some(mut controller) = controller {
-                controller.translation = Some(Vec3::ZERO);
+                controller.initiate_action_feeding();
+                controller.basis = TnuaBuiltinWalk::default();
+            }
+            // Corpo parado com o menu aberto: sem isto um salto pendente
+            // continua a subir por trás da loja.
+            if let Some(mut velocity) = velocity {
+                velocity.0 = Vec3::ZERO;
             }
         }
         return;
@@ -463,8 +467,17 @@ pub fn player_movement(
     // Borda, não nível: o buffer é de 100 ms. `pressed` renovava o relógio
     // em todo o frame com a barra premida e o herói saltava em cada aterragem.
 
-    for (entity, mut transform, mut player, mut controller, output, mut settle, mut knockback) in
-        &mut players
+    for (
+        entity,
+        mut transform,
+        mut player,
+        mut controller,
+        mut velocity,
+        mut settle,
+        mut knockback,
+        mut position,
+        mut rotation,
+    ) in &mut players
     {
         // Tutela pós-teleporte: enquanto dura, o chão ANALÍTICO manda mesmo
         // que já exista collider algures — a coluna de destino pode estar a
@@ -486,6 +499,11 @@ pub fn player_movement(
             }
             None => false,
         };
+        // O tnua exige o reset da fila de ações em cada frame, ANTES de
+        // alimentar (salto) e de escrever a basis.
+        if let Some(controller) = controller.as_deref_mut() {
+            controller.initiate_action_feeding();
+        }
         // Grounded state update first (the PlayerGroundedSystem runs
         // before movement): refresh the coyote clock and clear the jumping
         // flag on landing.
@@ -564,17 +582,13 @@ pub fn player_movement(
         if player.vel_x * player.vel_x + player.vel_z * player.vel_z > 0.5 * 0.5 {
             player.last_moving_time = now;
         }
-        let mut motion = Vec3::new(player.vel_x, 0.0, player.vel_z) * dt;
-        // O empurrão de um golpe entra no MESMO pedido ao character
-        // controller: escrito direto no Transform atravessava paredes e
-        // props. Aplicado e DECAÍDO aqui, no mesmo passo, com a integral
-        // exata do decaimento — antes o `physics_fx` decaía a velocidade
-        // noutro sistema (ordem arbitrária) e este frame andava só
-        // `v·dt`, que num soluço de frame é uma fração ínfima dos metros
-        // pedidos (a distância do empurrão dependia do framerate).
+        // O empurrão de um golpe entra na MESMA intenção de movimento: o
+        // tnua acelera até `desired_motion`, por isso o impulso mantém o feel
+        // sem atravessar paredes nem depender do framerate. Decaído aqui, no
+        // mesmo passo, com a integral exata do decaimento.
+        let mut desired_motion = Vec3::new(player.vel_x, 0.0, player.vel_z);
         if let Some(knockback) = knockback.as_deref_mut() {
-            motion +=
-                knockback.velocity.with_y(0.0) * crate::physics_fx::knockback_travel_factor(dt);
+            desired_motion += knockback.velocity.with_y(0.0);
             knockback.velocity *= crate::physics_fx::knockback_decay_factor(dt);
             if knockback.velocity.length() < crate::physics_fx::KNOCKBACK_EPSILON {
                 knockback.velocity = Vec3::ZERO;
@@ -590,6 +604,11 @@ pub fn player_movement(
         if let Some(target) = face {
             let factor = facing_slerp_factor(transform.rotation, target, player.rotation_speed, dt);
             transform.rotation = transform.rotation.slerp(target, factor);
+            // O writeback do Avian reescreve o `Transform` a partir da
+            // `Rotation` do corpo: é aqui que o facing persiste.
+            if let Some(rotation) = rotation.as_deref_mut() {
+                rotation.0 = transform.rotation;
+            }
         }
 
         // Jump: buffered press, coyote grace, cooldown gate.
@@ -608,15 +627,30 @@ pub fn player_movement(
                 player.grounded,
             )
         {
-            player.vel_y = jump_velocity(player.jump_height);
-            player.is_jumping = true;
-            player.can_jump = false;
-            player.jump_cooldown = JUMP_COOLDOWN;
-            player.jump_buffer_time = f32::NEG_INFINITY;
-            sfx.write(crate::ambient::SfxEvent {
-                clip: crate::ambient::SfxClip::Jump,
-                position: Some(transform.translation),
-            });
+            // A altura do salto vive no `TnuaBuiltinJumpConfig` (um asset por
+            // herói, criado em `attach_hero_config`); a ação em si não leva
+            // parâmetros. Sem corpo (testes headless) mantém-se o impulso
+            // direto em `vel_y`.
+            let jumped = match controller.as_deref_mut() {
+                Some(controller) => {
+                    controller.action(HeroScheme::Jump(TnuaBuiltinJump::default()));
+                    true
+                }
+                None => {
+                    player.vel_y = jump_velocity(player.jump_height);
+                    true
+                }
+            };
+            if jumped {
+                player.is_jumping = true;
+                player.can_jump = false;
+                player.jump_cooldown = JUMP_COOLDOWN;
+                player.jump_buffer_time = f32::NEG_INFINITY;
+                sfx.write(crate::ambient::SfxEvent {
+                    clip: crate::ambient::SfxClip::Jump,
+                    position: Some(transform.translation),
+                });
+            }
         }
 
         // Ground height under the player — the floor of last resort while the
@@ -629,11 +663,19 @@ pub fn player_movement(
         // a 2 km de distância usada para resgatar o herói — o salto de metro
         // que uma cena de interior fora do mapa levava. Fora do campo as duas
         // rede de segurança desligam-se e manda o collider.
-        let (px, mut py, pz) = (
-            transform.translation.x,
-            transform.translation.y,
-            transform.translation.z,
-        );
+        // A `Position` do corpo é a pose autoritativa (o writeback do Avian
+        // reescreve o `Transform` a partir dela); sem corpo, o Transform.
+        let (px, mut py, pz) = {
+            let p = position.as_deref().map(|p| p.0);
+            match p {
+                Some(p) => (p.x, p.y, p.z),
+                None => (
+                    transform.translation.x,
+                    transform.translation.y,
+                    transform.translation.z,
+                ),
+            }
+        };
         // Há chão de collider carregado sob ESTE herói? (streaming de colunas;
         // o estado é por entidade — um co-op em que o parceiro está noutra
         // coluna não pode desligar o chão analítico deste).
@@ -656,6 +698,12 @@ pub fn player_movement(
                 transform.translation.y, top
             );
             transform.translation.y = top;
+            if let Some(position) = position.as_deref_mut() {
+                position.0.y = top + HERO_FLOAT_HEIGHT;
+            }
+            if let Some(velocity) = velocity.as_deref_mut() {
+                velocity.0.y = 0.0;
+            }
             // A sonda de chão abaixo usa `py`: sem o atualizar, o resgate
             // deixava `ground = -inf` no próprio frame e a gravidade puxava
             // o herói resgatado para fora da superfície outra vez.
@@ -685,35 +733,36 @@ pub fn player_movement(
             f32::NEG_INFINITY
         };
 
-        // Vertical integration. Falls faster than it rises feels right
-        // (gravity is already twice the jump-fair value); see
-        // [`gravity_applies`] for why it skips resting frames.
-        if gravity_applies(player.grounded, player.vel_y) {
-            player.vel_y -= GRAVITY * dt;
+        // Com corpo, a vertical é do tnua (spring + gravidade do
+        // `TnuaGravity`); sem corpo (testes headless) integra-se como antes.
+        // `player.vel_y` passa a ser a leitura da velocidade vertical do
+        // corpo — o profiler e a animação continuam a vê-la.
+        if controller.is_none() {
+            if gravity_applies(player.grounded, player.vel_y) {
+                player.vel_y -= GRAVITY * dt;
+            }
+            player.vel_y = clamp_fall_speed(player.vel_y);
+        } else if let Some(velocity) = velocity.as_deref() {
+            player.vel_y = velocity.0.y;
         }
-        // Bounded fall: one frame of motion must stay small enough for the
-        // controller's shape-cast to see the ground — see [`clamp_fall_speed`].
-        player.vel_y = clamp_fall_speed(player.vel_y);
-        motion.y += player.vel_y * dt;
 
         match controller.as_deref_mut() {
-            // With a character controller Rapier resolves the motion against
-            // the world's colliders, so walls and props actually stop the hero
-            // instead of the transform being written straight through them.
             Some(controller) => {
-                controller.translation = Some(motion);
-                // Collider authority: `grounded` vem da resolução do Rapier
-                // contra o trimesh da coluna. O chão analítico só entra
-                // quando NÃO há chão de collider carregado (arranque,
-                // teleporte para coluna ainda por assar) — com chão carregado,
-                // não-grounded é airborne legítimo, não desculpa para snap.
-                let on_collider = output.is_some_and(|out| out.grounded);
-                if on_collider {
-                    player.grounded = true;
+                // A intenção horizontal vai como velocidade (`speed: 1.0` no
+                // config); a vertical é resolvida pelo spring/gravidade.
+                controller.basis = TnuaBuiltinWalk {
+                    desired_motion: desired_motion.with_y(0.0),
+                    desired_forward: None,
+                };
+                // Chão: o sensor do tnua manda. A rede analítica só entra
+                // quando o collider da coluna ainda não chegou (arranque,
+                // teleporte para coluna ainda por assar) ou durante o Settle.
+                player.grounded = !controller.is_airborne().unwrap_or(true);
+                if player.grounded {
                     if player.vel_y < 0.0 {
                         player.vel_y = 0.0;
                     }
-                } else if interior_floor.is_some_and(|floor| transform.translation.y < floor) {
+                } else if interior_floor.is_some_and(|floor| py < floor) {
                     // Bolsa de interior: o SOALHO é o piso do mundo. As salas
                     // são ilhas com vãos abertos (a porta, as janelas) e sem
                     // terreno por baixo — um passo para fora do soalho era uma
@@ -721,30 +770,38 @@ pub fn player_movement(
                     // 2026-09-13: "eu não poderia cair pela porta"). Agora o
                     // chão da bolsa é duro: ninguém cai, e é o gatilho da
                     // porta que trata de pôr o herói lá fora.
-                    transform.translation.y = interior_floor.unwrap_or(0.0);
+                    // A folga do `float_height` é OBRIGATÓRIA: com os pés
+                    // exactamente na superfície o disco do sensor fica
+                    // coplanar com o trimesh, o tnua deixa de ver chão e o
+                    // corpo fica "airborne" encostado (gravidade prende-o).
+                    if let Some(position) = position.as_deref_mut() {
+                        position.0.y = interior_floor.unwrap_or(0.0) + HERO_FLOAT_HEIGHT;
+                    }
+                    if let Some(velocity) = velocity.as_deref_mut() {
+                        velocity.0.y = 0.0;
+                    }
                     player.vel_y = 0.0;
                     player.grounded = true;
-                    controller.translation = Some(Vec3::new(motion.x, 0.0, motion.z));
-                } else if (!terrain_ready || settling) && transform.translation.y <= ground {
-                    transform.translation.y = ground;
+                } else if (!terrain_ready || settling) && py <= ground {
+                    // A `Position` é a pose autoritativa: escrever só o
+                    // Transform não basta (o writeback do Avian repõe a
+                    // posição do corpo no frame seguinte).
+                    // Ver o comentário acima: o snap deixa a folga do sensor.
+                    if let Some(position) = position.as_deref_mut() {
+                        position.0.y = ground + HERO_FLOAT_HEIGHT;
+                    }
+                    if let Some(velocity) = velocity.as_deref_mut() {
+                        velocity.0.y = velocity.0.y.max(0.0);
+                    }
                     player.vel_y = 0.0;
                     player.grounded = true;
-                    // A queda DESTE frame ainda está na fila do CCT: escrever
-                    // só o Transform não chega — o Rapier aplica `motion.y` a
-                    // seguir, o herói fura o chão analítico e no frame
-                    // seguinte já está ABAIXO da superfície, onde
-                    // `surface_below` devolve `None` e a rede de segurança
-                    // deixa de existir (queda infinita). Era isto que fazia o
-                    // regresso de um interior à vila acabar a y≈−150 com as
-                    // colunas ainda por assar (repro 2026-09-12).
-                    controller.translation = Some(Vec3::new(motion.x, 0.0, motion.z));
-                } else {
-                    player.grounded = false;
                 }
             }
             // No controller (headless tests, or a hero spawned before the
             // physics plugin): keep the original direct-move behaviour.
             None => {
+                let mut motion = desired_motion * dt;
+                motion.y = player.vel_y * dt;
                 transform.translation += motion;
                 if transform.translation.y <= ground {
                     transform.translation.y = ground;
@@ -796,32 +853,249 @@ pub const HERO_MAX_SLOPE_DEG: f32 = 55.0;
 pub const HERO_CAPSULE_CENTER: f32 = HERO_HALF_HEIGHT + HERO_RADIUS;
 
 /// The hero's collision shape, with its base at the entity origin.
-pub fn hero_collider() -> bevy_rapier3d::prelude::Collider {
-    use bevy_rapier3d::prelude::Collider;
+pub fn hero_collider() -> avian3d::prelude::Collider {
+    use avian3d::prelude::Collider;
     Collider::compound(vec![(
         Vec3::new(0.0, HERO_CAPSULE_CENTER, 0.0),
         Quat::IDENTITY,
-        Collider::capsule_y(HERO_HALF_HEIGHT, HERO_RADIUS),
+        // `capsule(radius, length)` — `length` é o segmento cilíndrico.
+        Collider::capsule(HERO_RADIUS, HERO_HALF_HEIGHT * 2.0),
     )])
 }
 
-/// Rapier character controller tuned to the hero controller.
-pub fn hero_controller() -> bevy_rapier3d::prelude::KinematicCharacterController {
-    use bevy_rapier3d::prelude::*;
-    KinematicCharacterController {
-        up: Vec3::Y,
-        // A small skin keeps the capsule from resting exactly on a face, which
-        // otherwise flickers between grounded and airborne.
-        offset: CharacterLength::Absolute(0.02),
-        max_slope_climb_angle: HERO_MAX_SLOPE_DEG.to_radians(),
-        min_slope_slide_angle: (HERO_MAX_SLOPE_DEG + 10.0).to_radians(),
-        autostep: Some(CharacterAutostep {
-            max_height: CharacterLength::Absolute(HERO_STEP_HEIGHT),
-            min_width: CharacterLength::Absolute(HERO_RADIUS * 0.5),
-            include_dynamic_bodies: false,
-        }),
-        snap_to_ground: Some(CharacterLength::Absolute(0.3)),
-        ..KinematicCharacterController::default()
+// ── controller do herói (tnua) ──────────────────────────────────────────
+//
+// O Avian não traz character controller com chão/autostep: o tnua é um
+// controller FLUTUANTE (corpo dinâmico + forças) e o degrau é nosso
+// (`probe_steps`/`apply_steps`). Medido no Gate 0: repouso sem deriva a
+// `float_height`, rampas até 55° nativas, degraus de 0.2-0.4 m com o assist.
+
+/// Altura de repouso do corpo acima do chão. A origem do herói é a PEGADA
+/// (pés), por isso é pequena: o colisor toca o chão a 0 e o tnua mantém 4 cm
+/// de folga (sem contacto com o solo, que faria o solver e a spring lutarem).
+pub const HERO_FLOAT_HEIGHT: f32 = 0.04;
+/// Distância acima de `float_height` onde a spring ainda puxa para o chão
+/// (descer degraus sem flutuar).
+pub const HERO_CLING_DISTANCE: f32 = 0.30;
+/// Raio do sensor de chão do tnua (um disco à altura da pegada).
+pub const HERO_SENSOR_RADIUS: f32 = HERO_RADIUS * 0.97;
+
+/// Ações do herói. O `Jump` usa `TnuaBuiltinJumpConfig::height` do asset;
+/// o knockback entra na `desired_motion` (ver `player_movement`).
+#[derive(bevy_tnua::prelude::TnuaScheme)]
+#[scheme(basis = TnuaBuiltinWalk)]
+pub enum HeroScheme {
+    Jump(TnuaBuiltinJump),
+}
+
+/// Corpo + controller do herói.
+pub fn hero_controller_bundle() -> impl Bundle {
+    (
+        avian3d::prelude::RigidBody::Dynamic,
+        avian3d::prelude::LockedAxes::ROTATION_LOCKED,
+        avian3d::prelude::CollisionEventsEnabled,
+        GroundRecovery::default(),
+        // Gravidade do jogo (60) pelo tnua; o `GravityScale(0)` vem por
+        // required component e desliga a do Avian neste corpo.
+        bevy_tnua::TnuaGravity(Vec3::NEG_Y * GRAVITY),
+        // O jogo desliga o controller na natação (conduz `LinearVelocity` à
+        // mão); sem o componente o toggle não existia e não havia como parar.
+        bevy_tnua::TnuaToggle::Enabled,
+        TnuaController::<HeroScheme>::default(),
+        TnuaAvian3dSensorShape(avian3d::prelude::Collider::cylinder(
+            HERO_SENSOR_RADIUS,
+            0.0,
+        )),
+    )
+}
+
+/// Config do tnua para o herói. `speed: 1.0` faz `desired_motion` ser a
+/// velocidade em m/s (o `player_movement` calcula-a como antes).
+/// `jump_height` vem do [`Player`] do herói (o Vael usa 2.3 m; o default da
+/// engine é outro) — o asset é criado por altura em [`attach_hero_config`].
+pub fn hero_config(jump_height: f32) -> HeroSchemeConfig {
+    HeroSchemeConfig {
+        basis: TnuaBuiltinWalkConfig {
+            speed: 1.0,
+            float_height: HERO_FLOAT_HEIGHT,
+            cling_distance: HERO_CLING_DISTANCE,
+            spring_strength: 400.0,
+            spring_dampening: 1.2,
+            acceleration: 60.0,
+            air_acceleration: 20.0,
+            // O buffer/coyote do jogo é que manda (can_perform_jump).
+            coyote_time: 0.0,
+            free_fall_extra_gravity: 0.0,
+            max_slope: HERO_MAX_SLOPE_DEG.to_radians(),
+            ..Default::default()
+        },
+        jump: TnuaBuiltinJumpConfig {
+            height: jump_height.max(0.1),
+            ..Default::default()
+        },
+    }
+}
+
+/// Insere o `TnuaConfig` no herói, uma vez. O asset guarda a altura de salto
+/// do `Player` (recriado se ela mudar).
+pub fn attach_hero_config(
+    mut commands: Commands,
+    mut configs: ResMut<Assets<HeroSchemeConfig>>,
+    mut shared: Local<Option<(f32, Handle<HeroSchemeConfig>)>>,
+    heroes: Query<(Entity, &Player), Without<TnuaConfig<HeroScheme>>>,
+) {
+    for (entity, player) in &heroes {
+        let height = player.jump_height;
+        let handle = match shared.as_ref() {
+            Some((cached, handle)) if (*cached - height).abs() < 1e-4 => handle.clone(),
+            _ => {
+                let handle = configs.add(hero_config(height));
+                *shared = Some((height, handle.clone()));
+                handle
+            }
+        };
+        commands
+            .entity(entity)
+            .insert(TnuaConfig::<HeroScheme>(handle));
+    }
+}
+
+/// Degraus à frente do herói, decididos por frame (ver `apply_steps`).
+///
+/// O `SpatialQuery` lê `Position` e o `apply` escreve-a: no MESMO sistema os
+/// dois parâmetros conflituam (B0001), daí o plano intermédio.
+#[derive(Resource, Default)]
+pub struct HeroStepPlan(pub Vec<(Entity, f32)>);
+
+/// Sonda o degrau à frente e decide a altura de subida.
+///
+/// O tnua é flutuante e não tem autostep: encostado a um degrau a cápsula é
+/// uma parede. Dispara com a direcção DESEJADA (a velocidade real é ~0 quando
+/// encostado), exige um topo HORIZONTAL (senão "escadeia" rampas acima de
+/// `max_slope`) e confirma que a posição elevada está livre com um cast CURTO
+/// (o degrau seguinte está sempre a menos de um raio num lanço de escada).
+pub fn probe_steps(
+    spatial: SpatialQuery,
+    mut plan: ResMut<HeroStepPlan>,
+    query: Query<(
+        Entity,
+        &Position,
+        &LinearVelocity,
+        &Collider,
+        &TnuaController<HeroScheme>,
+        Option<&bevy_tnua::TnuaToggle>,
+    )>,
+) {
+    plan.0.clear();
+    for (entity, position, velocity, collider, controller, toggle) in &query {
+        // Controller desligado (natação): a basis fica do último frame em terra
+        // e subir "degraus" debaixo de água não faz sentido.
+        if matches!(toggle, Some(bevy_tnua::TnuaToggle::Disabled)) {
+            continue;
+        }
+        let want = controller.basis.desired_motion;
+        if want.length() < 0.10 {
+            continue;
+        }
+        // No ar a sério (salto/queda) não há degrau; encostado à face de um
+        // degrau o tnua chama-lhe "airborne" (slope > max_slope) e a
+        // velocidade vertical fica ~0 — é esse o caso que queremos tratar.
+        if controller.is_airborne().unwrap_or(true) && velocity.0.y.abs() > 0.5 {
+            continue;
+        }
+        let dir = want.normalize();
+        let Ok(dir3) = Dir3::new(dir) else {
+            continue;
+        };
+        let filter = SpatialQueryFilter::from_excluded_entities([entity]);
+        let probe = position.0 + dir * (HERO_RADIUS + 0.10)
+            + Vec3::Y * (HERO_STEP_HEIGHT + 0.05);
+        let Some(down) = spatial.cast_ray(
+            probe,
+            Dir3::NEG_Y,
+            HERO_STEP_HEIGHT + 0.15,
+            true,
+            &filter,
+        ) else {
+            continue;
+        };
+        let surface = probe.y - down.distance;
+        let rise = surface - position.0.y;
+        if !(0.03..=HERO_STEP_HEIGHT).contains(&rise) || down.normal.y < 0.95 {
+            continue;
+        }
+        let blocked = spatial.cast_shape(
+            collider,
+            position.0 + Vec3::Y * (rise + 0.03),
+            Rotation::default(),
+            dir3,
+            &ShapeCastConfig {
+                max_distance: 0.12,
+                ignore_origin_penetration: true,
+                ..default()
+            },
+            &filter,
+        );
+        if blocked.is_some() {
+            continue;
+        }
+        plan.0.push((entity, surface + 0.02));
+    }
+}
+
+/// Aplica os degraus decididos por [`probe_steps`].
+pub fn apply_steps(plan: Res<HeroStepPlan>, mut query: Query<(&mut Position, &mut LinearVelocity)>) {
+    for &(entity, y) in &plan.0 {
+        let Ok((mut position, mut velocity)) = query.get_mut(entity) else {
+            continue;
+        };
+        position.0.y = y;
+        if velocity.0.y < 0.0 {
+            velocity.0.y = 0.0;
+        }
+    }
+}
+
+/// Tempo (s) que o corpo pode ficar "airborne" e parado antes de ser
+/// desencravado do chão. Ver [`recover_stuck_ground`].
+#[derive(Component, Default)]
+pub struct GroundRecovery(pub f32);
+
+/// Desencrava o herói que aterrou *em contacto* com o chão.
+///
+/// O sensor de chão do tnua é um disco de altura 0 nos pés: quando o corpo
+/// assenta exactamente na superfície (aterragem dura, snap analítico), o
+/// `shape_cast` com `ignore_origin_penetration` não devolve hit, o tnua fica
+/// "airborne" e a gravidade prende-o ali (o herói não anda nem salta). Se está
+/// airborne e a velocidade vertical é ~0, o solver está a segurá-lo: sobe-se a
+/// folga do `float_height` para o sensor voltar a ver o chão. O limiar de
+/// tempo evita disparar no apex do salto (|v| < 0.5 durante ~8 ms).
+pub fn recover_stuck_ground(
+    time: Res<Time>,
+    mut query: Query<(
+        &mut GroundRecovery,
+        &mut Position,
+        &LinearVelocity,
+        &TnuaController<HeroScheme>,
+        Option<&bevy_tnua::TnuaToggle>,
+    )>,
+) {
+    let dt = time.delta_secs().clamp(0.0, 0.05);
+    for (mut timer, mut position, velocity, controller, toggle) in &mut query {
+        if matches!(toggle, Some(bevy_tnua::TnuaToggle::Disabled)) {
+            timer.0 = 0.0;
+            continue;
+        }
+        let held = controller.is_airborne().unwrap_or(true) && velocity.0.y.abs() < 0.5;
+        if held {
+            timer.0 += dt;
+            if timer.0 > 0.2 {
+                position.0.y += HERO_FLOAT_HEIGHT + 0.01;
+                timer.0 = 0.0;
+            }
+        } else {
+            timer.0 = 0.0;
+        }
     }
 }
 
@@ -1091,7 +1365,6 @@ mod tests {
             .spawn((
                 Transform::from_xyz(0.0, 0.0, 0.0),
                 Player::default(),
-                hero_controller(),
             ))
             .id();
         {
@@ -1142,7 +1415,10 @@ mod tests {
             .run_system_once(player_movement)
             .expect("player_movement");
         let x = app.world().get::<Transform>(hero).unwrap().translation.x;
-        let expected = 2.0 * crate::physics_fx::knockback_travel_factor(0.1);
+        // O knockback entra na `desired_motion` (velocidade); no caminho sem
+        // corpo o passo directo avança `v * dt` (o decaimento é aplicado no
+        // mesmo frame).
+        let expected = 2.0 * 0.1;
         assert!(
             (x - expected).abs() < 1e-4,
             "deslocamento {x}, esperado {expected}"
@@ -1272,21 +1548,21 @@ mod tests {
             .spawn((
                 Transform::from_xyz(0.0, crate::worldsys::INTERIOR_FLOOR_Y, -4.0),
                 Player::default(),
-                hero_controller(),
                 TeleportSettle { frames: 1 },
             ))
             .id();
         app.world_mut()
             .run_system_once(player_movement)
             .expect("player_movement");
-        let motion = app
+        // Sem corpo de física o movimento aplica-se direto no Transform.
+        let moved = app
             .world()
-            .get::<bevy_rapier3d::prelude::KinematicCharacterController>(hero)
-            .and_then(|controller| controller.translation)
-            .expect("pedido de movimento");
+            .get::<Transform>(hero)
+            .map(|transform| transform.translation.xz().length())
+            .unwrap_or(0.0);
         assert!(
-            motion.xz().length() > 1.0e-3,
-            "sala sem terreno tem de andar, motion={motion:?}"
+            moved > 1.0e-3,
+            "sala sem terreno tem de andar, deslocamento={moved:?}"
         );
         app.world_mut().flush();
         assert!(

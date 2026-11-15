@@ -10,7 +10,7 @@
 //!   (shared materials, no per-entity uniforms);
 //! * [`style`] — colour/PBR plus the procedural look presets that replace the
 //!   sampled albedo/normal maps;
-//! * [`collider`] (feature `physics`) — exact Rapier colliders, trimesh for
+//! * [`collider`] (feature `physics`) — exact Avian colliders, trimesh for
 //!   the procedural shapes.
 //!
 //! The game (`VaelPrimitivesPlugin`) and the editor preview both call this

@@ -1,16 +1,15 @@
-//! Contactos Rapier → hooks Luau.
+//! Contactos do Avian → hooks Luau.
 //!
-//! `CollisionEvent` cobre sensores (o herói atravessa-os: o character
-//! controller exclui sensores) e corpos dinâmicos. O herói contra um sólido
-//! pára ~2 cm antes do overlap, por isso esse par entra também pelos hits do
-//! `KinematicCharacterControllerOutput`. Um par fica activo enquanto QUALQUER
-//! fonte o vir — os dois caminhos não disparam o enter duas vezes.
+//! `CollisionStart`/`CollisionEnd` cobrem tudo o que interessa: o herói é um
+//! corpo DINÂMICO, por isso os pares com estáticos/cinemáticos geram contacto
+//! (no Rapier o KCC parava ~2 cm antes do overlap e os hits do controller
+//! tinham de ser uma segunda fonte). A flag de sensor desapareceu do evento —
+//! pergunta-se ao componente `Sensor` da entidade do collider.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
+use avian3d::prelude::{CollisionEnd, CollisionStart, Sensor};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{CollisionEvent, KinematicCharacterControllerOutput, Sensor};
-use bevy_rapier3d::rapier::geometry::CollisionEventFlags;
 
 use super::components::LuaScriptRef;
 use super::host::{ContactHook, LuaScriptHost};
@@ -25,20 +24,13 @@ pub struct ContactBook {
 #[derive(Clone, Copy, Reflect)]
 struct LivePair {
     event: bool,
-    controller: bool,
     trigger: bool,
 }
 
 impl LivePair {
     fn active(self) -> bool {
-        self.event || self.controller
+        self.event
     }
-}
-
-#[derive(Clone, Copy)]
-enum Source {
-    Event,
-    Controller,
 }
 
 struct OtherBody {
@@ -49,7 +41,10 @@ struct OtherBody {
 
 /// Depois do step do Rapier: eventos deste frame + hits do controller.
 pub fn dispatch_contacts(
-    mut events: MessageReader<CollisionEvent>,
+    // `Option`: apps de teste/headless que não trazem o `PhysicsPlugins` não
+    // têm as mensagens de colisão inicializadas — o sistema não pode panicar.
+    mut starts: Option<MessageReader<CollisionStart>>,
+    mut ends: Option<MessageReader<CollisionEnd>>,
     time: Res<Time>,
     mut book: ResMut<ContactBook>,
     mut host: ResMut<LuaScriptHost>,
@@ -59,7 +54,6 @@ pub fn dispatch_contacts(
     globals: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
     sensors: Query<(), With<Sensor>>,
-    controllers: Query<(Entity, &KinematicCharacterControllerOutput)>,
 ) {
     let dt = time.delta_secs();
     // Dono despawnado: o exit já não tem para quem correr. O OUTRO lado
@@ -97,108 +91,41 @@ pub fn dispatch_contacts(
         ));
     }
 
-    for event in events.read() {
-        let (a, b, flags, started) = match *event {
-            CollisionEvent::Started(a, b, flags) => (a, b, flags, true),
-            CollisionEvent::Stopped(a, b, flags) => (a, b, flags, false),
-        };
-        let trigger = flags.contains(CollisionEventFlags::SENSOR);
-        note(
-            &mut book,
-            &scripts,
-            &names,
-            &globals,
-            &parents,
-            a,
-            b,
-            trigger,
-            started,
-            Source::Event,
-            &mut fires,
-        );
-    }
-
-    let mut seen: HashSet<(Entity, Entity)> = HashSet::new();
-    // Diagnóstico de contactos (`VIBER_CONTACT_DEBUG=1`): por frame, os hits do
-    // KCC do herói e a resolução do dono do script. Foi o que mostrou que um
-    // push contra um NPC parava no terreno ("chunk …") e que o hook do NPC só
-    // dispara quando o collider tocado resolve para uma entidade com
-    // `LuaScriptRef`.
-    let contact_debug = std::env::var_os("VIBER_CONTACT_DEBUG").is_some();
-    for (hero, output) in &controllers {
-        if contact_debug {
-            info!(
-                target: "viber::contacts",
-                "kcc hero={hero:?} collisions={} grounded={}",
-                output.collisions.len(),
-                output.grounded,
-            );
-            for hit in &output.collisions {
-                let owner = script_owner(hit.entity, &scripts, &parents);
-                let hit_name = names.get(hit.entity).ok().map(|n| n.to_string());
-                let parent = parents.get(hit.entity).ok().map(|p| p.parent());
-                let parent_script = parent
-                    .and_then(|p| scripts.get(p).ok())
-                    .map(|s| s.path.clone());
-                info!(
-                    target: "viber::contacts",
-                    "  hit {:?} name={:?} sensor={} owner={:?} parent={:?} parent_script={:?}",
-                    hit.entity,
-                    hit_name,
-                    is_sensor(hit.entity, &sensors, &parents),
-                    owner,
-                    parent,
-                    parent_script,
-                );
-            }
-        }
-        for hit in &output.collisions {
-            if is_sensor(hit.entity, &sensors, &parents) {
-                continue;
-            }
-            let Some(owner) = script_owner(hit.entity, &scripts, &parents) else {
-                continue;
-            };
-            if owner == hero {
-                continue;
-            }
-            seen.insert((owner, hero));
-            touch(
+    if let Some(starts) = starts.as_mut() {
+        for event in starts.read() {
+            let trigger = is_sensor(event.collider1, &sensors, &parents)
+                || is_sensor(event.collider2, &sensors, &parents);
+            note(
                 &mut book,
                 &scripts,
                 &names,
                 &globals,
                 &parents,
-                owner,
-                hero,
-                false,
+                event.collider1,
+                event.collider2,
+                trigger,
                 true,
-                Source::Controller,
                 &mut fires,
             );
         }
     }
-    let release: Vec<(Entity, Entity)> = book
-        .pairs
-        .iter()
-        .filter(|((owner, other), live)| live.controller && !seen.contains(&(*owner, *other)))
-        .map(|(key, _)| *key)
-        .collect();
-    for (owner, other) in release {
-        let trigger = book.pairs.get(&(owner, other)).is_some_and(|p| p.trigger);
-        touch(
-            &mut book,
-            &scripts,
-            &names,
-            &globals,
-            &parents,
-            owner,
-            other,
-            trigger,
-            false,
-            Source::Controller,
-            &mut fires,
-        );
+    if let Some(ends) = ends.as_mut() {
+        for event in ends.read() {
+            let trigger = is_sensor(event.collider1, &sensors, &parents)
+                || is_sensor(event.collider2, &sensors, &parents);
+            note(
+                &mut book,
+                &scripts,
+                &names,
+                &globals,
+                &parents,
+                event.collider1,
+                event.collider2,
+                trigger,
+                false,
+                &mut fires,
+            );
+        }
     }
 
     let stays: Vec<(Entity, OtherBody, bool)> = book
@@ -244,7 +171,6 @@ fn note(
     b: Entity,
     trigger: bool,
     started: bool,
-    source: Source,
     fires: &mut Vec<(Entity, ContactHook, OtherBody)>,
 ) {
     let owner_a = script_owner(a, scripts, parents);
@@ -253,7 +179,7 @@ fn note(
         && owner != b
     {
         touch(
-            book, scripts, names, globals, parents, owner, b, trigger, started, source, fires,
+            book, scripts, names, globals, parents, owner, b, trigger, started, fires,
         );
     }
     if let Some(owner) = owner_b
@@ -261,7 +187,7 @@ fn note(
         && owner_a != Some(owner)
     {
         touch(
-            book, scripts, names, globals, parents, owner, a, trigger, started, source, fires,
+            book, scripts, names, globals, parents, owner, a, trigger, started, fires,
         );
     }
 }
@@ -276,8 +202,7 @@ fn touch(
     owner: Entity,
     other: Entity,
     trigger: bool,
-    source_on: bool,
-    source: Source,
+    started: bool,
     fires: &mut Vec<(Entity, ContactHook, OtherBody)>,
 ) {
     if scripts.get(owner).is_err() {
@@ -291,15 +216,10 @@ fn touch(
     let prev = book.pairs.get(&key).copied();
     let mut live = prev.unwrap_or(LivePair {
         event: false,
-        controller: false,
         trigger,
     });
-    if matches!(source, Source::Event) {
-        live.trigger = trigger;
-        live.event = source_on;
-    } else {
-        live.controller = source_on;
-    }
+    live.trigger = trigger;
+    live.event = started;
     let was = prev.is_some_and(LivePair::active);
     let now = live.active();
     if now {
@@ -416,8 +336,8 @@ fn describe(
 mod tests {
     use super::*;
     use crate::physics::stamp_collider_role;
+    use avian3d::prelude::*;
     use bevy::time::{TimePlugin, TimeUpdateStrategy};
-    use bevy_rapier3d::prelude::*;
     use std::time::Duration;
 
     fn physics_app(code: &str) -> App {
@@ -428,19 +348,19 @@ mod tests {
             TransformPlugin,
             TimePlugin,
             bevy::asset::AssetPlugin::default(),
-            RapierPhysicsPlugin::<NoUserData>::default(),
+            PhysicsPlugins::default(),
         ));
         app.init_asset::<Mesh>();
-        app.insert_resource(TimestepMode::Fixed {
-            dt: 1.0 / 60.0,
-            substeps: 1,
-        });
+        app.add_message::<bevy::asset::AssetEvent<Mesh>>();
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
             1.0 / 60.0,
         )));
         app.insert_resource(host);
         app.init_resource::<ContactBook>();
-        app.add_systems(PostUpdate, dispatch_contacts.after(PhysicsSet::Writeback));
+        app.add_systems(PostUpdate, dispatch_contacts);
+        // `App::update` não corre o `finish` dos plugins; sem ele o
+        // `SpatialQueryDiagnostics` não existe e os sistemas de query panicam.
+        app.finish();
         app
     }
 
@@ -481,8 +401,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Transform::default(),
-                RigidBody::Fixed,
-                Collider::cuboid(1.0, 1.0, 1.0),
+                RigidBody::Static,
                 LuaScriptRef {
                     path: "zone.lua".into(),
                 },
@@ -490,16 +409,19 @@ mod tests {
             ))
             .id();
         {
+            // O papel ANTES do collider (o Avian lê a flag no proxy).
             let mut entity = app.world_mut().entity_mut(zone);
             stamp_collider_role(&mut entity, true, true);
+            entity.insert(Collider::cuboid(2.0, 2.0, 2.0));
         }
         assert!(app.world().get::<Sensor>(zone).is_some());
         let hero = app
             .world_mut()
             .spawn((
                 Transform::from_xyz(6.0, 0.0, 0.0),
-                RigidBody::KinematicPositionBased,
-                Collider::ball(0.4),
+                RigidBody::Dynamic,
+                GravityScale(0.0),
+                Collider::sphere(0.4),
                 Name::new("hero"),
             ))
             .id();
@@ -527,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn character_controller_hit_is_one_collision_enter() {
+    fn dynamic_body_hit_is_one_collision_enter() {
         let mut app = physics_app(
             "entered = 0\n\
              function on_collision_enter(other)\n\
@@ -539,37 +461,33 @@ mod tests {
             .world_mut()
             .spawn((
                 Transform::default(),
-                RigidBody::Fixed,
-                Collider::cuboid(0.5, 1.0, 1.0),
+                RigidBody::Static,
                 LuaScriptRef {
                     path: "zone.lua".into(),
                 },
             ))
             .id();
         {
+            // O papel ANTES do collider (o Avian lê a flag no proxy).
             let mut entity = app.world_mut().entity_mut(wall);
             stamp_collider_role(&mut entity, false, true);
+            entity.insert(Collider::cuboid(1.0, 2.0, 2.0));
         }
         assert!(app.world().get::<Sensor>(wall).is_none());
+        // O herói do jogo é DINÂMICO (tnua): o contacto chega como
+        // `CollisionStart`, uma única vez, sem a segunda fonte do KCC.
         app.world_mut().spawn((
             Transform::from_xyz(2.0, 0.0, 0.0),
-            RigidBody::KinematicPositionBased,
-            Collider::ball(0.35),
-            KinematicCharacterController {
-                translation: Some(Vec3::new(-0.5, 0.0, 0.0)),
-                ..default()
-            },
+            RigidBody::Dynamic,
+            Collider::sphere(0.35),
+            GravityScale(0.0),
+            LinearVelocity(Vec3::new(-20.0, 0.0, 0.0)),
             Name::new("hero"),
         ));
-        app.add_systems(Update, shove_hero);
         for _ in 0..20 {
             app.update();
         }
-        assert_eq!(
-            lua_count(&app, "entered"),
-            1,
-            "controller e evento não duplicam o enter"
-        );
+        assert_eq!(lua_count(&app, "entered"), 1, "um enter");
         assert_eq!(lua_string(&app, "last"), "hero");
     }
 
@@ -592,8 +510,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Transform::default(),
-                RigidBody::Fixed,
-                Collider::cuboid(1.0, 1.0, 1.0),
+                RigidBody::Static,
                 LuaScriptRef {
                     path: "zone.lua".into(),
                 },
@@ -601,15 +518,18 @@ mod tests {
             ))
             .id();
         {
+            // O papel ANTES do collider (o Avian lê a flag no proxy).
             let mut entity = app.world_mut().entity_mut(zone);
             stamp_collider_role(&mut entity, true, true);
+            entity.insert(Collider::cuboid(2.0, 2.0, 2.0));
         }
         let hero = app
             .world_mut()
             .spawn((
                 Transform::from_xyz(6.0, 0.0, 0.0),
-                RigidBody::KinematicPositionBased,
-                Collider::ball(0.4),
+                RigidBody::Dynamic,
+                GravityScale(0.0),
+                Collider::sphere(0.4),
                 Name::new("hero"),
             ))
             .id();
@@ -630,11 +550,5 @@ mod tests {
             app.update();
         }
         assert_eq!(lua_count(&app, "exited"), 1, "exit sintético uma vez");
-    }
-
-    fn shove_hero(mut controllers: Query<&mut KinematicCharacterController>) {
-        for mut controller in &mut controllers {
-            controller.translation = Some(Vec3::new(-0.5, 0.0, 0.0));
-        }
     }
 }

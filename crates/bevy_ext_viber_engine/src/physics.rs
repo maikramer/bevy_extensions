@@ -1,42 +1,15 @@
-//! Physics — Rapier colliders and rigid bodies from the declarative world XML.
+//! Physics — Avian colliders and rigid bodies from the declarative world.
 //!
-//! The original engine drove its browser runtime with Rapier (WASM); Viber
-//! uses the same engine natively through `bevy_rapier3d`, so tuning carries
-//! over instead of being re-derived against a second solver.
-//!
-//! # XML contract
-//!
-//! Two attributes, both as component strings, on any entity:
-//!
-//! ```xml
-//! <Entity collider="shape: box; size: 0.8 0.8 0.8" rigidbody="type: fixed" />
-//! <Entity collider="shape: box; size: 4 2 4; trigger: true" script="zone.lua" />
-//! <Entity collider="shape: trimesh; mesh-url: /assets/x_collision.glb; mesh-anchor: base" />
-//! <Entity collider="shape: mesh" /> <!-- GLB do próprio GltfScene -->
-//! <Entity collider="shape: precompute; mesh-url: /assets/rock_lod0.glb" />
-//! <Entity collider="auto" />
-//! <Entity collider="none" />
-//! <Group body="fixed">…</Group>
-//! ```
-//!
-//! `collider` picks the shape, `rigidbody` (or the `body` shorthand on
-//! `<Group>`) picks the body kind. `trigger: true` (alias `sensor`) makes the
-//! shape a Rapier sensor: it does not block, and a script on the entity
-//! receives `on_trigger_*`. The same shapes with the flag off are solid
-//! colliders (`on_collision_*`). Everything in `simple-rpg` is `fixed`: the
-//! world is static scenery, and the moving things (hero, creatures) are
-//! character controllers over the terrain heightfield rather than rigid bodies
-//! — see [`crate::player`].
-//!
-//! # Deferred shapes
-//!
-//! `trimesh`, `precompute` and `auto` cannot be built at spawn time: they need
-//! mesh data that is still loading. Those entities get a [`PendingCollider`]
-//! and [`resolve_pending_colliders`] converts them once the glTF arrives, so a
-//! slow asset delays one prop instead of blocking the world.
+//! A migração de Rapier para Avian (2026-11-14) mantém o contrato autoral
+//! intacto: o `collider=`/`rigidbody=`/`body=` do DSL continua a significar o
+//! mesmo, e é aqui que os valores se traduzem para a API do motor. As duas
+//! diferenças de unidades estão concentradas nesta camada: o `cuboid` do
+//! Avian leva extensões COMPLETAS (o Rapier levava meias) e o
+//! `capsule`/`cylinder` levam `(radius, altura)` (o Rapier levava
+//! `(half_height, radius)`).
 
+use avian3d::prelude::*;
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
 
 use crate::recipes::parse_component_string;
 
@@ -275,24 +248,21 @@ pub fn finish_collider(spec: &mut PhysicsSpec, own_gltf: Option<&str>) -> Option
     warning
 }
 
-/// Eventos de contacto só nos colliders com script: `KINEMATIC_STATIC` faz o
-/// herói (corpo kinematic) intersectar o volume; o default do Rapier não o faz.
-/// Pagar isto em cada parede estática do mundo seria o narrowphase inteiro.
-pub fn scripted_collision_bits() -> (ActiveEvents, ActiveCollisionTypes) {
-    (
-        ActiveEvents::COLLISION_EVENTS,
-        ActiveCollisionTypes::default() | ActiveCollisionTypes::KINEMATIC_STATIC,
-    )
-}
-
-/// `trigger` → [`Sensor`]. `scripted` → eventos de colisão (ver
-/// [`scripted_collision_bits`]).
+/// Eventos de contacto: no Avian basta [`CollisionEventsEnabled`]. O herói é
+/// um corpo **dinâmico**, por isso os pares com corpos estáticos e cinemáticos
+/// já geram contactos — o `ActiveCollisionTypes::KINEMATIC_STATIC` que o Rapier
+/// exigia para o KCC não tem equivalente (e deixou de ser preciso).
+///
+/// **Tem de ser chamado ANTES de inserir o `Collider`**: o Avian lê
+/// `CollisionEventsEnabled` ao criar o proxy da árvore de colliders
+/// (`Add<Collider>`) e não tem observer para a flag — inserida depois, os
+/// eventos desse collider nunca são emitidos.
 pub fn stamp_collider_role(entity: &mut EntityWorldMut<'_>, trigger: bool, scripted: bool) {
     if trigger {
         entity.insert(Sensor);
     }
     if scripted {
-        entity.insert(scripted_collision_bits());
+        entity.insert(CollisionEventsEnabled);
     }
 }
 
@@ -308,7 +278,7 @@ pub fn stamp_collider_role_cmd(
         commands.entity(entity).insert(Sensor);
     }
     if scripted {
-        commands.entity(entity).insert(scripted_collision_bits());
+        commands.entity(entity).insert(CollisionEventsEnabled);
     }
 }
 
@@ -360,7 +330,7 @@ fn parse_vec3(value: &str) -> Option<Vec3> {
 }
 
 /// Número positivo finito do component-string, ou o default. `NaN`/`inf`
-/// passavam pelo `parse` e viravam um `Collider::ball(inf)` (AABB infinito,
+/// passavam pelo `parse` e viravam um collider de raio infinito (AABB infinito,
 /// física NaN); um valor inválido cai no default como os restantes.
 fn finite_or_default(value: Option<String>, default: f32) -> f32 {
     value
@@ -432,11 +402,11 @@ impl ColliderCache {
 #[reflect(Component)]
 pub struct ColliderResolved;
 
-/// Rapier wiring for Viber.
+/// Avian wiring for Viber.
 ///
-/// Registers the Rapier plugin itself; collider/body components are attached
-/// by [`crate::recipes::spawn`] as entities are created, and deferred shapes
-/// are finished by [`resolve_pending_colliders`].
+/// Registers the physics plugins themselves; collider/body components are
+/// attached by [`crate::recipes::spawn`] as entities are created, and deferred
+/// shapes are finished by [`resolve_pending_colliders`].
 #[derive(Default)]
 pub struct PhysicsPlugin {
     /// Draw collider wireframes (`viber run --physics-debug`).
@@ -447,9 +417,33 @@ impl bevy::app::Plugin for PhysicsPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<ColliderCache>()
             .init_resource::<TerrainCollisionStatus>()
-            .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+            .init_resource::<crate::player::HeroStepPlan>()
+            // `FixedPostUpdate` é o arranjo SUPORTADO pelo Avian: o
+            // `PhysicsTransformPlugin` dele injeta `mark_dirty_trees` no
+            // schedule, e no `PostUpdate` isso colide com a instância do
+            // `TransformPlugin` do Bevy (o `jackdaw_runtime` ordena contra
+            // ela e o schedule rebenta ao inicializar). O tnua fica no
+            // `FixedUpdate` (antes do step, como nos exemplos dele).
+            .add_plugins((
+                PhysicsPlugins::default(),
+                bevy_tnua::prelude::TnuaControllerPlugin::<crate::player::HeroScheme>::new(
+                    FixedUpdate,
+                ),
+                bevy_tnua_avian3d::prelude::TnuaAvian3dPlugin::new(FixedUpdate),
+            ))
+            .add_systems(Update, crate::player::attach_hero_config)
             .add_systems(
-                bevy::app::Update,
+                FixedUpdate,
+                (
+                    crate::player::probe_steps,
+                    crate::player::apply_steps,
+                    crate::player::recover_stuck_ground,
+                )
+                    .chain()
+                    .after(bevy_tnua::prelude::TnuaPipelineSystems::Logic),
+            )
+            .add_systems(
+                PostUpdate,
                 (
                     resolve_pending_colliders,
                     // Depois do LOD: o swap de coluna despacha caixas e spawna
@@ -459,26 +453,46 @@ impl bevy::app::Plugin for PhysicsPlugin {
                     stream_voxel_colliders.after(crate::terrain::plugin::TerrainSet::Columns),
                 ),
             );
-        // O wireframe existe sempre; `enabled` segue `debug` (jogo:
-        // `VIBER_PHYSICS_DEBUG`). O editor liga-o ao vivo via
+        // Tempos por estágio do Avian em `DiagnosticsStore` — é o que o
+        // `viber.debug.physics` e o painel Física lêem. Precisa do
+        // `DiagnosticsPlugin` (vem nos `DefaultPlugins`); nos testes headless
+        // não existe e os sistemas de escrita panicavam.
+        if !cfg!(test) {
+            app.add_plugins(PhysicsDiagnosticsPlugin);
+        }
+        // O wireframe existe sempre; o `GizmoConfigStore` é que decide
+        // (jogo: `VIBER_PHYSICS_DEBUG`). O editor liga-o ao vivo via
         // [`ColliderDebugToggle`] sem precisar da env.
         // Nos testes headless não há `GizmoPlugin`: o debug render (mesmo
         // desligado) panica à procura do store. O jogo e o editor trazem os
         // gizmos pelos DefaultPlugins.
+        // IMPORTANTE: o grupo `PhysicsGizmos` nasce LIGADO. Sem o desligar, o
+        // plugin desenha o wireframe de TODOS os colliders do mundo (10k+
+        // props) e enche a VRAM — o Rapier era `RapierDebugRenderPlugin::disabled()`.
+        app.insert_resource(PhysicsDebugConfig(self.debug));
         if self.debug || !cfg!(test) {
-            let debug_render = RapierDebugRenderPlugin::default();
-            app.add_plugins(if self.debug {
-                debug_render
-            } else {
-                debug_render.disabled()
-            });
+            app.add_plugins(PhysicsDebugPlugin);
         }
-        app.add_systems(bevy::app::PostUpdate, apply_collider_debug_toggle);
+        app.add_systems(Startup, init_physics_gizmos);
+        app.add_systems(PostUpdate, apply_collider_debug_toggle);
+    }
+}
+
+/// `VIBER_PHYSICS_DEBUG`/`--physics-debug`: o valor inicial do `PhysicsGizmos`.
+#[derive(Resource)]
+struct PhysicsDebugConfig(bool);
+
+fn init_physics_gizmos(
+    config: Res<PhysicsDebugConfig>,
+    mut store: Option<ResMut<bevy::gizmos::config::GizmoConfigStore>>,
+) {
+    if let Some(store) = store.as_mut() {
+        store.config_mut::<PhysicsGizmos>().0.enabled = config.0;
     }
 }
 
 /// O editor escreve isto para mostrar o wireframe no viewport de edição.
-/// Ausente no jogo: o toggle do profiler mexe no [`DebugRenderContext`]
+/// Ausente no jogo: o toggle do profiler mexe no [`GizmoConfigStore`]
 /// directamente e este sistema não o pisa.
 #[derive(Resource, Debug, Default, Clone, Copy, Reflect)]
 #[reflect(Resource)]
@@ -486,36 +500,99 @@ pub struct ColliderDebugToggle(pub bool);
 
 fn apply_collider_debug_toggle(
     toggle: Option<Res<ColliderDebugToggle>>,
-    mut ctx: Option<ResMut<DebugRenderContext>>,
+    mut store: Option<ResMut<bevy::gizmos::config::GizmoConfigStore>>,
 ) {
-    if let (Some(toggle), Some(ctx)) = (toggle.as_ref(), ctx.as_mut()) {
-        ctx.enabled = toggle.0;
+    if let (Some(toggle), Some(store)) = (toggle.as_ref(), store.as_mut()) {
+        store.config_mut::<PhysicsGizmos>().0.enabled = toggle.0;
     }
 }
 
-/// Massa autoral (`mass: N`) como propriedade ADICIONAL do corpo rígido.
+/// Pedido de raio contra a física. Existe porque o `SpatialQuery` do Avian é
+/// um `SystemParam` e vários sítios (sentidos, picking, bridge, teleporte)
+/// correm em sistemas exclusivos ou operadores com `&mut World`.
+#[derive(Clone, Debug)]
+pub struct RayQuery {
+    pub origin: Vec3,
+    pub dir: Vec3,
+    pub max_distance: f32,
+    /// `true` = um raio que começa dentro de geometria devolve `distance 0`.
+    pub solid: bool,
+    /// `true` inclui sensores (`viber.raycast`); o chão e os oclusores não.
+    pub include_sensors: bool,
+    pub exclude: Vec<Entity>,
+}
+
+/// Hit de [`ray_from_world`].
+#[derive(Clone, Copy, Debug)]
+pub struct RayHit {
+    pub entity: Entity,
+    pub distance: f32,
+    pub normal: Vec3,
+    pub point: Vec3,
+}
+
+fn ray_query_system(
+    In(query): In<RayQuery>,
+    spatial: SpatialQuery,
+    sensors: Query<(), With<Sensor>>,
+) -> Option<RayHit> {
+    let Ok(dir) = Dir3::new(query.dir) else {
+        return None;
+    };
+    let filter = SpatialQueryFilter::from_excluded_entities(query.exclude);
+    let skip_sensors = !query.include_sensors;
+    let hit = spatial.cast_ray_predicate(
+        query.origin,
+        dir,
+        query.max_distance.max(0.0),
+        query.solid,
+        &filter,
+        &move |entity| !skip_sensors || sensors.get(entity).is_err(),
+    )?;
+    Some(RayHit {
+        entity: hit.entity,
+        distance: hit.distance,
+        normal: hit.normal,
+        point: query.origin + *dir * hit.distance,
+    })
+}
+
+/// Primeiro hit do raio contra a física, a partir de um `World` exclusivo.
+///
+/// O sensor é excluído pelo componente `Sensor` da entidade do collider (o
+/// `QueryFilter::exclude_sensors` do Rapier não existe no Avian).
+pub fn ray_from_world(world: &mut World, query: RayQuery) -> Option<RayHit> {
+    world
+        .run_system_cached_with(ray_query_system, query)
+        .ok()
+        .flatten()
+}
+
+/// Massa autoral (`mass: N`) como propriedade EXPLÍCITA do corpo.
 ///
 /// O `parse_body` já lia `mass` para o `PhysicsSpec`, mas ninguém a aplicava:
 /// `<Entity rigidbody="type: dynamic; mass: 50">` usava a massa derivada da
-/// densidade do collider. `AdditionalMassProperties` soma ao corpo (e não ao
-/// collider, que pode ser composto por vários filhos).
-pub fn mass_properties(
-    mass: Option<f32>,
-) -> Option<bevy_rapier3d::prelude::AdditionalMassProperties> {
+/// densidade do collider. No Avian a massa explícita é o componente [`Mass`];
+/// o [`NoAutoMass`] impede o `MassPropertyPlugin` de a recalcular a partir dos
+/// colliders (sem ele o valor autoral era sobreposto no primeiro passo).
+pub fn mass_properties(mass: Option<f32>) -> Option<(Mass, NoAutoMass)> {
     let mass = mass.filter(|value| value.is_finite() && *value > 0.0)?;
-    Some(bevy_rapier3d::prelude::AdditionalMassProperties::Mass(mass))
+    Some((Mass(mass), NoAutoMass))
 }
 
-/// Inserts the Rapier body for a [`BodyKind`], if any.
+/// Inserts the Avian body for a [`BodyKind`], if any.
 pub fn body_bundle(
     kind: BodyKind,
     gravity_scale: Option<f32>,
 ) -> Option<(RigidBody, GravityScale)> {
     let body = match kind {
         BodyKind::None => return None,
-        BodyKind::Fixed => RigidBody::Fixed,
+        BodyKind::Fixed => RigidBody::Static,
         BodyKind::Dynamic => RigidBody::Dynamic,
-        BodyKind::Kinematic => RigidBody::KinematicPositionBased,
+        // O Avian só tem um tipo cinemático; quem o move escreve `Position`
+        // (as criaturas) ou `LinearVelocity`, e o writeback leva-o ao
+        // `Transform`.
+        BodyKind::Kinematic => RigidBody::Kinematic,
     };
     // `gravity-scale: inf/NaN` (parse de f32 aceita-os) fazia o corpo
     // dinâmico ganhar velocidade infinita/NaN no 1.º passo. Não finito = 1.
@@ -535,9 +612,10 @@ pub fn replace_with_stump_collider(
     radius: f32,
     half_height: f32,
 ) {
-    commands
-        .entity(entity)
-        .try_insert(Collider::cylinder(half_height.max(1e-3), radius.max(1e-3)));
+    commands.entity(entity).try_insert(Collider::cylinder(
+        radius.max(1e-3),
+        (half_height.max(1e-3)) * 2.0,
+    ));
 }
 
 /// Builds the collider for a shape that needs no asset (explicit box,
@@ -545,19 +623,26 @@ pub fn replace_with_stump_collider(
 /// by the resolver.
 pub fn immediate_collider(shape: &ColliderShape) -> Option<(Collider, Transform)> {
     let collider = match shape {
+        // O `size` autoral é o tamanho COMPLETO; o `cuboid` do Avian também.
         ColliderShape::Box { size, offset: _ } => {
-            let half = (*size * 0.5).max(Vec3::splat(1e-3));
-            Collider::cuboid(half.x, half.y, half.z)
+            let size = (*size).max(Vec3::splat(1e-3));
+            Collider::cuboid(size.x, size.y, size.z)
         }
-        ColliderShape::Sphere { radius } => Collider::ball(radius.max(1e-3)),
+        ColliderShape::Sphere { radius } => Collider::sphere(radius.max(1e-3)),
         ColliderShape::Cylinder {
             radius,
             half_height,
-        } => Collider::cylinder(half_height.max(1e-3), radius.max(1e-3)),
+        } => Collider::cylinder(
+            radius.max(1e-3),
+            (half_height.max(1e-3)) * 2.0,
+        ),
         ColliderShape::Capsule {
             radius,
             half_height,
-        } => Collider::capsule_y(half_height.max(1e-3), radius.max(1e-3)),
+        } => Collider::capsule(
+            radius.max(1e-3),
+            (half_height.max(1e-3)) * 2.0,
+        ),
         _ => return None,
     };
     // Só a caixa tem offset autoral; as restantes assentam no próprio transform.
@@ -578,32 +663,32 @@ pub fn immediate_collider(shape: &ColliderShape) -> Option<(Collider, Transform)
 pub fn collider_for_shape(shape: &crate::recipes::Shape, scale: Vec3) -> Collider {
     match shape {
         crate::recipes::Shape::Cuboid { half_size } => Collider::cuboid(
-            (half_size[0] * scale.x).max(1e-3),
-            (half_size[1] * scale.y).max(1e-3),
-            (half_size[2] * scale.z).max(1e-3),
+            (half_size[0] * scale.x * 2.0).max(1e-3),
+            (half_size[1] * scale.y * 2.0).max(1e-3),
+            (half_size[2] * scale.z * 2.0).max(1e-3),
         ),
         crate::recipes::Shape::Sphere { radius } => {
-            Collider::ball((radius * scale.max_element()).max(1e-3))
+            Collider::sphere((radius * scale.max_element()).max(1e-3))
         }
         crate::recipes::Shape::Cylinder {
             half_height,
             radius,
         } => Collider::cylinder(
-            (half_height * scale.y).max(1e-3),
             (radius * scale.x.max(scale.z)).max(1e-3),
+            (half_height * scale.y * 2.0).max(1e-3),
         ),
         crate::recipes::Shape::Capsule {
             radius,
             half_height,
-        } => Collider::capsule_y(
-            (half_height * scale.y).max(1e-3),
+        } => Collider::capsule(
             (radius * scale.x.max(scale.z)).max(1e-3),
+            (half_height * scale.y * 2.0).max(1e-3),
         ),
         // Planos XZ: lâmina fina (a mesma convenção do Pad/Plane).
         crate::recipes::Shape::Plane { half_size } => Collider::cuboid(
-            (half_size[0] * scale.x).max(1e-3),
-            0.02,
-            (half_size[1] * scale.z).max(1e-3),
+            (half_size[0] * scale.x * 2.0).max(1e-3),
+            0.04,
+            (half_size[1] * scale.z * 2.0).max(1e-3),
         ),
     }
 }
@@ -781,8 +866,9 @@ pub fn resolve_pending_colliders(
                 // pipeline already exports collision meshes with y = 0 at the
                 // footprint, so `mesh-anchor: base` is a statement of that fact
                 // rather than a correction to apply.
-                commands.entity(entity).insert((collider, ColliderResolved));
+                // Papel antes do collider (ver `stamp_collider_role`).
                 stamp_collider_role_cmd(&mut commands, entity, trigger, scripted);
+                commands.entity(entity).insert((collider, ColliderResolved));
             }
             // Boxes/spheres/cylinders/capsules are built at spawn time;
             // `None` never becomes a collider.
@@ -857,7 +943,7 @@ fn union_bounds(
 /// Caixa de bounds (referencial local da entidade) como collider. Centrada na
 /// origem vai direto na entidade; descentrada (prop com pivô nos pés) vai num
 /// FILHO com o offset — mudar o `Transform` da própria entidade teleportava o
-/// prop. O Rapier aplica a escala do `GlobalTransform`, por isso a caixa fica
+/// prop. O Avian aplica a escala do `GlobalTransform`, por isso a caixa fica
 /// em unidades locais.
 fn bounds_cuboid(
     commands: &mut Commands,
@@ -867,22 +953,30 @@ fn bounds_cuboid(
     trigger: bool,
     scripted: bool,
 ) {
-    let half = half.max(Vec3::splat(1e-3));
-    let collider = Collider::cuboid(half.x, half.y, half.z);
+    let collider = bounds_collider(half);
     if center.length_squared() < 1e-8 {
-        commands.entity(entity).insert(collider);
         stamp_collider_role_cmd(commands, entity, trigger, scripted);
+        commands.entity(entity).insert(collider);
         return;
     }
     let child = commands
         .spawn((
             Name::new("collider"),
-            collider,
             Transform::from_translation(center),
         ))
         .id();
     stamp_collider_role_cmd(commands, child, trigger, scripted);
+    commands.entity(child).insert(collider);
     commands.entity(entity).add_child(child);
+}
+
+/// Collider de fallback para os bounds RENDERIZADOS, que vêm em
+/// MEIAS-extensões (`Aabb::half_extents`) — e o `cuboid` do Avian leva o
+/// tamanho COMPLETO. Sem dobrar, todo o prop `collider="auto"` ficava com
+/// metade do tamanho (o herói atravessava meio objecto).
+fn bounds_collider(half: Vec3) -> Collider {
+    let half = half.max(Vec3::splat(1e-3));
+    Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0)
 }
 
 /// Bakes one Rapier collider out of every mesh primitive in a glTF.
@@ -1012,17 +1106,19 @@ pub fn bake_trimesh_escalating(
     let ladder = [
         (
             "FIX_INTERNAL_EDGES|DELETE_DEGENERATE_TRIANGLES",
-            TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::DELETE_DEGENERATE_TRIANGLES,
+            TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
         ),
         (
             "MERGE_DUPLICATE_VERTICES|DELETE_DEGENERATE_TRIANGLES",
-            TriMeshFlags::MERGE_DUPLICATE_VERTICES | TriMeshFlags::DELETE_DEGENERATE_TRIANGLES,
+            TrimeshFlags::MERGE_DUPLICATE_VERTICES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
         ),
-        ("default (sem merge)", TriMeshFlags::empty()),
+        ("default (sem merge)", TrimeshFlags::empty()),
     ];
     let mut reasons: Vec<String> = Vec::new();
     for (label, flags) in ladder {
-        match Collider::trimesh_with_flags(vertices.clone(), indices.clone(), flags) {
+        // `try_*`: o `Collider::trimesh` do Avian entra em pânico com input
+        // inválido, e a escada existe precisamente para não perder o prop.
+        match Collider::try_trimesh_with_config(vertices.clone(), indices.clone(), flags) {
             Ok(collider) => return Ok(collider),
             Err(err) => reasons.push(format!("trimesh flags {label} falhou: {err}")),
         }
@@ -1127,12 +1223,8 @@ mod tests {
         // a collider while the box-collider benches still blocked the hero.
         let mesh = unindexed_quad();
         assert!(
-            Collider::from_bevy_mesh(
-                &mesh,
-                &ComputedColliderShape::TriMesh(TriMeshFlags::MERGE_DUPLICATE_VERTICES)
-            )
-            .is_none(),
-            "premise: rapier refuses an un-indexed mesh"
+            Collider::trimesh_from_mesh(&mesh).is_none(),
+            "premise: the engine's mesh helper refuses an un-indexed mesh"
         );
 
         let (vertices, indices) = mesh_vertices_indices(&mesh).expect("positions are readable");
@@ -1360,7 +1452,7 @@ mod tests {
     fn test_body_bundle_kinds() {
         assert!(body_bundle(BodyKind::None, None).is_none());
         let (body, gravity) = body_bundle(BodyKind::Fixed, Some(0.0)).expect("fixed body");
-        assert!(matches!(body, RigidBody::Fixed));
+        assert!(matches!(body, RigidBody::Static));
         assert_eq!(gravity.0, 0.0);
         let (body, gravity) = body_bundle(BodyKind::Dynamic, None).expect("dynamic body");
         assert!(matches!(body, RigidBody::Dynamic));
@@ -1533,10 +1625,10 @@ impl ColumnColliderBake {
         if self.is_empty() {
             return None;
         }
-        match Collider::trimesh_with_flags(
+        match Collider::try_trimesh_with_config(
             self.vertices.clone(),
             self.indices.clone(),
-            TriMeshFlags::FIX_INTERNAL_EDGES | TriMeshFlags::DELETE_DEGENERATE_TRIANGLES,
+            TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
         ) {
             Ok(collider) => Some(collider),
             Err(err) => {
@@ -1681,7 +1773,7 @@ pub fn stream_voxel_colliders(
         if let Some(collider) = bake.bake() {
             commands
                 .entity(entity)
-                .try_insert((collider, RigidBody::Fixed, VoxelCollider));
+                .try_insert((collider, RigidBody::Static, VoxelCollider));
             *repairs += 1;
         }
     }
@@ -1751,8 +1843,8 @@ mod terrain_collider_tests {
         let mut bake = ColumnColliderBake::new();
         bake.add_mesh_data(Vec3::ZERO, &quad_mesh_data(5.0));
         let collider = bake.bake().expect("quad bakes");
-        match collider.raw.as_typed_shape() {
-            bevy_rapier3d::parry::shape::TypedShape::TriMesh(trimesh) => {
+        match collider.shape().as_typed_shape() {
+            avian3d::parry::shape::TypedShape::TriMesh(trimesh) => {
                 assert!(
                     trimesh.pseudo_normals().is_some(),
                     "FIX_INTERNAL_EDGES tem de produzir pseudo-normais"
@@ -1815,18 +1907,18 @@ mod shape_collider_tests {
             half_size: [1.0, 2.0, 3.0],
         };
         let collider = collider_for_shape(&shape, Vec3::new(2.0, 1.0, 0.5));
-        let cuboid = collider.as_cuboid().unwrap();
+        let cuboid = collider.shape_scaled().as_cuboid().unwrap();
         // half extents: [1,2,3] × scale → [2,2,1.5]
-        assert_eq!(cuboid.half_extents().x, 2.0);
-        assert_eq!(cuboid.half_extents().y, 2.0);
-        assert_eq!(cuboid.half_extents().z, 1.5);
+        assert_eq!(cuboid.half_extents.x, 2.0);
+        assert_eq!(cuboid.half_extents.y, 2.0);
+        assert_eq!(cuboid.half_extents.z, 1.5);
     }
 
     #[test]
     fn test_collider_for_sphere_uses_max_axis_on_nonuniform_scale() {
         let collider = collider_for_shape(&Shape::Sphere { radius: 0.5 }, Vec3::new(1.0, 3.0, 1.0));
         assert_eq!(
-            collider.as_ball().unwrap().radius(),
+            collider.shape_scaled().as_ball().unwrap().radius,
             1.5,
             "elipsoide → ball do maior eixo"
         );
@@ -1841,8 +1933,8 @@ mod shape_collider_tests {
             },
             Vec3::new(2.0, 2.0, 1.0),
         );
-        assert_eq!(cyl.as_cylinder().unwrap().half_height(), 2.0);
-        assert_eq!(cyl.as_cylinder().unwrap().radius(), 1.0);
+        assert_eq!(cyl.shape_scaled().as_cylinder().unwrap().half_height, 2.0);
+        assert_eq!(cyl.shape_scaled().as_cylinder().unwrap().radius, 1.0);
 
         let cap = collider_for_shape(
             &Shape::Capsule {
@@ -1851,8 +1943,24 @@ mod shape_collider_tests {
             },
             Vec3::ONE,
         );
-        assert_eq!(cap.as_capsule().unwrap().half_height(), 0.5);
-        assert_eq!(cap.as_capsule().unwrap().radius(), 0.25);
+        let cap_shape = cap.shape_scaled().as_capsule().unwrap();
+        assert_eq!(
+            (cap_shape.segment.b - cap_shape.segment.a).length() / 2.0,
+            0.5
+        );
+        assert_eq!(cap.shape_scaled().as_capsule().unwrap().radius, 0.25);
+    }
+
+    /// Regressão da migração: os bounds renderizados são MEIAS-extensões e o
+    /// `cuboid` do Avian leva tamanho completo. Sem dobrar, todo o prop
+    /// `collider="auto"` ficava com metade do tamanho.
+    #[test]
+    fn auto_bounds_collider_has_the_full_size() {
+        let collider = bounds_collider(Vec3::new(1.0, 2.0, 3.0));
+        let cuboid = collider.shape_scaled().as_cuboid().unwrap();
+        assert_eq!(cuboid.half_extents.x, 1.0);
+        assert_eq!(cuboid.half_extents.y, 2.0);
+        assert_eq!(cuboid.half_extents.z, 3.0);
     }
 
     #[test]
@@ -1863,14 +1971,14 @@ mod shape_collider_tests {
             },
             Vec3::ONE,
         );
-        let cuboid = collider.as_cuboid().unwrap();
-        assert_eq!(cuboid.half_extents().x, 4.0);
+        let cuboid = collider.shape_scaled().as_cuboid().unwrap();
+        assert_eq!(cuboid.half_extents.x, 4.0);
         assert_eq!(
-            cuboid.half_extents().y,
+            cuboid.half_extents.y,
             0.02,
             "lâmina fina (convenção Pad/Plane)"
         );
-        assert_eq!(cuboid.half_extents().z, 2.0);
+        assert_eq!(cuboid.half_extents.z, 2.0);
     }
 
     #[test]
@@ -1977,15 +2085,15 @@ mod shape_collider_tests {
             stamp_collider_role(&mut entity, false, true);
         }
         assert!(world.get::<Sensor>(solid).is_none(), "sólido não é sensor");
-        assert!(world.get::<ActiveEvents>(solid).is_some());
-        let zone = world.spawn(Collider::ball(1.0)).id();
+        assert!(world.get::<CollisionEventsEnabled>(solid).is_some());
+        let zone = world.spawn(Collider::sphere(1.0)).id();
         {
             let mut entity = world.entity_mut(zone);
             stamp_collider_role(&mut entity, true, false);
         }
         assert!(world.get::<Sensor>(zone).is_some());
         assert!(
-            world.get::<ActiveEvents>(zone).is_none(),
+            world.get::<CollisionEventsEnabled>(zone).is_none(),
             "sem script não há eventos"
         );
 

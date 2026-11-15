@@ -521,7 +521,7 @@ pub(crate) fn spawn_column(
     {
         commands.entity(column).insert((
             collider,
-            bevy_rapier3d::prelude::RigidBody::Fixed,
+            avian3d::prelude::RigidBody::Static,
             crate::physics::VoxelCollider,
         ));
     }

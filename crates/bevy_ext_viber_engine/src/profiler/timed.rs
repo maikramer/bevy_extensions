@@ -894,15 +894,15 @@ fn core3d_anchors(render_app: &mut SubApp) {
 }
 
 /// Regista as âncoras do step de física no mesmo schedule do
-/// `RapierPhysicsPlugin` (PostUpdate por omissão no bevy_rapier 0.36).
+/// `PhysicsPlugins` (PostUpdate por omissão no Avian).
 pub fn physics_anchors(app: &mut App, schedule: impl bevy::ecs::schedule::ScheduleLabel + Clone) {
-    use bevy_rapier3d::plugin::PhysicsSet;
+    use avian3d::prelude::PhysicsSystems;
     app.init_resource::<PhysicsStepClock>()
         .add_systems(
             schedule.clone(),
-            physics_step_start.before(PhysicsSet::StepSimulation),
+            physics_step_start.before(PhysicsSystems::StepSimulation),
         )
-        .add_systems(schedule, physics_step_end.after(PhysicsSet::StepSimulation));
+        .add_systems(schedule, physics_step_end.after(PhysicsSystems::StepSimulation));
 }
 
 /// Lock partilhado pelos testes que tocam nos globais (anéis, acumulador,

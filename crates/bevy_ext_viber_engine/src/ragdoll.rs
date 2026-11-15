@@ -6,10 +6,8 @@
 //! de [`crate::corpse::Corpse`] segue sozinho. Sem os ossos, o clip de morte
 //! mantém-se.
 
+use avian3d::prelude::{Collider, GravityScale, LinearVelocity, RigidBody, SphericalJoint};
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{
-    Collider, GravityScale, ImpulseJoint, RigidBody, SphericalJointBuilder, Velocity,
-};
 
 use crate::animation::{CharacterAnimator, FrozenAnimation};
 use crate::corpse::Corpse;
@@ -29,6 +27,9 @@ pub struct RagdollActive {
     pub bodies: Vec<Entity>,
     /// Osso conduzido por cada corpo, paralelo a `bodies`.
     pub bones: Vec<Entity>,
+    /// Entidades das juntas (o Avian faz das juntas entidades; saem com o
+    /// ragdoll).
+    pub joints: Vec<Entity>,
 }
 
 /// `true` quando o tempo do ragdoll acabou.
@@ -135,15 +136,16 @@ pub fn start_ragdolls(
         let _ = root_xf;
         let mut bodies = Vec::new();
         let mut bones = Vec::new();
+        let mut joints = Vec::new();
         let mut kind_body: Vec<(&str, Entity)> = Vec::new();
         for (kind, bone, pos) in &by_kind {
             let body = commands
                 .spawn((
                     RagdollBodyOf(entity),
                     RigidBody::Dynamic,
-                    Collider::capsule_y(0.18, 0.12),
+                    Collider::capsule(0.12, 0.36),
                     GravityScale(1.0),
-                    Velocity::default(),
+                    LinearVelocity::default(),
                     Transform::from_translation(*pos),
                     // O `drive_ragdolls` corre no MESMO frame, dentro da
                     // cadeia, antes de qualquer propagação: sem semear o
@@ -182,17 +184,20 @@ pub fn start_ragdolls(
                 .map(|(_, _, p)| *p)
                 .unwrap_or(Vec3::ZERO);
             let anchor = (child_pos - parent_pos) * 0.5;
-            commands.entity(*child_body).insert(ImpulseJoint::new(
-                *parent_body,
-                SphericalJointBuilder::new()
-                    .local_anchor1(anchor)
-                    .local_anchor2(-anchor),
-            ));
+            let joint = commands
+                .spawn(
+                    SphericalJoint::new(*parent_body, *child_body)
+                        .with_local_anchor1(anchor)
+                        .with_local_anchor2(-anchor),
+                )
+                .id();
+            joints.push(joint);
         }
         commands.entity(entity).insert(RagdollActive {
             until: time.elapsed_secs() + RAGDOLL_SECS,
             bodies,
             bones,
+            joints,
         });
     }
 }
@@ -234,6 +239,9 @@ pub fn drive_ragdolls(
         if ragdoll_expired(now, active.until) {
             for body in &active.bodies {
                 commands.entity(*body).despawn();
+            }
+            for joint in &active.joints {
+                commands.entity(*joint).despawn();
             }
             commands.entity(entity).remove::<RagdollActive>();
             // O fade do cadáver continua; o rig fica na última pose.
@@ -312,6 +320,21 @@ pub fn freeze_ragdoll_graphs(
     }
 }
 
+/// Juntas cujos dois corpos já não existem (o dono do ragdoll desapareceu
+/// antes do `drive_ragdolls` as recolher) — sem isto ficavam entidades
+/// `SphericalJoint` a apontar para corpos mortos, para sempre.
+pub fn reap_orphan_joints(
+    mut commands: Commands,
+    joints: Query<(Entity, &SphericalJoint)>,
+    bodies: Query<(), With<RagdollBodyOf>>,
+) {
+    for (entity, joint) in &joints {
+        if bodies.get(joint.body1).is_err() || bodies.get(joint.body2).is_err() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 pub struct RagdollPlugin;
 
 impl Plugin for RagdollPlugin {
@@ -323,6 +346,7 @@ impl Plugin for RagdollPlugin {
                 freeze_ragdoll_graphs,
                 drive_ragdolls,
                 reap_orphan_ragdoll_bodies,
+                reap_orphan_joints,
             )
                 .chain(),
         );

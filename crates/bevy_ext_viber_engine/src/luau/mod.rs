@@ -142,7 +142,8 @@ impl bevy::app::Plugin for LuauScriptPlugin {
         // Números de dano (`viber.damage_number`) — idempotente com o
         // Combat/Feedback; num preset sem eles o texto só não é desenhado.
         app.add_message::<crate::feedback::DamageNumberEvent>();
-        app.add_message::<bevy_rapier3d::prelude::CollisionEvent>();
+        // Os eventos de colisão (`CollisionStart`/`CollisionEnd`) são
+        // registados pelo `PhysicsPlugins` do Avian.
         app.init_resource::<ScriptEventQueue>();
         // Prompt de UI genérico publicado por scripts (`viber.prompt`).
         app.init_resource::<crate::ui::UiPrompt>();
@@ -208,13 +209,12 @@ impl bevy::app::Plugin for LuauScriptPlugin {
             // Modo Edit (editor externo): a cena está congelada — nenhum
             // `on_update`/`on_add` corre enquanto se edita; só as remoções.
         );
-        // Depois do step do Rapier (PostUpdate): os eventos deste frame e os
-        // hits do character controller chegam aos hooks no mesmo frame.
+        // No `PostUpdate` (depois do `FixedPostUpdate` onde o Avian corre): os
+        // eventos de colisão do step já estão na fila e chegam aos hooks no
+        // mesmo frame.
         app.add_systems(
             bevy::app::PostUpdate,
-            contacts::dispatch_contacts
-                .after(bevy_rapier3d::prelude::PhysicsSet::Writeback)
-                .run_if(crate::app::scripts_enabled),
+            contacts::dispatch_contacts.run_if(crate::app::scripts_enabled),
         );
     }
 }

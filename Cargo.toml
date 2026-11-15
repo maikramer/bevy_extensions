@@ -20,6 +20,8 @@ members = [
     "crates/bevy_voxel_terrain",
     "crates/bevy_ext_audio",
     "crates/bevy_ext_ai",
+    "crates/bevy_ext_water",
+    "crates/bevy_ext_grass",
 ]
 # Crates que ainda dependem do `viber` em path: compilam standalone (lock
 # próprio) até a onda de desacoplamento final. O monólito em transição
@@ -56,6 +58,8 @@ bevy_voxel_terrain = { version = "0.1.0", path = "crates/bevy_voxel_terrain" }
 bevy_ext_audio = { version = "0.1.0", path = "crates/bevy_ext_audio" }
 bevy_ext_nav = { version = "0.1.0", path = "crates/bevy_ext_nav" }
 bevy_ext_ai = { version = "0.1.0", path = "crates/bevy_ext_ai" }
+bevy_ext_water = { version = "0.1.0", path = "crates/bevy_ext_water" }
+bevy_ext_grass = { version = "0.1.0", path = "crates/bevy_ext_grass" }
 bevy_ext_ui = { version = "0.1.0", path = "crates/bevy_ext_ui" }
 bevy_ext_postfx = { version = "0.1.0", path = "crates/bevy_ext_postfx" }
 bevy_ext_terrain_runtime = { version = "0.1.0", path = "crates/bevy_ext_terrain_runtime" }
@@ -64,6 +68,9 @@ bevy_ext_flora = { version = "0.1.0", path = "crates/bevy_ext_flora" }
 bevy_ext_gradmesh = { version = "0.1.0", path = "crates/bevy_ext_gradmesh" }
 bevy_ext_scene = { version = "0.1.0", path = "crates/bevy_ext_scene" }
 bevy_rapier3d = "0.37"
+# O jogo e os crates vivos usam Avian; os crates extraídos ainda por portar
+# mantêm o Rapier nas suas próprias linhas.
+avian3d = "0.8"
 bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_mesh"] }
 bevy_landmass = "0.13"
 landmass_rerecast = "0.4"

@@ -1,22 +1,18 @@
 //! Snapshot "Física" do profiler — o equivalente do `physics-debug.ts`
-//! original, adaptado ao bevy_rapier3d 0.36: corpos por tipo e sono, colisores
-//! por forma, sensores, CCTs, pendentes de mesh, gravidade/timestep do
-//! contexto Rapier e a duração do `PhysicsSet::StepSimulation` (medida pelas
-//! âncoras em [`crate::profiler::timed::physics_anchors`]).
+//! original, agora sobre o Avian: corpos por tipo e sono, colisores por forma,
+//! sensores, controllers do tnua, pendentes de mesh, gravidade e a duração do
+//! `PhysicsSystems::StepSimulation` (medida pelas âncoras em
+//! [`crate::profiler::timed::physics_anchors`]).
 //!
-//! As contagens ECS estão sempre disponíveis (mesmo sem contexto Rapier);
-//! `available` distingue os dois casos, como no original.
+//! As contagens ECS estão sempre disponíveis; `available` distingue os dois
+//! casos, como no original.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use avian3d::prelude::{Collider, Gravity, RigidBody, Sensor, Sleeping, SphericalJoint};
 use bevy::prelude::*;
-use bevy_rapier3d::control::KinematicCharacterController;
-use bevy_rapier3d::plugin::context::{
-    RapierContextColliders, RapierContextSimulation, RapierRigidBodySet,
-};
-use bevy_rapier3d::prelude::{Collider, RapierConfiguration, RigidBody, Sensor, Sleeping};
 
 use crate::physics::PendingCollider;
 
@@ -40,29 +36,30 @@ pub struct Colliders {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RapierWorld {
+pub struct EngineWorld {
     pub bodies: usize,
     pub colliders: usize,
     pub impulse_joints: usize,
-    /// `IntegrationParameters.dt` — passo do solver (s).
+    /// Passo actual do solver (s) — `Time<Physics>`.
     pub timestep: f32,
 }
 
 /// Snapshot do tab Física.
 #[derive(Debug, Clone, Serialize)]
 pub struct PhysicsSnapshot {
-    /// `false` quando não há contexto Rapier (mundo sem física).
+    /// `false` quando não há física no mundo (`Time<Physics>` em falta).
     pub available: bool,
     pub bodies: Bodies,
     pub colliders: Colliders,
-    /// Character controllers (Rapier `KinematicCharacterController`); o player
-    /// Viber usa o seu próprio controlador, pelo que em prática é 0 — mantido
-    /// para paridade com a referência.
+    /// Controllers do herói (tnua). O mundo normal tem 1 (o `PlayerGLTF`).
     pub cct: usize,
     pub pending_colliders: usize,
     pub gravity: [f32; 3],
-    pub rapier: Option<RapierWorld>,
-    /// ms do último `PhysicsSet::StepSimulation` + média da janela.
+    /// Contagens do motor. A chave JSON continua `rapier` para não partir os
+    /// consumidores do painel/bridge.
+    #[serde(rename = "rapier")]
+    pub engine: Option<EngineWorld>,
+    /// ms do último `PhysicsSystems::StepSimulation` + média da janela.
     pub step: Option<StepTiming>,
 }
 
@@ -73,25 +70,42 @@ pub struct StepTiming {
     pub p95_ms: f32,
 }
 
+/// Nome curto da forma do collider (o mesmo rótulo do `shape_type` do parry).
+fn shape_name(collider: &Collider) -> String {
+    use avian3d::parry::shape::TypedShape;
+    match collider.shape_scaled().as_typed_shape() {
+        TypedShape::Ball(_) => "Ball".into(),
+        TypedShape::Cuboid(_) => "Cuboid".into(),
+        TypedShape::Capsule(_) => "Capsule".into(),
+        TypedShape::Cylinder(_) => "Cylinder".into(),
+        TypedShape::TriMesh(_) => "TriMesh".into(),
+        TypedShape::Compound(_) => "Compound".into(),
+        TypedShape::ConvexPolyhedron(_) => "ConvexPolyhedron".into(),
+        TypedShape::HeightField(_) => "HeightField".into(),
+        other => format!("{other:?}")
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or("Shape")
+            .to_string(),
+    }
+}
+
 /// Recolhe contagens de física de um mundo real.
 pub fn snapshot(world: &mut World, frame_avg_ms: f32) -> PhysicsSnapshot {
     let mut bodies = Bodies::default();
-    let mut q_bodies = world.query::<(&RigidBody, Option<&Sleeping>)>();
+    let mut q_bodies = world.query::<(&RigidBody, Has<Sleeping>)>();
     for (body, sleeping) in q_bodies.iter(world) {
         bodies.total += 1;
         match body {
-            RigidBody::Fixed => bodies.fixed += 1,
+            RigidBody::Static => bodies.fixed += 1,
             RigidBody::Dynamic => bodies.dynamic += 1,
-            RigidBody::KinematicPositionBased | RigidBody::KinematicVelocityBased => {
-                bodies.kinematic += 1
-            }
+            RigidBody::Kinematic => bodies.kinematic += 1,
         }
-        // O componente traz o estado no campo (`Sleeping.sleeping`) — a
-        // presença do componente só diz que o corpo é gerível pelo
-        // island manager.
-        match sleeping.map(|s| s.sleeping) {
-            Some(true) => bodies.sleeping += 1,
-            _ => bodies.awake += 1,
+        // No Avian `Sleeping` é um marcador: presente = a dormir.
+        if sleeping {
+            bodies.sleeping += 1;
+        } else {
+            bodies.awake += 1;
         }
     }
 
@@ -99,51 +113,51 @@ pub fn snapshot(world: &mut World, frame_avg_ms: f32) -> PhysicsSnapshot {
     let mut q_colliders = world.query::<&Collider>();
     for collider in q_colliders.iter(world) {
         colliders.total += 1;
-        let shape = format!("{:?}", collider.raw.shape_type());
-        *colliders.by_shape.entry(shape).or_default() += 1;
+        *colliders.by_shape.entry(shape_name(collider)).or_default() += 1;
     }
     let mut q_sensors = world.query_filtered::<(), With<Sensor>>();
     colliders.sensors = q_sensors.iter(world).count();
 
-    let mut q_cct = world.query_filtered::<(), With<KinematicCharacterController>>();
+    let mut q_cct =
+        world.query_filtered::<(), With<bevy_tnua::prelude::TnuaController<crate::player::HeroScheme>>>();
     let cct = q_cct.iter(world).count();
 
     let mut q_pending = world.query_filtered::<(), With<PendingCollider>>();
     let pending_colliders = q_pending.iter(world).count();
 
     let mut gravity = [0.0f32; 3];
-    let mut q_conf = world.query::<&RapierConfiguration>();
-    if let Some(conf) = q_conf.iter(world).next() {
-        gravity = [conf.gravity.x, conf.gravity.y, conf.gravity.z];
+    if let Some(gravity_res) = world.get_resource::<Gravity>() {
+        gravity = [gravity_res.0.x, gravity_res.0.y, gravity_res.0.z];
     }
 
-    // Contexto Rapier (single-simulação: a 1.ª entidade com o componente).
-    let mut rapier = None;
-    let mut q_sim = world.query::<(
-        &RapierContextSimulation,
-        &RapierContextColliders,
-        &RapierRigidBodySet,
-        &bevy_rapier3d::plugin::context::RapierContextJoints,
-    )>();
-    if let Some((sim, ctx_colliders, ctx_bodies, joints)) = q_sim.iter(world).next() {
-        rapier = Some(RapierWorld {
-            bodies: ctx_bodies.bodies.len(),
-            colliders: ctx_colliders.colliders.len(),
-            impulse_joints: joints.impulse_joints.len(),
-            timestep: sim.integration_parameters.dt,
-        });
-    }
+    // `available`: o plugin de física criou o relógio dedicado.
+    let available = world.get_resource::<Time<avian3d::prelude::Physics>>().is_some();
+    let engine = available.then(|| {
+        let mut q_joints = world.query_filtered::<
+            (),
+            Or<(With<SphericalJoint>, With<avian3d::prelude::FixedJoint>)>,
+        >();
+        EngineWorld {
+            bodies: bodies.total,
+            colliders: colliders.total,
+            impulse_joints: q_joints.iter(world).count(),
+            timestep: world
+                .get_resource::<Time<avian3d::prelude::Physics>>()
+                .map(|time| time.delta_secs())
+                .unwrap_or(0.0),
+        }
+    });
 
     let step = systems_snapshot_step(frame_avg_ms);
 
     PhysicsSnapshot {
-        available: rapier.is_some(),
+        available,
         bodies,
         colliders,
         cct,
         pending_colliders,
         gravity,
-        rapier,
+        engine,
         step,
     }
 }
@@ -164,7 +178,7 @@ fn systems_snapshot_step(frame_avg_ms: f32) -> Option<StepTiming> {
 pub fn window_lines(snap: &PhysicsSnapshot) -> Vec<String> {
     let mut lines = Vec::new();
     if !snap.available {
-        lines.push("física: (sem contexto Rapier)".into());
+        lines.push("física: (sem física no mundo)".into());
         return lines;
     }
     let b = &snap.bodies;
@@ -191,9 +205,9 @@ pub fn window_lines(snap: &PhysicsSnapshot) -> Vec<String> {
         "cct {}  pendentes {}  gravidade {:.1} {:.1} {:.1}",
         snap.cct, snap.pending_colliders, snap.gravity[0], snap.gravity[1], snap.gravity[2]
     ));
-    if let Some(r) = &snap.rapier {
+    if let Some(r) = &snap.engine {
         lines.push(format!(
-            "rapier   corpos={}  colisores={}  juntas={}  dt={:.4}",
+            "avian    corpos={}  colisores={}  juntas={}  dt={:.4}",
             r.bodies, r.colliders, r.impulse_joints, r.timestep
         ));
     }
@@ -215,29 +229,25 @@ pub fn json(snap: &PhysicsSnapshot) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::transform::components::Transform;
-    use bevy_rapier3d::geometry::Collider;
+    use avian3d::prelude::{Collider, RigidBody, Sleeping};
 
     #[test]
     fn test_snapshot_counts_components() {
         let mut world = World::new();
         world.init_resource::<Time>();
-        // Sem contexto Rapier → available=false mas contagens ECS presentes.
+        // Sem `Time<Physics>` → available=false mas contagens ECS presentes.
         world.spawn((
             Transform::IDENTITY,
-            RigidBody::Fixed,
-            Collider::cuboid(1.0, 1.0, 1.0),
+            RigidBody::Static,
+            Collider::cuboid(2.0, 2.0, 2.0),
         ));
         world.spawn((
             Transform::IDENTITY,
             RigidBody::Dynamic,
-            Collider::ball(0.5),
-            Sleeping {
-                sleeping: true,
-                ..Default::default()
-            },
+            Collider::sphere(0.5),
+            Sleeping,
         ));
-        world.spawn((Transform::IDENTITY, Collider::ball(0.25), Sensor));
+        world.spawn((Transform::IDENTITY, Collider::sphere(0.25), Sensor));
 
         let snap = snapshot(&mut world, 16.0);
         assert!(!snap.available);
@@ -252,7 +262,7 @@ mod tests {
         assert_eq!(snap.colliders.by_shape.get("Ball"), Some(&2));
 
         let lines = window_lines(&snap);
-        assert!(lines[0].contains("sem contexto"), "{lines:?}");
+        assert!(lines[0].contains("sem física"), "{lines:?}");
         let json = json(&snap);
         assert_eq!(json["bodies"]["total"], 2, "{json}");
         assert_eq!(json["available"], false);

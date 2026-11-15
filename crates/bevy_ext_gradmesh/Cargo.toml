@@ -13,9 +13,9 @@ categories = ["game-development", "rendering"]
 
 [features]
 default = []
-# Exact Rapier colliders for the procedural shapes. The editor preview does
+# Exact Avian colliders for the procedural shapes. The editor preview does
 # not need it; the game enables it.
-physics = ["dep:bevy_rapier3d"]
+physics = ["dep:avian3d"]
 
 [dependencies]
 # Geometria/procedurais: o crate decide o look dos objetos de primitivas tanto
@@ -25,5 +25,5 @@ bevy = { workspace = true, features = ["bevy_render", "bevy_pbr"] }
 bevy_ext_scene.workspace = true
 # Pin exato: o crate publica várias versões por semana (0.3.x).
 bevy_gradmesh = "=0.3.9"
-# Colliders exatos (feature `physics`). A mesma versão do jogo.
-bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"], optional = true }
+# Colliders exactos (feature `physics`). A mesma versão do jogo.
+avian3d = { version = "0.8", default-features = false, features = ["3d"], optional = true }

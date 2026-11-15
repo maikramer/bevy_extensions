@@ -945,49 +945,28 @@ pub(crate) fn raycast_json(
     max_toi: Option<f32>,
     solid: bool,
 ) -> BrpResult {
-    use bevy_rapier3d::prelude::{
-        QueryFilter, RapierContextColliders, RapierContextSimulation, RapierQueryPipeline,
-        RapierRigidBodySet,
-    };
-    use bevy_rapier3d::rapier::parry::query::DefaultQueryDispatcher;
-
     let max_toi = max_toi.unwrap_or(100.0).max(0.0);
-    let Some(ctx_entity) = world
-        .iter_entities()
-        .find(|e| e.contains::<RapierContextSimulation>())
-        .map(|e| e.id())
-    else {
-        return Err(invalid("sem contexto de física (PhysicsPlugin?)".into()));
-    };
-    // Tudo por referência imutável: as três Ref coexistem (e o World fica
-    // livre para o `get::<Name>` depois).
-    let hit = {
-        let Some(sim) = world.get::<RapierContextSimulation>(ctx_entity) else {
-            return Err(invalid("sem contexto de física (PhysicsPlugin?)".into()));
-        };
-        let Some(colliders) = world.get::<RapierContextColliders>(ctx_entity) else {
-            return Err(invalid("sem colliders de física".into()));
-        };
-        let Some(bodies) = world.get::<RapierRigidBodySet>(ctx_entity) else {
-            return Err(invalid("sem corpos de física".into()));
-        };
-        RapierQueryPipeline::new_scoped(
-            &sim.broad_phase,
-            colliders,
-            bodies,
-            &QueryFilter::default(),
-            &DefaultQueryDispatcher,
-            |pipeline| pipeline.cast_ray_and_get_normal(origin, dir, max_toi, solid),
-        )
-    };
-    let Some((entity, hit)) = hit else {
+    // `viber.raycast` inclui sensores (é a query genérica dos agentes); o
+    // `SpatialQuery` do Avian é um SystemParam, daí o helper em `physics`.
+    let Some(hit) = crate::physics::ray_from_world(
+        world,
+        crate::physics::RayQuery {
+            origin,
+            dir,
+            max_distance: max_toi,
+            solid,
+            include_sensors: true,
+            exclude: Vec::new(),
+        },
+    ) else {
         return Ok(json!({ "hit": false }));
     };
-    let toi = hit.time_of_impact;
+    let entity = hit.entity;
+    let toi = hit.distance;
     let normal = hit.normal;
+    let point = hit.point;
     let (root, root_name) = selection::named_root(world, entity);
     let name = world.get::<Name>(entity).map(|n| n.to_string());
-    let point = origin + dir * toi;
     let mut out = json!({
         "hit": true,
         "entity": entity.to_bits(),

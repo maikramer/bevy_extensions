@@ -41,7 +41,7 @@ pub fn collect_menu_lists(
 pub fn system_rows(data: &super::bind::UiData) -> Vec<ListRow> {
     [
         ("Engine", format!("Viber {}", env!("CARGO_PKG_VERSION"))),
-        ("Render", "Bevy 0.20 · Rapier 3D".to_string()),
+        ("Render", "Bevy 0.20 · Avian 3D".to_string()),
         ("Hora", data.clock.clone()),
     ]
     .into_iter()

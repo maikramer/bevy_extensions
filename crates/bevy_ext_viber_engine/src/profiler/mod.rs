@@ -41,6 +41,9 @@ use bevy::diagnostic::{
 use bevy::prelude::*;
 use serde_json::json;
 
+// `pause`/`unpause`/`is_paused` do `Time<Physics>` vêm deste trait do Avian.
+use avian3d::prelude::PhysicsTime as _;
+
 use crate::luau::{LuaScriptRef, ScriptActivation};
 use crate::particles::ParticleEmitter;
 use crate::player::Player;
@@ -263,7 +266,7 @@ pub fn collect_counters(world: &mut World) -> GameCounters {
     let mut q_chunks = world.query_filtered::<(), With<TerrainChunk>>();
     let terrain_chunks = q_chunks.iter(world).count();
 
-    let mut q_colliders = world.query_filtered::<(), With<bevy_rapier3d::prelude::Collider>>();
+    let mut q_colliders = world.query_filtered::<(), With<avian3d::prelude::Collider>>();
     let colliders = q_colliders.iter(world).count();
 
     // O engine toca por kira (`LoopInstance`); o bevy_audio do Bevy não tem
@@ -823,27 +826,15 @@ pub fn extras_snapshot(world: &mut World) -> Vec<serde_json::Value> {
 
 fn colliders_on(world: &mut World) -> bool {
     world
-        .get_resource::<bevy_rapier3d::render::DebugRenderContext>()
-        .map(|ctx| ctx.enabled)
+        .get_resource::<bevy::gizmos::config::GizmoConfigStore>()
+        .map(|store| store.config::<avian3d::prelude::PhysicsGizmos>().0.enabled)
         .unwrap_or(false)
 }
 
 fn toggle_colliders(world: &mut World) {
-    if let Some(mut ctx) = world.get_resource_mut::<bevy_rapier3d::render::DebugRenderContext>() {
-        ctx.enabled = !ctx.enabled;
-    }
-}
-
-fn grass_on(world: &mut World) -> bool {
-    world
-        .get_resource::<crate::grass::GrassSettings>()
-        .map(|g| g.enabled)
-        .unwrap_or(false)
-}
-
-fn toggle_grass(world: &mut World) {
-    if let Some(mut g) = world.get_resource_mut::<crate::grass::GrassSettings>() {
-        g.enabled = !g.enabled;
+    if let Some(mut store) = world.get_resource_mut::<bevy::gizmos::config::GizmoConfigStore>() {
+        let config = store.config_mut::<avian3d::prelude::PhysicsGizmos>();
+        config.0.enabled = !config.0.enabled;
     }
 }
 
@@ -883,18 +874,21 @@ fn toggle_point_shadows(world: &mut World) {
 }
 
 fn physics_paused_on(world: &mut World) -> bool {
-    // "on" = simulação PAUSADA (o toggle pára o `PhysicsSet::StepSimulation`).
-    let mut q = world.query::<&bevy_rapier3d::prelude::RapierConfiguration>();
-    q.iter(world)
-        .next()
-        .map(|conf| !conf.physics_pipeline_active)
+    // "on" = simulação PAUSADA (o toggle pára o `Time<Physics>`; o Avian
+    // salta o `PhysicsSchedule` enquanto o relógio estiver em pausa).
+    world
+        .get_resource::<Time<avian3d::prelude::Physics>>()
+        .map(|time| time.is_paused())
         .unwrap_or(false)
 }
 
 fn toggle_physics_paused(world: &mut World) {
-    let mut q = world.query::<&mut bevy_rapier3d::prelude::RapierConfiguration>();
-    if let Some(mut conf) = q.iter_mut(world).next() {
-        conf.physics_pipeline_active = !conf.physics_pipeline_active;
+    if let Some(mut time) = world.get_resource_mut::<Time<avian3d::prelude::Physics>>() {
+        if time.is_paused() {
+            time.unpause();
+        } else {
+            time.pause();
+        }
     }
 }
 
@@ -924,22 +918,15 @@ impl Plugin for ProfilerPlugin {
         }
         // Âncoras antes/depois do `PhysicsSet::StepSimulation` — o schedule
         // por omissão do RapierPhysicsPlugin no bevy_rapier 0.36.
-        timed::physics_anchors(app, bevy::app::PostUpdate);
+        timed::physics_anchors(app, bevy::app::FixedPostUpdate);
         let extras = ProfilerExtras {
             items: vec![
                 ProfilerExtra {
                     id: "colliders",
                     label: "colisores",
-                    description: "wireframe dos colliders (bevy_rapier debug render)",
+                    description: "wireframe dos colliders (PhysicsDebugPlugin do Avian)",
                     is_on: colliders_on,
                     toggle: toggle_colliders,
-                },
-                ProfilerExtra {
-                    id: "grass",
-                    label: "relva",
-                    description: "campo de relva instanciado (GrassSettings.enabled)",
-                    is_on: grass_on,
-                    toggle: toggle_grass,
                 },
                 ProfilerExtra {
                     id: "dir-shadows",
@@ -958,7 +945,7 @@ impl Plugin for ProfilerPlugin {
                 ProfilerExtra {
                     id: "physics-pause",
                     label: "pausar física",
-                    description: "congela o solver Rapier (physics_pipeline_active=false)",
+                    description: "congela o passo de física (Time<Physics> em pausa)",
                     is_on: physics_paused_on,
                     toggle: toggle_physics_paused,
                 },

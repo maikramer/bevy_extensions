@@ -30,7 +30,7 @@ pub fn gradmesh_shape(shape: &Shape, detail: ShapeDetail) -> Option<GradShape> {
             half_height,
         } => GradShape::capsule(
             *radius,
-            // `half_height` is the cylindrical section (Rapier/Capsule3d);
+            // `half_height` is the cylindrical section (Capsule3d);
             // gradmesh wants the total height, caps included.
             *half_height * 2.0 + *radius * 2.0,
             detail,

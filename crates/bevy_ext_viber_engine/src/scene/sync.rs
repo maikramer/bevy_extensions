@@ -38,14 +38,12 @@ pub struct SceneSyncPlugin;
 
 impl Plugin for SceneSyncPlugin {
     fn build(&self, app: &mut App) {
-        // ANTES da física: o Rapier só aceita poses do utilizador que deteta na sua fase de
-        // sync (`apply_rigid_body_user_changes`); depois dela, o writeback devolvia aos
-        // corpos (fixos incluídos) a pose antiga.
+        // O Avian corre no `FixedPostUpdate` (antes do `PostUpdate`), por isso
+        // a pose escrita aqui chega ao step seguinte pelo
+        // `Transform` → `Position` do `PhysicsSystems::Prepare`.
         app.init_resource::<SceneSyncStatus>().add_systems(
             PostUpdate,
-            sync_scene
-                .before(bevy_rapier3d::prelude::PhysicsSet::SyncBackend)
-                .before(bevy::transform::TransformSystems::Propagate),
+            sync_scene.before(bevy::transform::TransformSystems::Propagate),
         );
     }
 }
@@ -627,33 +625,29 @@ fn patch_props(world: &mut World, node: &NodeRef) -> usize {
     count
 }
 
-/// Um rigid body (mesmo `fixed`) é dono da pose: o writeback do Rapier reescreve o
-/// `Transform` a partir do corpo, e a deteção de mudanças dele não vê corpos FILHOS (a
-/// propagação interna do bevy_rapier não marca as árvores sujas do Bevy 0.20). Por isso o
-/// corpo é teleportado para a nova pose mundo (`mundo do pai × local`).
+/// Um rigid body (mesmo estático) é dono da pose: o writeback do Avian
+/// reescreve o `Transform` a partir da `Position`/`Rotation` do corpo, e a
+/// deteção de mudanças dele não vê corpos FILHOS. Por isso o corpo é
+/// teleportado para a nova pose mundo (`mundo do pai × local`).
 pub fn teleport_body(world: &mut World, entity: Entity, local: Transform) {
-    use bevy_rapier3d::prelude::{
-        RapierContextEntityLink, RapierRigidBodyHandle, RapierRigidBodySet,
-    };
-    let (Some(handle), Some(link)) = (
-        world.get::<RapierRigidBodyHandle>(entity).map(|h| h.0),
-        world.get::<RapierContextEntityLink>(entity).map(|l| l.0),
-    ) else {
+    use avian3d::prelude::{LinearVelocity, Position, RigidBody, Rotation};
+    if world.get::<RigidBody>(entity).is_none() {
         return;
-    };
+    }
     let parent_world = world
         .get::<ChildOf>(entity)
         .and_then(|child_of| world.get::<GlobalTransform>(child_of.parent()))
         .copied()
         .unwrap_or_default();
     let global = parent_world.mul_transform(local).compute_transform();
-    if let Some(mut bodies) = world.get_mut::<RapierRigidBodySet>(link)
-        && let Some(body) = bodies.bodies.get_mut(handle)
-    {
-        body.set_position(
-            bevy_rapier3d::rapier::math::Pose::from_parts(global.translation, global.rotation),
-            true,
-        );
+    if let Some(mut position) = world.get_mut::<Position>(entity) {
+        position.0 = global.translation;
+    }
+    if let Some(mut rotation) = world.get_mut::<Rotation>(entity) {
+        rotation.0 = global.rotation;
+    }
+    if let Some(mut velocity) = world.get_mut::<LinearVelocity>(entity) {
+        velocity.0 = Vec3::ZERO;
     }
 }
 

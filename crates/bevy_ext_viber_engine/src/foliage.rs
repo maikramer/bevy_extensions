@@ -296,8 +296,8 @@ pub fn arm_candidates(
     blocked: Query<(
         Option<&crate::luau::LuaScriptRef>,
         Option<&crate::animation::CharacterAnimator>,
-        Option<&bevy_rapier3d::prelude::Collider>,
-        Option<&bevy_rapier3d::prelude::RigidBody>,
+        Option<&avian3d::prelude::Collider>,
+        Option<&avian3d::prelude::RigidBody>,
         Option<&crate::physics::PendingCollider>,
     )>,
 ) {
@@ -324,8 +324,8 @@ pub fn arm_candidates(
         blocked: &Query<(
             Option<&crate::luau::LuaScriptRef>,
             Option<&crate::animation::CharacterAnimator>,
-            Option<&bevy_rapier3d::prelude::Collider>,
-            Option<&bevy_rapier3d::prelude::RigidBody>,
+            Option<&avian3d::prelude::Collider>,
+            Option<&avian3d::prelude::RigidBody>,
             Option<&crate::physics::PendingCollider>,
         )>,
     ) -> bool {

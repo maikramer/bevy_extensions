@@ -76,31 +76,21 @@ pub fn declared_ancestor(world: &World, entity: Entity) -> Option<Entity> {
 
 /// Primeira superfície de física no raio (terreno incluído) — o oclusor.
 fn physics_hit(world: &mut World, origin: Vec3, dir: Vec3, max_distance: f32) -> Option<f32> {
-    use bevy_rapier3d::prelude::{
-        QueryFilter, RapierContextColliders, RapierContextSimulation, RapierQueryPipeline,
-        RapierRigidBodySet,
-    };
-    use bevy_rapier3d::rapier::parry::query::DefaultQueryDispatcher;
-    let context = world
-        .iter_entities()
-        .find(|e| e.contains::<RapierContextSimulation>())
-        .map(|e| e.id())?;
-    let simulation = world.get::<RapierContextSimulation>(context)?;
-    let colliders = world.get::<RapierContextColliders>(context)?;
-    let bodies = world.get::<RapierRigidBodySet>(context)?;
     // Sensores (volumes de interação/triggers) não são geometria visível: se
     // contassem como oclusor, um prop atrás de um trigger não era selecionável
     // e o `limit` descia para a distância do sensor.
-    let filter = QueryFilter::default().exclude_sensors();
-    RapierQueryPipeline::new_scoped(
-        &simulation.broad_phase,
-        colliders,
-        bodies,
-        &filter,
-        &DefaultQueryDispatcher,
-        |pipeline| pipeline.cast_ray(origin, dir, max_distance, true),
+    crate::physics::ray_from_world(
+        world,
+        crate::physics::RayQuery {
+            origin,
+            dir,
+            max_distance,
+            solid: true,
+            include_sensors: false,
+            exclude: Vec::new(),
+        },
     )
-    .map(|(_, distance)| distance)
+    .map(|hit| hit.distance)
 }
 
 #[cfg(test)]
