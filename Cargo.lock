@@ -1046,6 +1046,7 @@ dependencies = [
  "bevy_ext_core",
  "bevy_ext_gltf",
  "bevy_ext_terrain",
+ "bevy_ext_water",
  "bevy_ext_world",
  "bevy_voxel_terrain",
  "dirs",
