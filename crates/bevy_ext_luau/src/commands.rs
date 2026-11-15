@@ -192,6 +192,62 @@ pub enum ScriptCommand {
     CameraFree(bool),
     /// Pose do modo livre (`viber.camera_pose`): olho + ponto olhado.
     CameraPose { pos: Vec3, look: Vec3 },
+    // ── F6 (IA/combate/cinemática) ───────────────────────────────────────
+    /// Dano direto numa entidade (`viber.entity_damage`) — sem i-frames
+    /// (esses são do path do player). HP ≤ 0 EMITE `Kill` na aplicação e
+    /// NÃO corre o caminho nativo (cadáver/XP/quests são do melee).
+    EntityDamage { entity: Entity, amount: f32 },
+    /// Cura (`viber.entity_heal`) — o resultado nunca sai de `[0, max]`.
+    EntityHeal { entity: Entity, amount: f32 },
+    /// Redimensiona as vitais (`viber.entity_set_max_hp`); cria o `Health`
+    /// se faltar (current = max).
+    EntitySetMaxHp { entity: Entity, max: f32 },
+    /// Dano radial (`viber.radial_damage`): entidade por distância ao
+    /// centro, com falloff; `skip` exclui o emissor.
+    RadialDamage {
+        pos: Vec3,
+        radius: f32,
+        max_damage: f32,
+        skip: Option<Entity>,
+    },
+    /// Projétil da engine (`viber.fire_projectile`).
+    FireProjectile {
+        from: Vec3,
+        dir: Vec3,
+        speed: f32,
+        damage: f32,
+        faction: String,
+        /// `arc` = arco balístico (gravidade); `false` = linha reta.
+        arc: bool,
+        shooter: Option<Entity>,
+    },
+    /// Empurrão no herói (`viber.push_player`): impulso na direção dada.
+    PushPlayer { dir: Vec3, force: f32 },
+    /// Knockback numa entidade (`viber.entity_knockback`): impulso cinemático.
+    EntityKnockback { entity: Entity, dir: Vec3, force: f32 },
+    /// Movimento de script (`viber.move_towards`/`move_by`): vai para
+    /// `AiLocomotion` (o consumidor aplica a velocidade — snap no terreno).
+    MoveTowards { entity: Entity, target: Vec3, speed: f32 },
+    /// Velocidade base do herói (`viber.set_player_speed`, m/s).
+    SetPlayerSpeed(f32),
+    /// Cinemática do mundo (`viber.cinematic(id[, anchor])`).
+    PlayCinematic { id: String, anchor: Option<Entity> },
+    /// Evento de sentidos (`viber.sense`): ruído audível no `SenseBus`.
+    Noise { pos: Vec3, loudness: f32 },
+    // ── F7 (save/mundo/UI de texto) ─────────────────────────────────────
+    /// Pedido de save (`viber.save`/`viber.save_slot`) — o jogo decide
+    /// (autosave/slot/legado).
+    SaveGame(Option<u32>),
+    /// Pedido de load (`viber.load_save`/`viber.load_slot`).
+    LoadGame(Option<u32>),
+    /// Recortes de terreno (`viber.terrain.*`): edição voxel via
+    /// `TerrainEditQueue` na integração.
+    TerrainEdit {
+        kind: String,
+        pos: Vec3,
+        radius: f32,
+        strength: f32,
+    },
 }
 
 /// Alcance BASE autorado de interação (o default do `set_interaction`),

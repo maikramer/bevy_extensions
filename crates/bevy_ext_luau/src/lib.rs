@@ -153,7 +153,7 @@ pub struct InputSnapshot {
 }
 
 #[derive(Default)]
-struct ScriptGlobals {
+pub struct ScriptGlobals {
     time: f64,
     player: Option<Vec3>,
     scene: Option<String>,
@@ -198,6 +198,8 @@ struct ScriptGlobals {
     /// Ring de `viber.log` (cap 256; linhas até 8 KiB como o monólito).
     logs: VecDeque<String>,
     toasts: VecDeque<String>,
+    /// Id da cinemática em curso (`viber.cinematic_playing()`); `None` fora.
+    cinematic: Option<String>,
     input: InputSnapshot,
     /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
     /// move-os para as mensagens no Update.
@@ -485,6 +487,11 @@ fn script_entity(lua: &Lua) -> mlua::Result<Entity> {
     lua.app_data_ref::<ScriptEntity>()
         .and_then(|e| e.0)
         .ok_or_else(|| mlua::Error::runtime("fora de on_update (sem entidade no attach)"))
+}
+
+/// A mesma entidade, em `Option` (comandos que aceitam `None` = sem dono).
+fn script_entity_opt(lua: &Lua) -> Option<Entity> {
+    lua.app_data_ref::<ScriptEntity>().and_then(|e| e.0)
 }
 
 /// Instala a tabela `viber` num contexto Lua. Público para o adaptador do
@@ -2041,8 +2048,323 @@ fn install_viber_api_with(
     nlu::install(lua, &viber)?;
     decision::install(lua, &viber)?;
 
+    // ── F6 (IA/combate/cinemática) ───────────────────────────────────────
+
+    // viber.entity_damage(amount[, id]) — dano direto (sem i-frames). Negativo
+    // era dano ao contrário (a fórmula `dano - armadura` curava em silêncio).
+    let damage_globals = globals.clone();
+    viber.set(
+        "entity_damage",
+        lua.create_function(move |lua, (amount, id): (f32, Option<i64>)| {
+            if !amount.is_finite() || amount < 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.entity_damage: amount tem de ser finito e >= 0 (para curar use entity_heal)",
+                ));
+            }
+            let entity = resolve_target(lua, id, &damage_globals)?;
+            push_command(&damage_globals, commands::ScriptCommand::EntityDamage { entity, amount });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.entity_heal(amount[, id]) — o resultado nunca sai de [0, max].
+    let heal_globals = globals.clone();
+    viber.set(
+        "entity_heal",
+        lua.create_function(move |lua, (amount, id): (f32, Option<i64>)| {
+            if !amount.is_finite() {
+                return Err(mlua::Error::runtime(
+                    "viber.entity_heal: amount não finito (NaN/inf)",
+                ));
+            }
+            let entity = resolve_target(lua, id, &heal_globals)?;
+            push_command(&heal_globals, commands::ScriptCommand::EntityHeal { entity, amount });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.entity_set_max_hp(max[, id]) — cria o `Health` se faltar.
+    let setmax_globals = globals.clone();
+    viber.set(
+        "entity_set_max_hp",
+        lua.create_function(move |lua, (max, id): (f32, Option<i64>)| {
+            if !max.is_finite() || max <= 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.entity_set_max_hp: max tem de ser finito e > 0",
+                ));
+            }
+            let entity = resolve_target(lua, id, &setmax_globals)?;
+            push_command(&setmax_globals, commands::ScriptCommand::EntitySetMaxHp { entity, max });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.radial_damage(pos, radius, max_damage[, skip_id]) — dano por
+    // distância com falloff; a seleção de alvos é da integração (World).
+    let radial_globals = globals.clone();
+    viber.set(
+        "radial_damage",
+        lua.create_function(move |lua, (x, y, z, radius, max_damage, skip): (f32, f32, f32, f32, f32, Option<i64>)| {
+            let pos = Vec3::new(x, y, z);
+            if !pos.is_finite() {
+                return Err(mlua::Error::runtime("viber.radial_damage: pos finita"));
+            }
+            if !radius.is_finite() || radius <= 0.0 {
+                return Err(mlua::Error::runtime("viber.radial_damage: radius tem de ser finito e > 0"));
+            }
+            if !max_damage.is_finite() || max_damage < 0.0 {
+                return Err(mlua::Error::runtime("viber.radial_damage: max_damage tem de ser finito e >= 0"));
+            }
+            let skip = match skip {
+                Some(bits) => Some(commands::entity_from_id(bits)?),
+                None => script_entity_opt(lua),
+            };
+            push_command(&radial_globals, commands::ScriptCommand::RadialDamage { pos, radius, max_damage, skip });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.fire_projectile{…} — projétil da engine (linha reta ou arco).
+    let proj_globals = globals.clone();
+    viber.set(
+        "fire_projectile",
+        lua.create_function(move |lua, opts: mlua::Table| {
+            let from = Vec3::new(
+                opts.get::<f32>("x")?,
+                opts.get::<f32>("y")?,
+                opts.get::<f32>("z")?,
+            );
+            let dir = Vec3::new(
+                opts.get::<f32>("dir_x")?,
+                opts.get::<f32>("dir_y")?,
+                opts.get::<f32>("dir_z")?,
+            );
+            if !dir.is_finite() || dir.length_squared() < f32::EPSILON {
+                return Err(mlua::Error::runtime("viber.fire_projectile: dir tem de ser finito e não nulo"));
+            }
+            let speed = opts.get::<f32>("speed")?;
+            let damage = opts.get::<f32>("damage")?;
+            if !speed.is_finite() || speed <= 0.0 || !damage.is_finite() || damage < 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.fire_projectile: speed > 0 e damage >= 0",
+                ));
+            }
+            let faction = opts.get::<String>("faction")?;
+            let arc = opts.get::<Option<bool>>("arc")?.unwrap_or(false);
+            let shooter = script_entity_opt(lua);
+            push_command(&proj_globals, commands::ScriptCommand::FireProjectile {
+                from,
+                dir: dir.normalize(),
+                speed,
+                damage,
+                faction,
+                arc,
+                shooter,
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.push_player(dir_x, dir_y, dir_z, force) — empurrão no herói.
+    let push_globals = globals.clone();
+    viber.set(
+        "push_player",
+        lua.create_function(move |_, (x, y, z, force): (f32, f32, f32, f32)| {
+            let dir = Vec3::new(x, y, z);
+            if !dir.is_finite() || !force.is_finite() {
+                return Err(mlua::Error::runtime("viber.push_player: valores têm de ser finitos"));
+            }
+            push_command(&push_globals, commands::ScriptCommand::PushPlayer { dir, force });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.entity_knockback(id, dir_x, dir_y, dir_z, force).
+    let knock_globals = globals.clone();
+    viber.set(
+        "entity_knockback",
+        lua.create_function(move |_, (id, x, y, z, force): (i64, f32, f32, f32, f32)| {
+            let entity = commands::entity_from_id(id)?;
+            let dir = Vec3::new(x, y, z);
+            if !dir.is_finite() || !force.is_finite() {
+                return Err(mlua::Error::runtime("viber.entity_knockback: valores têm de ser finitos"));
+            }
+            push_command(&knock_globals, commands::ScriptCommand::EntityKnockback { entity, dir, force });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.move_towards(x, y, z[, speed]) / viber.move_by(dx, dy, dz[, speed])
+    // — o movimento de script vai para o `AiLocomotion` (snap no terreno).
+    let mt_globals = globals.clone();
+    viber.set(
+        "move_towards",
+        lua.create_function(move |lua, (x, y, z, speed): (f32, f32, f32, Option<f32>)| {
+            let entity = script_entity(lua)?;
+            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                return Err(mlua::Error::runtime("viber.move_towards: alvo não finito"));
+            }
+            push_command(&mt_globals, commands::ScriptCommand::MoveTowards {
+                entity,
+                target: Vec3::new(x, y, z),
+                speed: speed.unwrap_or(0.0),
+            });
+            Ok(())
+        })?,
+    )?;
+    let mb_globals = globals.clone();
+    viber.set(
+        "move_by",
+        lua.create_function(move |lua, (dx, dy, dz, speed): (f32, f32, f32, Option<f32>)| {
+            let entity = script_entity(lua)?;
+            if !(dx.is_finite() && dy.is_finite() && dz.is_finite()) {
+                return Err(mlua::Error::runtime("viber.move_by: delta não finito"));
+            }
+            // Alvo relativo: a posição de início-de-frame da própria
+            // entidade (o snapshot que o publisher publica). Sem snapshot
+            // (REPL/attach estático) o delta vira alvo absoluto — o erro
+            // de fora-de-on_update já apanhou o caso normal.
+            let origin = script_entity_opt(lua)
+                .and_then(|e| mb_globals.read().ok()?.positions.get(&(e.to_bits() as i64)).copied())
+                .unwrap_or_default();
+            push_command(&mb_globals, commands::ScriptCommand::MoveTowards {
+                entity,
+                target: origin + Vec3::new(dx, dy, dz),
+                speed: speed.unwrap_or(0.0),
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.set_player_speed(m/s) — velocidade base do herói.
+    let spd_globals = globals.clone();
+    viber.set(
+        "set_player_speed",
+        lua.create_function(move |_, mps: f32| {
+            if !mps.is_finite() || mps < 0.0 {
+                return Err(mlua::Error::runtime("viber.set_player_speed: m/s finito e >= 0"));
+            }
+            push_command(&spd_globals, commands::ScriptCommand::SetPlayerSpeed(mps));
+            Ok(())
+        })?,
+    )?;
+
+    // viber.cinematic(id[, anchor_id]) — toca uma `<Cinematic>` do mundo.
+    let cine_globals = globals.clone();
+    viber.set(
+        "cinematic",
+        lua.create_function(move |lua, (id, anchor): (String, Option<i64>)| {
+            let anchor = match anchor {
+                Some(bits) => Some(commands::entity_from_id(bits)?),
+                None => script_entity_opt(lua),
+            };
+            push_command(&cine_globals, commands::ScriptCommand::PlayCinematic { id, anchor });
+            Ok(())
+        })?,
+    )?;
+
+    // viber.cinematic_playing() -> id | nil
+    let cine_playing_globals = globals.clone();
+    viber.set(
+        "cinematic_playing",
+        lua.create_function(move |_, ()| {
+            Ok(cine_playing_globals
+                .read()
+                .ok()
+                .and_then(|globals| globals.cinematic.clone()))
+        })?,
+    )?;
+
+    // viber.sense(x, y, z, loudness) — ruído audível no `SenseBus` (IA).
+    let noise_globals = globals.clone();
+    viber.set(
+        "sense",
+        lua.create_function(move |_, (x, y, z, loudness): (f32, f32, f32, f32)| {
+            let pos = Vec3::new(x, y, z);
+            if !pos.is_finite() || !loudness.is_finite() || loudness < 0.0 {
+                return Err(mlua::Error::runtime("viber.sense: valores finitos, loudness >= 0"));
+            }
+            push_command(&noise_globals, commands::ScriptCommand::Noise { pos, loudness });
+            Ok(())
+        })?,
+    )?;
+
+    // ── F7 (save/mundo) ──────────────────────────────────────────────────
+
+    // viber.save() / viber.save_slot(n) — o jogo decide (autosave/slot).
+    let save_globals = globals.clone();
+    viber.set(
+        "save",
+        lua.create_function(move |_, ()| {
+            push_command(&save_globals, commands::ScriptCommand::SaveGame(None));
+            Ok(())
+        })?,
+    )?;
+    let save_slot_globals = globals.clone();
+    viber.set(
+        "save_slot",
+        lua.create_function(move |_, slot: u32| {
+            push_command(&save_slot_globals, commands::ScriptCommand::SaveGame(Some(slot)));
+            Ok(())
+        })?,
+    )?;
+    let load_globals = globals.clone();
+    viber.set(
+        "load_save",
+        lua.create_function(move |_, ()| {
+            push_command(&load_globals, commands::ScriptCommand::LoadGame(None));
+            Ok(())
+        })?,
+    )?;
+    let load_slot_globals = globals.clone();
+    viber.set(
+        "load_slot",
+        lua.create_function(move |_, slot: u32| {
+            push_command(&load_slot_globals, commands::ScriptCommand::LoadGame(Some(slot)));
+            Ok(())
+        })?,
+    )?;
+
+    // viber.terrain(kind, x, y, z, radius[, strength]) — edição voxel
+    // (raise/lower/flatten/paint), aplicada na `TerrainEditQueue`.
+    let terrain_globals = globals.clone();
+    viber.set(
+        "terrain",
+        lua.create_function(move |_, (kind, x, y, z, radius, strength): (String, f32, f32, f32, f32, Option<f32>)| {
+            if !matches!(kind.as_str(), "raise" | "lower" | "flatten" | "smooth") {
+                return Err(mlua::Error::runtime(format!(
+                    "viber.terrain: kind inválido '{kind}' (raise/lower/flatten/smooth)"
+                )));
+            }
+            let pos = Vec3::new(x, y, z);
+            if !pos.is_finite() || !radius.is_finite() || radius <= 0.0 {
+                return Err(mlua::Error::runtime("viber.terrain: pos finita e radius > 0"));
+            }
+            push_command(&terrain_globals, commands::ScriptCommand::TerrainEdit {
+                kind,
+                pos,
+                radius,
+                strength: strength.unwrap_or(1.0),
+            });
+            Ok(())
+        })?,
+    )?;
+
     lua.globals().set("viber", viber)?;
     Ok(())
+}
+
+/// Entidade alvo de `entity_*`: `id` explícito OU a entidade do script
+/// (erro fora de `on_update` — a semântica do monólito).
+fn resolve_target(
+    lua: &Lua,
+    id: Option<i64>,
+    _globals: &Arc<RwLock<ScriptGlobals>>,
+) -> mlua::Result<Entity> {
+    match id {
+        Some(bits) => commands::entity_from_id(bits),
+        None => script_entity(lua),
+    }
 }
 
 #[cfg(test)]
