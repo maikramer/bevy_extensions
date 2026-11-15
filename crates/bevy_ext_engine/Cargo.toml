@@ -62,6 +62,12 @@ bevy_ext_terrain_runtime = { workspace = true }
 bevy_ext_postfx = { workspace = true }
 # Runtime mlua — só para `ScriptGameEvent::to_table` (feature `luau`).
 mlua = { version = "0.12", features = ["luau", "vendored", "send"], optional = true }
+# Contrato `config.yaml` (onda exit3/wave-b): o módulo INTEIRO vive aqui
+# (`GameConfig`/`load`); o monólito e o scene_runtime re-exportam-no.
+anyhow.workspace = true
+serde_yaml.workspace = true
+# `~` do save.dir (expand_home).
+dirs.workspace = true
 
 [dev-dependencies]
 # Export de trace para ficheiro nos testes do gravador.

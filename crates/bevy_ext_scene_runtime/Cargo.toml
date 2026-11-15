@@ -69,6 +69,10 @@ bevy_world_xml = { package = "bevy_ext_world", version = "0.1.0", path = "../bev
 bevy_ext_audio = { version = "0.1.0", path = "../bevy_ext_audio" }
 # Navmesh (`reset_for_scene` no fim da troca de cena).
 bevy_ext_nav = { version = "0.1.0", path = "../bevy_ext_nav" }
+# Contrato `config.yaml` (onda exit3/wave-b): vive no engine e é
+# re-exportado — o `GameConfig` do monólito, deste crate e do jogo é UM só
+# tipo. O engine não dep deste crate nem do monólito: sem ciclo.
+bevy_ext_engine = { version = "0.1.0", path = "../bevy_ext_engine" }
 # Terreno volumétrico (specs das features, runtime, plugin/delta — reset por cena).
 bevy_ext_terrain_runtime = { version = "0.1.0", path = "../bevy_ext_terrain_runtime" }
 # Física declarativa (colisores, `PendingCollider`, `VoxelCollider`).

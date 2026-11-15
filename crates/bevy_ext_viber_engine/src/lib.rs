@@ -46,7 +46,9 @@ pub mod bridge;
 pub use bevy_ext_engine::camera_glue as camera;
 pub mod cinematic;
 pub mod cinematic_cli;
-pub mod config;
+// Contrato `config.yaml` movido ao `bevy_ext_engine` (onda exit3/wave-b) —
+// o MESMO tipo no jogo; o `fixture()` dos testes do audit também vem daí.
+pub use bevy_ext_engine::config as config;
 // Módulo movido ao `bevy_ext_physics` (onda exit2/hubs); o caminho
 // `viber::corpse` continua a resolver e o tipo é o MESMO no jogo.
 pub use bevy_ext_physics::corpse;
