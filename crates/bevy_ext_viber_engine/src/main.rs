@@ -57,7 +57,7 @@ enum Command {
         bridge: Option<Option<u16>>,
         /// Build with the dev profile instead of release (faster to compile,
         /// several times slower to play — the engine is dominated by Bevy
-        /// and Rapier, which only get fast when optimized)
+        /// and the physics step, which only get fast when optimized)
         #[arg(long)]
         debug: bool,
         /// Accepted for compatibility — release is now the default
@@ -541,7 +541,7 @@ enum DebugCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Cast de raio contra a FÍSICA (colliders Rapier) — devolve a primeira
+    /// Cast de raio contra a FÍSICA (colliders do Avian) — devolve a primeira
     /// entidade atingida com ponto/normal. Aceita valores negativos em
     /// posição/direção (`raycast 0 30 0 0 -1 0`).
     #[command(allow_negative_numbers = true)]

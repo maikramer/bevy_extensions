@@ -203,18 +203,22 @@ impl Default for EnemyCreature {
 }
 
 // ── colliders voxel (contrato do physics.rs do host) ─────────────────────
-// TODO(viber-exit): o `stream_voxel_colliders` do monólito passa a ler ESTES
-// tipos (`VoxelCollider` na coluna, `TerrainCollisionStatus` continua do
-// lado do host).
+// Desde a onda D (2026-11-15) o `stream_voxel_colliders` do monólito lê ESTES
+// helpers e o `VoxelCollider` (que vive no `bevy_ext_core` e daqui é
+// re-exportado); o `TerrainCollisionStatus` continua do lado do host
+// (`bevy_ext_physics`). O que ainda não migrou são os TIPOS DO TERRENO
+// (`TerrainRuntime`/`TerrainChunk`/`VoxelChunk`/`TerrainSpec`): o streaming do
+// monólito continua a ler os dele, porque o runtime de terreno daqui só é
+// usado quando a wave D do terreno aterrar. Aí o sistema passa para cá.
 
 /// Raio da banda de colisão em colunas (`chunk_size ×` isto, limitado à banda LOD 0).
 pub const PHYSICS_CHUNK_RADIUS: f32 = 3.0;
 
 /// Coluna voxel com trimesh de terreno assado — o collider É a mesh.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-#[type_path = "viber::physics"]
-pub struct VoxelCollider;
+// O tipo vive no `bevy_ext_core` (o `bevy_ext_nav` filtra obstáculos pelo
+// MESMO tipo que a física insere); aqui é só o re-export do contrato.
+// O TypePath `viber::physics` está congelado no core.
+pub use bevy_ext_core::VoxelCollider;
 
 /// Banda de colisão em metros para um spec.
 ///
@@ -260,6 +264,14 @@ pub fn nearest_column_distance(
 
 /// Vértices/índices triangulados de um `Mesh` TriangleList (índices U16/U32
 /// ou não-indexado — cada três vértices é um triângulo).
+///
+/// Existe porque o `Collider::from_bevy_mesh` rejeita qualquer malha cujo
+/// index buffer desapareceu — e o loader glTF do Bevy deita-o fora em cada
+/// primitiva que vem sem `NORMAL`: chama `duplicate_vertices()` (que põe
+/// `indices` a `None`) antes do `compute_flat_normals()`. Os
+/// `*_collision.glb` do pipeline são só posição por construção, por isso um
+/// bake directo do asset via um sopa de triângulos sem numeração — este
+/// helper recupera a numeração exactamente.
 pub fn mesh_vertices_indices(mesh: &Mesh) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
     use bevy::mesh::VertexAttributeValues;
     use bevy::render::mesh::{Indices, PrimitiveTopology};
@@ -359,23 +371,18 @@ impl ColumnColliderBake {
         if self.is_empty() {
             return None;
         }
-        // Flags conservadoras; geometria que não fecha cai no hull convexo
-        // (melhor um collider aproximado que nenhum).
         match Collider::try_trimesh_with_config(
             self.vertices.clone(),
             self.indices.clone(),
             TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
         ) {
             Ok(collider) => Some(collider),
-            Err(err) => match Collider::convex_hull(&self.vertices) {
-                Some(collider) => Some(collider),
-                None => {
-                    bevy::log::warn!(
-                        "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
-                    );
-                    None
-                }
-            },
+            Err(err) => {
+                bevy::log::warn!(
+                    "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
+                );
+                None
+            }
         }
     }
 }
@@ -637,4 +644,104 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> 
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod column_collider_tests {
+    use super::*;
+    use bevy_voxel_terrain::ChunkMeshData;
+
+    /// Dois triângulos formando um quadrado unitário a y=5, origin-relative.
+    fn quad_mesh_data(y: f32) -> ChunkMeshData {
+        ChunkMeshData {
+            positions: vec![[0.0, y, 0.0], [1.0, y, 0.0], [1.0, y, 1.0], [0.0, y, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            uvs: vec![[0.0, 0.0]; 4],
+            colors: Vec::new(),
+            indices: vec![0, 1, 2, 0, 2, 3],
+        }
+    }
+
+    #[test]
+    fn test_the_bake_offsets_boxes_into_world_space() {
+        let mut bake = ColumnColliderBake::new();
+        bake.add_mesh_data(Vec3::new(10.0, 0.0, 20.0), &quad_mesh_data(5.0));
+        bake.add_mesh_data(Vec3::new(-10.0, 8.0, -20.0), &quad_mesh_data(5.0));
+        assert_eq!(bake.triangle_count(), 4, "2 caixas × 2 triângulos");
+        // Vértices da 2.ª caixa: base = 4, então o índice global 4 é o canto
+        // mínimo dela (origin + [0,5,0]).
+        assert_eq!(bake.indices[2], [4, 5, 6]);
+        assert_eq!(
+            bake.vertices[4],
+            Vec3::new(-10.0, 13.0, -20.0),
+            "origin da caixa soma às posições origin-relative"
+        );
+    }
+
+    #[test]
+    fn test_an_empty_bake_builds_nothing() {
+        let bake = ColumnColliderBake::new();
+        assert!(bake.is_empty());
+        assert!(
+            bake.bake().is_none(),
+            "coluna sem geometria não tem collider"
+        );
+    }
+
+    #[test]
+    fn test_the_baked_collider_is_a_trimesh_with_pseudo_normals() {
+        // FIX_INTERNAL_EDGES povoa pseudo-normais — é o que impede o
+        // character controller de enganchar nas arestas internas entre
+        // caixas. Se um parry futuro as retirar deste rung, o teste avisa.
+        let mut bake = ColumnColliderBake::new();
+        bake.add_mesh_data(Vec3::ZERO, &quad_mesh_data(5.0));
+        let collider = bake.bake().expect("quad bakes");
+        match collider.shape().as_typed_shape() {
+            avian3d::parry::shape::TypedShape::TriMesh(trimesh) => {
+                assert!(
+                    trimesh.pseudo_normals().is_some(),
+                    "FIX_INTERNAL_EDGES tem de produzir pseudo-normais"
+                );
+            }
+            other => panic!("esperado trimesh, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_column_distance_is_xz_to_the_aabb() {
+        let (half, edge) = (128.0_f32, 64.0_f32);
+        let coords = UVec2::new(2, 2); // XZ [0, 64]²
+        // Dentro do quadrado: 0.
+        assert_eq!(
+            column_xz_distance(Vec3::new(10.0, 500.0, 30.0), coords, half, edge),
+            0.0
+        );
+        // Fora: distância euclidiana ao rectângulo, Y ignorado.
+        let d = column_xz_distance(Vec3::new(80.0, 0.0, 30.0), coords, half, edge);
+        assert!((d - 16.0).abs() < 1e-4, "d={d}");
+    }
+
+    /// Co-op: a coluna mantém-se assada se QUALQUER herói estiver na banda, e
+    /// `ready` é verdadeiro quando qualquer um está dentro dela. Olhar só o
+    /// primeiro herói deixava o segundo sem collider (queda pelo mundo).
+    #[test]
+    fn test_nearest_column_distance_covers_every_player() {
+        let (half, edge) = (128.0_f32, 64.0_f32);
+        let coords = UVec2::new(2, 2); // XZ [0, 64]²
+        let players = [Vec3::new(500.0, 0.0, 500.0), Vec3::new(10.0, 0.0, 30.0)];
+        assert_eq!(
+            nearest_column_distance(&players, coords, half, edge),
+            0.0,
+            "o segundo herói está dentro da coluna"
+        );
+        // Ambos fora: fica a MENOR distância (16 m para (80,30)).
+        let players = [Vec3::new(500.0, 0.0, 500.0), Vec3::new(80.0, 0.0, 30.0)];
+        let d = nearest_column_distance(&players, coords, half, edge);
+        assert!((d - 16.0).abs() < 1e-4, "d={d}");
+        assert_eq!(
+            nearest_column_distance(&[], coords, half, edge),
+            f32::INFINITY,
+            "sem âncoras nada fica assado"
+        );
+    }
 }

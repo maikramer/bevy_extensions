@@ -102,7 +102,9 @@ pub mod project;
 pub mod projectile;
 pub mod prop_tint;
 pub mod prune;
-pub mod ragdoll;
+// Ragdoll movido ao `bevy_ext_physics` (onda D): o caminho
+// `viber::ragdoll` reexporta o módulo e os tipos são OS MESMOS no jogo.
+pub use bevy_ext_physics::ragdoll;
 pub mod recipes;
 pub mod reflect;
 pub use bevy_ext_engine::render_lod;

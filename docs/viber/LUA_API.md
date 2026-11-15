@@ -877,8 +877,9 @@ primitivas de debug/engine sem equivalente ECS.
 
 Dumps em volume (`colliders`/`lights`/`around`) e agregados (`stats`) contam
 sobre o mundo real; no snapshot de entidades há cap de 4096 (mais perto do
-player primeiro). `physics()` devolve os tempos do ÚLTIMO step do Rapier —
-não há tempos por sistema/entidade no Bevy 0.19 (ver nota no AGENTS.md).
+player primeiro). `physics()` devolve os tempos do ÚLTIMO step de física
+(Avian: `step_ms` do `avian/total_step_time`; as fases por estágio vêm do
+`DiagnosticsStore` — `islands_ms` fica a zero, o Avian não tem ilhas).
 
 ```lua
 -- leitura (snapshot)
@@ -900,7 +901,7 @@ viber.debug.mesh(id)               -- {topology,vertices,indices,has_normals,has
 viber.debug.material(id)           -- {base_color={r,g,b,a},metallic,roughness(perceptual),
                                    --   unlit,base_color_texture={w,h}?,normal_map={w,h}?}
 viber.debug.collider(id)           -- {shape="cuboid|ball|trimesh|compound|outro",hx,hy,hz,
-                                   --   radius,vertices,shapes} (Rapier); rigidbody via info()
+                                   --   radius,vertices,shapes} (shape do collider, Avian/parry); rigidbody via info()
 viber.debug.prof()                 -- snapshot do profiler (tabela; ver viber.profiler)
 viber.debug.stats()                -- agregados do mundo INTEIRO: entities, meshes,
                                    --   colliders (+por shape), rigidbodies (+por tipo),

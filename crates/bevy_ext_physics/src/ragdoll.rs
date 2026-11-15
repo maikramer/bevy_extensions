@@ -149,7 +149,7 @@ pub fn start_ragdolls(
                     RagdollBodyOf(entity),
                     RigidBody::Dynamic,
                     // Cápsula Y do Avian: (raio, altura TOTAL da parte
-                    // cilíndrica) = o `capsule_y(0.18, 0.12)` do Rapier.
+                    // cilíndrica) = o `capsule(0.12, 0.36)` do Avian.
                     Collider::capsule(0.12, 0.36),
                     GravityScale(1.0),
                     LinearVelocity::default(),
@@ -317,6 +317,21 @@ pub fn reap_orphan_ragdoll_bodies(
     }
 }
 
+/// Juntas cujos dois corpos já não existem (o dono do ragdoll desapareceu
+/// antes do `drive_ragdolls` as recolher) — sem isto ficavam entidades
+/// `SphericalJoint` a apontar para corpos mortos, para sempre.
+pub fn reap_orphan_joints(
+    mut commands: Commands,
+    joints: Query<(Entity, &SphericalJoint)>,
+    bodies: Query<(), With<RagdollBodyOf>>,
+) {
+    for (entity, joint) in &joints {
+        if bodies.get(joint.body1).is_err() || bodies.get(joint.body2).is_err() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 /// Garante que um rig em ragdoll não volta a ser animado pelo grafo.
 pub fn freeze_ragdoll_graphs(
     mut commands: Commands,
@@ -344,6 +359,7 @@ impl Plugin for RagdollPlugin {
                 freeze_ragdoll_graphs,
                 drive_ragdolls,
                 reap_orphan_ragdoll_bodies,
+                reap_orphan_joints,
             )
                 .chain(),
         );

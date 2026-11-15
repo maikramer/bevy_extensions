@@ -3,7 +3,7 @@
 //! O editor não deixa vetar uma gravação (o `SceneSaved` chega depois do
 //! ficheiro escrito). Por isso há duas peças:
 //! - um observer de `SceneSaved` que revê a cena (o índice desta extensão e o
-//!   `vael.analyze.run` do `viber-tools`, se estiver instalado) e avisa;
+//!   `vael.analyze.run` do `vael-tools`, se estiver instalado) e avisa;
 //! - o operador "Vael: validar e gravar", que recusa gravar com problemas.
 
 use bevy::prelude::*;
@@ -29,7 +29,7 @@ pub fn on_saved(saved: On<SceneSaved>, mut commands: Commands) {
             path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
             found.len()
         );
-        // O `viber analyze` do viber-tools (painel "Vael: Problems").
+        // O `vael-tools analyze` (painel "Vael: Problems").
         match world.operator("vael.analyze.run").call() {
             Ok(_) => summary.push_str(" · analyze corrido (ver Vael: Problems)"),
             Err(_) => summary.push_str(" · analyze indisponível"),

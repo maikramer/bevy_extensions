@@ -1,5 +1,11 @@
 # BRIDGE.md — o protocolo de QA do Viber
 
+> **2026-11-15:** o CLI `viber` foi aposentado; os comandos `viber debug …`
+> abaixo são históricos. O cliente atual é `vael-tools debug …`
+> (`Vael/cli/`, ver `Vael/docs/TOOLS.md`); o runtime novo publica
+> `vael-tools/*` no mesmo servidor. Os métodos `viber.*` documentados aqui
+> continuam servidos pelo monólito (`bevy_ext_viber_engine`).
+
 O debug bridge é o caminho de um AGENTE DE IA para VER, MEXER, PROVAR e
 DESCOBRIR a engine viva — o equivalente nativo do tooling Chrome DevTools do
 motor TS. Este doc é a referência completa; o AGENTS.md (raiz) tem as

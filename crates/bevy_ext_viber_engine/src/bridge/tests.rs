@@ -1728,10 +1728,11 @@ fn test_bridge_lua_control_round4() {
 #[test]
 fn test_bridge_raycast_headless() {
     let mut app = lua_app(RAYCAST_TEST_PORT);
-    // PhysicsPlugin REAL: é ele que constrói o collider set do Rapier a
-    // partir dos componentes `Collider` (um contexto manual ficaria vazio e
-    // o raio nunca apanhava nada). O `resolve_pending_colliders` quer um
-    // AssetServer — entra o AssetPlugin mínimo.
+    // PhysicsPlugin REAL: é ele que registra o `PhysicsPlugins` do Avian; a
+    // árvore de colliders é construída a partir dos componentes `Collider`
+    // (sem o plugin a query fica vazia e o raio nunca apanhava nada). O
+    // `resolve_pending_colliders` quer um AssetServer — entra o AssetPlugin
+    // mínimo.
     app.add_plugins(bevy::asset::AssetPlugin::default());
     app.add_plugins(bevy::transform::TransformPlugin);
     // Stores que o `resolve_pending_colliders` toca por caminho de asset.

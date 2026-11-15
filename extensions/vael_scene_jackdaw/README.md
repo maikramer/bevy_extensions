@@ -30,7 +30,7 @@ Extensão do Jackdaw para a cena do Vael.
 - **Painel "Vael: Cinemáticas"**: as `<Cinematic>` do documento com os
   planos (`from`/`look`/`duration`/`ease`/`fov`/`anchor`) e o tempo acumulado;
   navegar filme/plano, seleccionar o plano no Outliner, **Tocar no jogo** e
-  **Parar** pelo bridge do jogo (`VIBER_TOOLS_PORT`, 15702 por omissão),
+  **Parar** pelo bridge do jogo (`VAEL_TOOLS_PORT`, 15702 por omissão),
   **Novo plano (viewport)** (um `<Shot>` no fim do filme com a pose da câmara
   do viewport, um passo de undo) e **Pose da câmara** (o texto `from`/`look`
   para colar no inspector). Mostra ainda `letterbox`/`hide-hud`/`skippable` e

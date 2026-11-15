@@ -113,6 +113,10 @@ em [`vendor/FORKS_020.md`](viber/FORKS_020.md)):
 
 | Fork | A montar quando | Notas do port |
 |------|-----------------|---------------|
+
+> **2026-11-14: o Rapier saiu.** A física do jogo passou a `avian3d 0.8` +
+> `bevy-tnua` (ver `Vael/docs/PHYSICS-AVIAN.md`); as linhas abaixo sobre
+> `bevy_rapier3d` ficam como histórico da ronda de 2026-10-18.
 | ~~`bevy_rapier3d` 0.36~~ | **DESVENDORED 2026-10-18** — o upstream `dimforge/rapier` publicou o **0.37.0** (bevy ^0.20, rapier3d 0.36.1, nalgebra 0.35 convert-glam033), que é o port oficial daquilo que o fork fazia à mão | `bevy_rapier3d = { version = "0.37", default-features = false }` do registry |
 | `bevy_rerecast` + `bevy_rerecast_core` 0.5 | `janhohenheim/rerecast` publicar 0.20 (a 2026-10-18 o 0.5.0 continua a última versão) | reflect derives por feature do `rerecast` core. |
 | `bevy_landmass` 0.13 + `landmass_rerecast` 0.3 | `andriyDev/landmass` branch bevy-0.20 virar release (a 2026-10-18 o 0.12.1/0.3.0 do crates.io continuam bevy ^0.19) | landmass_rerecast ainda misturava bevy 0.19 no branch — corrigido no vendor. |

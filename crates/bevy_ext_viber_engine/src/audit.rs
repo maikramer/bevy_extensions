@@ -294,7 +294,7 @@ fn collect_entities(
                 url, lod1, lod2, ..
             } => {
                 // O herói tem character controller próprio (colisão via
-                // Rapier, não via attr); o resto herda collider do ancestral.
+                // Avian, não via attr); o resto herda collider do ancestral.
                 if !collider_covered {
                     report.colliderless.push(url.clone());
                 }
@@ -1687,7 +1687,7 @@ mod tests {
             report.issues
         );
         // PlayerGLTF NUNCA entra na lista de colliderless: o herói tem
-        // character controller próprio (colisão via Rapier no spawn).
+        // character controller próprio (colisão via Avian no spawn).
         assert!(report.colliderless.is_empty());
     }
 

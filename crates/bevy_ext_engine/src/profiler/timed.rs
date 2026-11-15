@@ -894,7 +894,7 @@ fn core3d_anchors(render_app: &mut SubApp) {
 }
 
 /// Regista as âncoras do step de física no mesmo schedule do
-/// `PhysicsPlugins` (PostUpdate por omissão no Avian).
+/// `PhysicsPlugins` (o `PhysicsSchedule` corre no `FixedPostUpdate`).
 pub fn physics_anchors(app: &mut App, schedule: impl bevy::ecs::schedule::ScheduleLabel + Clone) {
     use avian3d::prelude::PhysicsSystems;
     app.init_resource::<PhysicsStepClock>()

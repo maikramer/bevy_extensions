@@ -1,8 +1,8 @@
-//! Cliente mínimo do bridge do jogo (`viber_tools_runtime`/`jackdaw_remote`).
+//! Cliente mínimo do bridge do jogo (`bevy_ext_bridge_runtime`/`jackdaw_remote`).
 //!
-//! O painel fala com o jogo a correr como o `viber debug` fala: JSON-RPC 2.0
-//! em HTTP sobre TCP em `127.0.0.1:15702` (ou `VIBER_TOOLS_PORT`). Sem
-//! depender do `viber-tools`: os checkouts ficam independentes e o protocolo
+//! O painel fala com o jogo a correr como o `vael-tools debug` fala: JSON-RPC 2.0
+//! em HTTP sobre TCP em `127.0.0.1:15702` (ou `VAEL_TOOLS_PORT`). Sem
+//! depender do `vael-tools`: os checkouts ficam independentes e o protocolo
 //! é pequeno. Só corre quando o utilizador carrega num botão (bloqueia a
 //! thread do editor), por isso não há threads nem polling.
 
@@ -18,9 +18,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(800);
 const READ_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_RESPONSE: u64 = 4 << 20;
 
-/// Porta do bridge (`VIBER_TOOLS_PORT`, por omissão 15702).
+/// Porta do bridge (`VAEL_TOOLS_PORT`, por omissão 15702).
 pub fn port() -> u16 {
-    std::env::var("VIBER_TOOLS_PORT")
+    std::env::var("VAEL_TOOLS_PORT")
         .ok()
         .and_then(|raw| raw.trim().parse().ok())
         .unwrap_or(DEFAULT_PORT)

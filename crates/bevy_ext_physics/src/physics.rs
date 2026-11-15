@@ -37,6 +37,8 @@
 //! slow asset delays one prop instead of blocking the world.
 
 use bevy::prelude::*;
+// O walk mesh→triângulos é do contrato do host (uma só cópia).
+use bevy_ext_terrain_runtime::host::mesh_vertices_indices;
 use avian3d::prelude::*;
 
 // IR das receitas: a primitiva `Shape` e o parser de strings de componente
@@ -282,16 +284,23 @@ pub fn finish_collider(spec: &mut PhysicsSpec, own_gltf: Option<&str>) -> Option
 }
 
 /// Eventos de contacto só nos colliders com script. No Avian basta
-/// [`CollisionEventsEnabled`]: os pares estático↔cinemático e sensor↔estático
-/// já geram contactos por defeito (o `ActiveCollisionTypes::KINEMATIC_STATIC`
-/// que o Rapier exigia para o KCC não tem equivalente — e deixou de ser
-/// preciso). Manter como função/insert para os chamadores (spawner do mundo).
+/// [`CollisionEventsEnabled`]: o herói é um corpo DINÂMICO, por isso os pares
+/// com estáticos e cinemáticos geram contacto (o
+/// `ActiveCollisionTypes::KINEMATIC_STATIC` do Rapier não tem equivalente — e
+/// deixou de ser preciso). **Limitação do Avian**: pares non-dynamic
+/// (cinemático↔estático, sensor↔cinemático) NÃO geram `CollisionStart`;
+/// sensores com script contra criaturas precisam de `shape_intersections`.
 pub fn scripted_collision_bits() -> CollisionEventsEnabled {
     CollisionEventsEnabled
 }
 
 /// `trigger` → [`Sensor`]. `scripted` → eventos de colisão (ver
 /// [`scripted_collision_bits`]).
+///
+/// **Tem de ser chamado ANTES de inserir o `Collider`**: o Avian lê
+/// `CollisionEventsEnabled` ao criar o proxy da árvore de colliders
+/// (`Add<Collider>`) e não tem observer para a flag — inserida depois, os
+/// eventos desse collider nunca são emitidos.
 pub fn stamp_collider_role(entity: &mut EntityWorldMut<'_>, trigger: bool, scripted: bool) {
     if trigger {
         entity.insert(Sensor);
@@ -365,7 +374,7 @@ fn parse_vec3(value: &str) -> Option<Vec3> {
 }
 
 /// Número positivo finito do component-string, ou o default. `NaN`/`inf`
-/// passavam pelo `parse` e viravam um `Collider::ball(inf)` (AABB infinito,
+/// passavam pelo `parse` e viravam um collider de raio infinito (AABB infinito,
 /// física NaN); um valor inválido cai no default como os restantes.
 fn finite_or_default(value: Option<String>, default: f32) -> f32 {
     value
@@ -456,17 +465,7 @@ impl bevy::app::Plugin for PhysicsPlugin {
         app.init_resource::<ColliderCache>()
             .init_resource::<TerrainCollisionStatus>()
             .add_plugins(PhysicsPlugins::default())
-            .add_systems(
-                bevy::app::Update,
-                (
-                    resolve_pending_colliders,
-                    // Depois do LOD: o swap de coluna despacha caixas e spawna
-                    // as novas no mesmo frame, e sem esta ordem o streaming
-                    // via a grelha do frame anterior — um ou mais frames sem
-                    // chão debaixo do herói a cada troca de LOD.
-                    stream_voxel_colliders.after(bevy_ext_terrain_runtime::plugin::TerrainSet::Columns),
-                ),
-            );
+            .add_systems(bevy::app::PostUpdate, resolve_pending_colliders);
         // O wireframe existe sempre; o `enabled` do `PhysicsGizmos` segue
         // `debug` (jogo: `VIBER_PHYSICS_DEBUG`). O editor liga-o ao vivo via
         // [`ColliderDebugToggle`] sem precisar da env.
@@ -475,10 +474,37 @@ impl bevy::app::Plugin for PhysicsPlugin {
         // DefaultPlugins; os hosts de teste ligam a feature `headless` (o
         // antigo `cfg!(test)` deste ficheiro não atravessa a extração — o
         // crate é testado por fora).
+        //
+        // IMPORTANTE: o grupo `PhysicsGizmos` nasce LIGADO. Sem o desligar, o
+        // plugin desenha o wireframe de TODOS os colliders do mundo (10k+
+        // props) e enche a VRAM — o Rapier era
+        // `RapierDebugRenderPlugin::disabled()`. O toggle do profiler/editor
+        // volta a ligá-lo.
+        // Tempos por estágio no `DiagnosticsStore` (o `viber.debug.physics`
+        // e o painel Física lêem-nos). Precisa do `DiagnosticsPlugin`, que vem
+        // nos `DefaultPlugins`; nos hosts headless não existe.
+        if !cfg!(feature = "headless") {
+            app.add_plugins(PhysicsDiagnosticsPlugin);
+        }
+        app.insert_resource(PhysicsDebugConfig(self.debug));
         if self.debug || !cfg!(feature = "headless") {
             app.add_plugins(PhysicsDebugPlugin);
         }
+        app.add_systems(bevy::app::Startup, init_physics_gizmos);
         app.add_systems(bevy::app::PostUpdate, apply_collider_debug_toggle);
+    }
+}
+
+/// `--physics-debug`: valor inicial do `PhysicsGizmos`.
+#[derive(Resource)]
+struct PhysicsDebugConfig(bool);
+
+fn init_physics_gizmos(
+    config: Res<PhysicsDebugConfig>,
+    mut store: Option<ResMut<bevy::gizmos::config::GizmoConfigStore>>,
+) {
+    if let Some(store) = store.as_mut() {
+        store.config_mut::<PhysicsGizmos>().0.enabled = config.0;
     }
 }
 
@@ -896,18 +922,21 @@ fn bounds_cuboid(
     let size = (half * 2.0).max(Vec3::splat(1e-3));
     let collider = Collider::cuboid(size.x, size.y, size.z);
     if center.length_squared() < 1e-8 {
-        commands.entity(entity).insert(collider);
+        // O papel ANTES do collider: o Avian lê `CollisionEventsEnabled` ao
+        // criar o proxy da árvore (`Add<Collider>`) e não tem observer para a
+        // flag — inserida depois, os eventos nunca são emitidos.
         stamp_collider_role_cmd(commands, entity, trigger, scripted);
+        commands.entity(entity).insert(collider);
         return;
     }
     let child = commands
         .spawn((
             Name::new("collider"),
-            collider,
             Transform::from_translation(center),
         ))
         .id();
     stamp_collider_role_cmd(commands, child, trigger, scripted);
+    commands.entity(child).insert(collider);
     commands.entity(entity).add_child(child);
 }
 
@@ -934,50 +963,6 @@ fn gltf_meshes_pending(
             .iter()
             .any(|primitive| meshes.get(&primitive.mesh).is_none())
     })
-}
-
-/// Positions plus triangle indices of a Bevy mesh, ready for the bake
-/// (`try_trimesh_with_config`).
-///
-/// This exists because Bevy's glTF loader throws the index buffer away for
-/// every primitive that ships without `NORMAL`: it calls `duplicate_vertices()`
-/// (which sets `indices` to `None`) before `compute_flat_normals()`. The
-/// pipeline's `*_collision.glb` files are position-only by design, so a bake
-/// straight from the mesh asset would see an un-indexed triangle soup — this
-/// helper recovers the numbering exactly.
-pub fn mesh_vertices_indices(mesh: &Mesh) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
-    use bevy::mesh::VertexAttributeValues;
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-
-    if mesh.primitive_topology() != PrimitiveTopology::TriangleList {
-        return None;
-    }
-    let vertices: Vec<Vec3> = match mesh.attribute(Mesh::ATTRIBUTE_POSITION)? {
-        VertexAttributeValues::Float32x3(values) => values.iter().map(|v| Vec3::from(*v)).collect(),
-        _ => return None,
-    };
-    let indices: Vec<[u32; 3]> = match mesh.indices() {
-        Some(Indices::U16(idx)) => idx
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|i| [i[0] as u32, i[1] as u32, i[2] as u32])
-            .collect(),
-        Some(Indices::U32(idx)) => idx
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|i| [i[0], i[1], i[2]])
-            .collect(),
-        // Un-indexed: every three vertices are one triangle.
-        None => (0..vertices.len() as u32 / 3)
-            .map(|t| [t * 3, t * 3 + 1, t * 3 + 2])
-            .collect(),
-    };
-    if indices.is_empty() {
-        return None;
-    }
-    Some((vertices, indices))
 }
 
 /// Bakes one parry shape out of a single mesh, with the failure reason.
@@ -1101,23 +1086,6 @@ fn collider_from_gltf(
 #[cfg(test)]
 mod tests {
 
-    /// `column_xz_distance` é o que decide "chão sob os pés": zero SÓ dentro
-    /// da coluna. É a diferença entre o herói ter chão analítico depois de um
-    /// teleporte e atravessar o terreno por assar (2026-09-12).
-    #[test]
-    fn column_distance_is_zero_only_inside_the_column() {
-        let half = 2000.0;
-        let edge = 64.0;
-        let coords = UVec2::new(31, 31);
-        // Centro da coluna (31,31): x0 = -2000 + 31*64 = -16 → centro em 16.
-        let inside = Vec3::new(0.0, 40.0, 0.0);
-        assert!(column_xz_distance(inside, coords, half, edge) <= 0.0);
-        // Coluna vizinha: fora, mas MUITO dentro do antigo `keep_within`.
-        let neighbour = Vec3::new(120.0, 40.0, 0.0);
-        let d = column_xz_distance(neighbour, coords, half, edge);
-        assert!(d > 0.0, "vizinha a {d} m devia contar como fora");
-        assert!(d < 192.0, "e ainda assim dentro da banda de streaming");
-    }
     use super::*;
 
     /// A position-only triangle list, the shape the glTF loader hands us for
@@ -1401,83 +1369,14 @@ mod tests {
     }
 }
 
-// ------------------------------------------------------- terrain collision
-
-/// Columns within this many chunk edges of the player keep a collider.
-///
-/// The whole terrain cannot be collidable at once: `simple-rpg` is a 4000 m
-/// world of 64 m columns, and a collider each is tens of megabytes of solver
-/// data for ground the player cannot reach this frame. Colliders stream in
-/// and out with the player instead (camera only as fallback for worlds
-/// without a hero).
-pub const PHYSICS_CHUNK_RADIUS: f32 = 3.0;
-
 // Contrato movido ao `bevy_ext_core` (com o consumidor `bevy_ext_nav`, que
 // filtra obstáculos pelo MESMO tipo que a física insere); o TypePath
 // `viber::physics` fica congelado no core.
 pub use bevy_ext_core::VoxelCollider;
 
-/// Banda de colisão em metros para um spec.
-///
-/// `chunk_size × PHYSICS_CHUNK_RADIUS` limitado à banda LOD 0
-/// (`lod_distance`): dentro dela o ladder impõe piso de LOD 0 às colunas,
-/// por isso "collider == o que se vê" é exato em todo o lado onde o player
-/// consegue tocar — nunca há collider assado de geometria mais grosseira do
-/// que a desenhada.
-pub fn collision_keep_within(spec: &bevy_ext_terrain_runtime::spec::TerrainSpec) -> f32 {
-    (spec.chunk_size * PHYSICS_CHUNK_RADIUS).min(spec.lod_distance())
-}
-
-/// Aresta inteira de um chunk, em metros (o `edge` do bootstrap, que cai no
-/// inteiro acima quando `resolution` não divide `chunk_size` exatamente).
-///
-/// Réplica de `terrain::plugin::chunk_edge`, que é `pub(crate)` no runtime
-/// de terreno; os dois têm de continuar em passo.
-fn chunk_edge(spec: &bevy_ext_terrain_runtime::spec::TerrainSpec) -> f32 {
-    let step = lod0_step(spec);
-    (spec.chunk_size / step as f32).round().max(1.0) * step as f32
-}
-
-/// Passo da grelha LOD 0 — réplica local de `terrain::plugin::lod0_step`.
-fn lod0_step(spec: &bevy_ext_terrain_runtime::spec::TerrainSpec) -> usize {
-    let ideal = spec.chunk_size / spec.resolution.max(1) as f32;
-    let step = ideal.round().max(1.0) as usize;
-    if (spec.chunk_size / step as f32).abs().fract() > 1e-3 {
-        1
-    } else {
-        step
-    }
-}
-
-/// Distância XZ de um ponto ao AABB de uma coluna.
-///
-/// Às coordenadas da grelha e não ao `Transform` da coluna: a entidade senta-se
-/// na origem do mundo e a pilha de caixas é alta — medir em 3D ao centro
-/// deixava cair o collider debaixo dos pés do herói quando ele está no topo.
-pub fn column_xz_distance(p: Vec3, coords: UVec2, half: f32, edge: f32) -> f32 {
-    let x0 = -half + coords.x as f32 * edge;
-    let z0 = -half + coords.y as f32 * edge;
-    let cx = p.x.clamp(x0, x0 + edge);
-    let cz = p.z.clamp(z0, z0 + edge);
-    ((p.x - cx) * (p.x - cx) + (p.z - cz) * (p.z - cz)).sqrt()
-}
-
-/// Menor distância XZ de QUALQUER âncora (todos os heróis) ao AABB da coluna.
-///
-/// O streaming escolhia só o primeiro player: em co-op o segundo não tinha
-/// collider de terreno debaixo dos pés (caía pelo mundo) e o `ready` global
-/// mentia — dizia "há chão" porque o primeiro estava numa coluna assada.
-/// `INFINITY` quando não há âncoras.
-pub fn nearest_column_distance(points: &[Vec3], coords: UVec2, half: f32, edge: f32) -> f32 {
-    points
-        .iter()
-        .map(|point| column_xz_distance(*point, coords, half, edge))
-        .fold(f32::INFINITY, f32::min)
-}
-
 /// Há chão de terreno carregado sob cada herói?
 ///
-/// Publicado por [`stream_voxel_colliders`] a cada frame. O player só recorre
+/// Publicado pelo streaming de colliders do host a cada frame. O player só recorre
 /// ao chão analítico (`surface_below`) quando o SEU estado é `false` —
 /// arranque, teleporte para coluna ainda por assar. Com chão carregado, o
 /// collider é a autoridade e "não grounded" é airborne legítimo, não desculpa
@@ -1500,327 +1399,6 @@ impl TerrainCollisionStatus {
     /// O herói `entity` tem collider de terreno debaixo dos pés?
     pub fn is_ready(&self, entity: Entity) -> bool {
         self.ready_players.contains(&entity)
-    }
-}
-
-/// Triângulos acumulados das caixas de UMA coluna voxel, prontos para assar.
-///
-/// Os buffers já existem — são exatamente os que o transvoxel devolve para
-/// render (`bevy_ext_terrain_runtime::voxel::build_box_mesh`) — acumulá-los não paga
-/// memória extra além do bake em curso. Posições são origin-relative nos
-/// três eixos (o contracto de `spawn_box_entity`), por isso cada caixa entra
-/// com o próprio `origin` como offset.
-#[derive(Debug, Default)]
-pub struct ColumnColliderBake {
-    vertices: Vec<Vec3>,
-    indices: Vec<[u32; 3]>,
-}
-
-impl ColumnColliderBake {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Caminho quente: os buffers que o mesher acabou de produzir.
-    ///
-    pub fn add_mesh_data(&mut self, origin: Vec3, data: &bevy_ext_terrain_runtime::mesh::ChunkMeshData) {
-        let base = self.vertices.len() as u32;
-        self.vertices
-            .extend(data.positions.iter().map(|p| origin + Vec3::from(*p)));
-        for tri in data.indices.as_chunks::<3>().0 {
-            self.indices
-                .push([tri[0] + base, tri[1] + base, tri[2] + base]);
-        }
-    }
-
-    /// Caminho de reparação: ler de volta um `Mesh` já residente no asset
-    /// store (CPU-resident por construção, `to_bevy_mesh`).
-    pub fn add_bevy_mesh(&mut self, origin: Vec3, mesh: &Mesh) {
-        let Some((vertices, indices)) = mesh_vertices_indices(mesh) else {
-            return;
-        };
-        let base = self.vertices.len() as u32;
-        self.vertices
-            .extend(vertices.into_iter().map(|p| origin + p));
-        for tri in indices {
-            self.indices
-                .push([tri[0] + base, tri[1] + base, tri[2] + base]);
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.indices.is_empty()
-    }
-
-    pub fn triangle_count(&self) -> usize {
-        self.indices.len()
-    }
-
-    /// Assa o trimesh da coluna.
-    ///
-    /// `FIX_INTERNAL_EDGES` (que implica merge de vértices duplicados) povoa
-    /// pseudo-normais: sem elas o parry devolve normal de contacto por
-    /// triângulo e o character controller engancha em cada aresta interna —
-    /// o clássico ghost collision de trimesh. Sem fallback convex-hull: um
-    /// hull de uma coluna de 64 m seria um bloco mentiroso; bake falhado é
-    /// warn + coluna sem collider, e a rede de segurança do player cobre.
-    pub fn bake(&self) -> Option<Collider> {
-        if self.is_empty() {
-            return None;
-        }
-        match Collider::try_trimesh_with_config(
-            self.vertices.clone(),
-            self.indices.clone(),
-            TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-        ) {
-            Ok(collider) => Some(collider),
-            Err(err) => {
-                bevy::log::warn!(
-                    "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
-                );
-                None
-            }
-        }
-    }
-}
-
-/// Adds and removes the terrain collider on voxel COLUMNS around the player.
-///
-/// No caminho 100% volumétrico TODA a superfície é coluna voxel com trimesh —
-/// este streaming é a única fonte de colisão de terreno em runtime. O bake em
-/// si acontece no swap do LOD (`terrain::plugin`) e no spawn da coluna
-/// (`terrain::voxel::spawn_column`); aqui vive a manutenção: tirar o collider
-/// quando a coluna sai da banda e reparar colunas construídas sem collider
-/// (player chegou depois — teleporte/fast-travel), lendo de volta os meshes
-/// já residentes.
-#[allow(clippy::type_complexity)]
-#[allow(clippy::too_many_arguments)]
-pub fn stream_voxel_colliders(
-    mut commands: Commands,
-    mut status: ResMut<TerrainCollisionStatus>,
-    runtime: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
-    players: Query<(Entity, &GlobalTransform), With<bevy_ext_core::Player>>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<bevy_ext_core::Player>)>,
-    columns: Query<(
-        Entity,
-        &bevy_ext_terrain_runtime::plugin::TerrainChunk,
-        Option<&VoxelCollider>,
-        Option<&Children>,
-    )>,
-    boxes: Query<(&bevy_ext_terrain_runtime::voxel::VoxelChunk, &Mesh3d)>,
-    meshes: Res<Assets<Mesh>>,
-    mut repairs: Local<u32>,
-) {
-    status.ready = false;
-    status.ready_players.clear();
-    let Some(runtime) = runtime else { return };
-    // TODOS os heróis: cada um precisa da coluna debaixo dos pés. Sem
-    // âncora de jogador (menu/editor) a câmara decide onde assar.
-    let player_anchors: Vec<(Entity, Vec3)> = players
-        .iter()
-        .map(|(entity, global)| (entity, global.translation()))
-        .collect();
-    let mut anchors: Vec<Vec3> = player_anchors.iter().map(|(_, pos)| *pos).collect();
-    if anchors.is_empty() {
-        anchors.extend(cameras.iter().take(1).map(GlobalTransform::translation));
-    }
-    if anchors.is_empty() {
-        return;
-    }
-    if runtime.spec.collision_resolution == 0 {
-        return;
-    }
-    let keep_within = collision_keep_within(&runtime.spec);
-    let drop_beyond = keep_within * 1.25;
-    let half = runtime.spec.world_size * 0.5;
-    let edge = chunk_edge(&runtime.spec);
-    *repairs = 0;
-
-    let mut best_repair: Option<(f32, Entity, &Children)> = None;
-
-    for (entity, column, has_collider, children) in &columns {
-        let distance = nearest_column_distance(&anchors, column.coords, half, edge);
-        match (has_collider.is_some(), distance) {
-            (true, d) if d <= keep_within => {
-                // `ready` é "há chão SOB os pés", não "há chão algures na
-                // banda": a distância mínima é 0 só para a coluna que
-                // CONTÉM algum herói. Com o teste antigo (`d <= keep_within`,
-                // ~192 m) qualquer coluna vizinha ainda assada punha
-                // `ready = true` depois de um teleporte, o chão analítico
-                // do `player_movement` desligava-se e o herói atravessava o
-                // terreno por assar — a saída de um interior devolvia-o à
-                // vila e ele caía até y≈2 (repro 2026-09-12).
-                if d <= 0.0 {
-                    status.ready = true;
-                    // Marca QUEM está dentro desta coluna assada (co-op): o
-                    // `player_movement` consulta o próprio herói, não o
-                    // agregado.
-                    for (player, pos) in &player_anchors {
-                        if column_xz_distance(*pos, column.coords, half, edge) <= 0.0 {
-                            status.ready_players.insert(*player);
-                        }
-                    }
-                }
-            }
-            // try_* e não insert/remove: as colunas MORREM sob os pés deste
-            // sistema (o swap do LOD e o cull despawnam no mesmo frame) —
-            // aplicar num despawnado seria panic de engine.
-            (true, d) if d > drop_beyond => {
-                commands
-                    .entity(entity)
-                    .try_remove::<Collider>()
-                    .try_remove::<RigidBody>()
-                    .try_remove::<VoxelCollider>();
-            }
-            // Coluna em banda sem collider: escolhe a MAIS PRÓXIMA do herói
-            // para assar (1 coluna por frame no máximo).
-            (false, d) if d <= keep_within => {
-                if let Some(children) = children
-                    && best_repair
-                        .as_ref()
-                        .is_none_or(|(best_d, _, _)| d < *best_d)
-                {
-                    best_repair = Some((d, entity, children));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if *repairs < 1
-        && let Some((_, entity, children)) = best_repair
-    {
-        let mut bake = ColumnColliderBake::new();
-        for kid in children.iter() {
-            if let Ok((box_chunk, mesh3d)) = boxes.get(kid)
-                && let Some(mesh) = meshes.get(&mesh3d.0)
-            {
-                bake.add_bevy_mesh(box_chunk.origin, mesh);
-            }
-        }
-        // Sem `ready` aqui: a coluna reparada pode não ser a que está
-        // sob o herói, e o insert é diferido (o Avian só a vê no
-        // frame seguinte) — o ramo `d <= 0` acima publica-o então.
-        if let Some(collider) = bake.bake() {
-            commands
-                .entity(entity)
-                .try_insert((collider, RigidBody::Static, VoxelCollider));
-            *repairs += 1;
-        }
-    }
-}
-
-#[cfg(test)]
-mod terrain_collider_tests {
-    use super::*;
-    use bevy_ext_terrain_runtime::mesh::ChunkMeshData;
-
-    /// Dois triângulos formando um quadrado unitário a y=5, origin-relative.
-    fn quad_mesh_data(y: f32) -> ChunkMeshData {
-        ChunkMeshData {
-            positions: vec![[0.0, y, 0.0], [1.0, y, 0.0], [1.0, y, 1.0], [0.0, y, 1.0]],
-            normals: vec![[0.0, 1.0, 0.0]; 4],
-            uvs: vec![[0.0, 0.0]; 4],
-            colors: Vec::new(),
-            indices: vec![0, 1, 2, 0, 2, 3],
-        }
-    }
-
-    #[test]
-    fn test_the_bake_offsets_boxes_into_world_space() {
-        let mut bake = ColumnColliderBake::new();
-        bake.add_mesh_data(Vec3::new(10.0, 0.0, 20.0), &quad_mesh_data(5.0));
-        bake.add_mesh_data(Vec3::new(-10.0, 8.0, -20.0), &quad_mesh_data(5.0));
-        assert_eq!(bake.triangle_count(), 4, "2 caixas × 2 triângulos");
-        // Vértices da 2.ª caixa: base = 4, então o índice global 4 é o canto
-        // mínimo dela (origin + [0,5,0]).
-        assert_eq!(bake.indices[2], [4, 5, 6]);
-        assert_eq!(
-            bake.vertices[4],
-            Vec3::new(-10.0, 13.0, -20.0),
-            "origin da caixa soma às posições origin-relative"
-        );
-    }
-
-    #[test]
-    fn test_an_empty_bake_builds_nothing() {
-        let bake = ColumnColliderBake::new();
-        assert!(bake.is_empty());
-        assert!(
-            bake.bake().is_none(),
-            "coluna sem geometria não tem collider"
-        );
-    }
-
-    /// Co-op: o "chão pronto" é POR HERÓI. O estado global dizia que havia
-    /// chão (o player 1 estava numa coluna assada) e desligava o chão
-    /// analítico do player 2, que caía pelo terreno ainda por assar.
-    #[test]
-    fn test_terrain_ready_is_tracked_per_player() {
-        let mut status = TerrainCollisionStatus::default();
-        let first = Entity::from_raw_u32(11).expect("id de teste");
-        let second = Entity::from_raw_u32(12).expect("id de teste");
-        status.ready = true;
-        status.ready_players.insert(first);
-        assert!(status.is_ready(first));
-        assert!(!status.is_ready(second), "o 2.º herói ainda não tem chão");
-    }
-
-    #[test]
-    fn test_the_baked_collider_is_a_trimesh_with_pseudo_normals() {
-        // FIX_INTERNAL_EDGES povoa pseudo-normais — é o que impede o
-        // character controller de enganchare nas arestas internas entre
-        // caixas. Se um parry futuro as retirar deste rung, o teste avisa.
-        let mut bake = ColumnColliderBake::new();
-        bake.add_mesh_data(Vec3::ZERO, &quad_mesh_data(5.0));
-        let collider = bake.bake().expect("quad bakes");
-        match collider.shape().as_typed_shape() {
-            avian3d::parry::shape::TypedShape::TriMesh(trimesh) => {
-                assert!(
-                    trimesh.pseudo_normals().is_some(),
-                    "FIX_INTERNAL_EDGES tem de produzir pseudo-normais"
-                );
-            }
-            other => panic!("esperado trimesh, veio {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_column_distance_is_xz_to_the_aabb() {
-        let (half, edge) = (128.0_f32, 64.0_f32);
-        let coords = UVec2::new(2, 2); // XZ [0, 64]²
-        // Dentro do quadrado: 0.
-        assert_eq!(
-            column_xz_distance(Vec3::new(10.0, 500.0, 30.0), coords, half, edge),
-            0.0
-        );
-        // Fora: distância euclidiana ao rectângulo, Y ignorado.
-        let d = column_xz_distance(Vec3::new(80.0, 0.0, 30.0), coords, half, edge);
-        assert!((d - 16.0).abs() < 1e-4, "d={d}");
-    }
-
-    /// Co-op: a coluna mantém-se assada se QUALQUER herói estiver na banda, e
-    /// o `ready` é verdadeiro quando qualquer um está dentro dela. Olhar só o
-    /// primeiro herói deixava o segundo sem collider (queda pelo mundo).
-    #[test]
-    fn test_nearest_column_distance_covers_every_player() {
-        let (half, edge) = (128.0_f32, 64.0_f32);
-        let coords = UVec2::new(2, 2); // XZ [0, 64]²
-        let players = [Vec3::new(500.0, 0.0, 500.0), Vec3::new(10.0, 0.0, 30.0)];
-        assert_eq!(
-            nearest_column_distance(&players, coords, half, edge),
-            0.0,
-            "o segundo herói está dentro da coluna"
-        );
-        // Ambos fora: fica a MENOR distância (16 m para (80,30)).
-        let players = [Vec3::new(500.0, 0.0, 500.0), Vec3::new(80.0, 0.0, 30.0)];
-        let d = nearest_column_distance(&players, coords, half, edge);
-        assert!((d - 16.0).abs() < 1e-4, "d={d}");
-        assert_eq!(
-            nearest_column_distance(&[], coords, half, edge),
-            f32::INFINITY,
-            "sem âncoras nada fica assado"
-        );
     }
 }
 
@@ -2066,4 +1644,23 @@ pub fn ray_from_world(world: &mut World, query: RayQuery) -> Option<RayHit> {
         .run_system_cached_with(ray_query_system, query)
         .ok()
         .flatten()
+}
+
+#[cfg(test)]
+mod terrain_status_tests {
+    use super::*;
+
+    /// Co-op: o "chão pronto" é POR HERÓI. O estado global dizia que havia
+    /// chão (o player 1 estava numa coluna assada) e desligava o chão
+    /// analítico do player 2, que caía pelo terreno ainda por assar.
+    #[test]
+    fn test_terrain_ready_is_tracked_per_player() {
+        let mut status = TerrainCollisionStatus::default();
+        let first = Entity::from_raw_u32(11).expect("id de teste");
+        let second = Entity::from_raw_u32(12).expect("id de teste");
+        status.ready = true;
+        status.ready_players.insert(first);
+        assert!(status.is_ready(first));
+        assert!(!status.is_ready(second), "o 2.º herói ainda não tem chão");
+    }
 }

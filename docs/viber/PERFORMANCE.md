@@ -213,7 +213,7 @@ número de instâncias desenhadas, não a lente.
 
 `viber run` delegava em `cargo run` **sem** `--release`, e o `--release` que
 existia era emitido como `cargo --release run` — ordem inválida, portanto a
-flag nunca funcionou. Bevy e Rapier a `opt-level = 0` são 4–10x mais lentos.
+flag nunca funcionou. Bevy e Avian a `opt-level = 0` são 4–10x mais lentos.
 
 Corrigido em dois sítios:
 
@@ -379,7 +379,7 @@ o script aceita qualquer raiz de assets.
 viber session up                       # porta livre automática
 viber debug prof --samples 10          # média/pior/melhor — NÃO uma amostra só
 viber debug lua 'return viber.debug.stats()'   # meshes/colliders/luzes com sombra
-viber debug lua 'return viber.debug.physics()' # tempos do step do Rapier
+viber debug lua 'return viber.debug.physics()' # tempos do step de física
 ```
 
 O campo `fps` de **uma** amostra é instantâneo e oscila brutalmente enquanto o

@@ -4,6 +4,8 @@
 # compilar; os ficheiros ficam preservados no repo.
 members = [
     "crates/bevy_ext_core",
+    "crates/bevy_ext_bridge_protocol",
+    "crates/bevy_ext_bridge_runtime",
     "crates/bevy_ext_terrain_runtime",
     "crates/bevy_ext_elements",
     "crates/bevy_ext_flora",
@@ -51,6 +53,8 @@ bevy = { version = "0.20.1", default-features = false }
 
 # Família lockstep + path local (o path é removido no `.crate` publicado).
 bevy_ext_core = { version = "0.1.0", path = "crates/bevy_ext_core" }
+bevy_ext_bridge_protocol = { version = "0.1.0", path = "crates/bevy_ext_bridge_protocol" }
+bevy_ext_bridge_runtime = { version = "0.1.0", path = "crates/bevy_ext_bridge_runtime" }
 bevy_ext_luau = { version = "0.1.0", path = "crates/bevy_ext_luau" }
 bevy_ext_gltf = { version = "0.1.0", path = "crates/bevy_ext_gltf" }
 bevy_ext_world = { version = "0.1.0", path = "crates/bevy_ext_world" }
@@ -94,6 +98,7 @@ naga = { version = "30.0.1", features = ["wgsl-in"] }
 wesl = "0.6.0"
 
 anyhow = "1"
+base64 = "0.22"
 jackdaw_bsn = "=0.20.2"
 jackdaw_prefab = "=0.20.2"
 roxmltree = "0.21"

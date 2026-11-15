@@ -167,7 +167,7 @@ Bridge (mesma API): `viber.scene.ls|get|find|apply|undo|redo|save|pick|entities|
 seletor do nó sob um pixel (câmara de editor).
 
 **Sync ao vivo** (`src/scene/sync.rs`): mudanças de pose → patch do `Transform` (e teleporte
-do corpo Rapier: o writeback reverteria corpos filhos); `prop-*` → patch do `ScriptProps`; um `<Include>` novo (`instance`/`extract`) spawna o
+do corpo (Avian): o writeback reverteria corpos filhos); `prop-*` → patch do `ScriptProps`; um `<Include>` novo (`instance`/`extract`) spawna o
 conteúdo do ficheiro dentro de um Group com a pose do include; inserir/remover/mover → spawn/despawn
 incremental com REALINHAMENTO das origens dos irmãos; tipos não incrementais (terreno, céu,
 UI, spawners) ficam em `SceneSyncStatus::needs_reload` — e a resposta de

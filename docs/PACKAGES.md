@@ -33,13 +33,18 @@ como app/fachada transitória até o Vael deixar de o usar.
 | `bevy_ext_terrain` | contrato de cena do voxel: `VoxelTerrain`/features, adapter `.ahgt` | `bevy_voxel_terrain` |
 | `bevy_ext_save` | `SaveGame`, slots, paths, IO atómico e migração legacy | `bevy_ext_world` |
 | `bevy_ext_grass` | relva GPU sobre `bevy_grass`: contrato `GrassTerrain`/`GrassFieldLayout`, bake de máscaras, `GrassSettingsSpec`/`GrassStyleSpec`, trampling avian3d | bevy, `bevy_grass`, `avian3d` |
+| `bevy_ext_bridge_protocol` | Métodos `vael-tools/*`, cliente BRP HTTP std-only e descoberta de sessões (`engine.json`) | serde, base64, dirs |
+| `bevy_ext_bridge_runtime` | Plugin in-game que publica `vael-tools/*` (frames/hitches/memory/tree/logs/input/step) no `bevy_remote` | bevy (`bevy_remote`), protocol |
+
+Os dois `bevy_ext_bridge_*` são ferramentas internas de debug (vieram do
+`viber-tools` aposentado em 2026-11-15); fora do `tools/publish.sh`.
 
 `bevy_ext_world` tem uma feature opcional `terrain` (dep `bevy_ext_terrain`):
 o loader devolve os componentes `VoxelTerrain`/`VoxelCave`/`VoxelArch`/
 `VoxelBridge` à vista DSL do Viber, e o `bsn_migrate --terrain` faz a
 migração inversa (âncora + `<Cave>` → componente) com gate de ida-e-volta por
 valor. Desligada por defeito — a ordem de publicação core→world→… não muda;
-o Viber e o `viber_tools_core` liguem-na. O `bsn_equiv` precisa dela para
+o Vael (`vael-tools`) liga-a. O `bsn_equiv` precisa dela para
 comparar mundos com features em componente.
 
 `bevy_voxel_terrain` é a exceção deliberada ao prefixo: o sistema é único e o
@@ -92,7 +97,7 @@ validadas nas branches `integrate2/all` (monorepo) e `exit2/app-assembly`
 | A | Aterrar `integrate2/all` + `exit2/app-assembly`: composição própria (`src/app.rs` do Vael), gémeos unificados (vitais/input_map/a11y/locale/dialogue no core; camera-glue/editor_camera/feedback/hud-assets no engine; save-bridge no `bevy_ext_save`; netplay reactivado) | 335 testes do Vael + QA vivo (feito nas branches) | 🔄 bloqueada na água do monólito |
 | B/C | Consumir em vez de copiar: streaming/config/interact/spawn_gate(**avian**)/attachment/audio_space/save-adapter/hud-font; depois postfx(349)/nav(72)/roads/spawn(633, avian+gradmesh)/**ui data layer (troca atómica)** | check+test workspace; TypePaths intactos | 🔄 em curso (worktrees `exit3/*`) |
 | D | Terreno/água → `bevy_ext_terrain_runtime` + `bevy_ext_water` (já avian) | portar DEPOIS de a água aterrar | 🚫 bloqueada |
-| E | Port avian das cópias Rapier (`bevy_ext_physics`) | 50 testes no crate | 🔄 em curso |
+| E | Port avian das cópias Rapier (`bevy_ext_physics`) | 44+5 testes nos crates | ✅ 2026-11-15: o monólito reexporta o crate (`physics`, `ragdoll`); `physics_fx` e o streaming de colliders das colunas ficam no host até D |
 | F | luau host → `bevy_ext_luau` (BMS) por call-sites (ui 256, load 149, toast 108, game 96…); `viber.ecs` morre (0 usos); `viber.lua` → adapter BRP; `viber.scene --live` reformado (Jackdaw ganhou) | testes portados; jogo sem `mlua` cru | ⏳ |
 | 5 (H) | Remover `viber` do `Cargo.toml`; arquivar o monólito | `cargo tree -i viber` vazio; jogo main/menu/interiores/save/combate | 🚫 pós A+D+F |
 

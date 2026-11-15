@@ -33,7 +33,7 @@ bevy = { workspace = true, features = [
 # parry-f32, os joints e o debug render (o toggle F3 dos colisores usa o
 # `PhysicsDebugPlugin` + `PhysicsGizmos`); a feature fica explícita para o
 # `-p` isolado.
-avian3d = { workspace = true, features = ["debug-plugin"] }
+avian3d = { workspace = true, features = ["debug-plugin", "bevy_diagnostic"] }
 bevy_ext_core = { workspace = true }
 # IR das receitas (`Shape`/`TransformSpec`/`parse_component_string`).
 bevy_ext_scene = { workspace = true }

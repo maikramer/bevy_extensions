@@ -6,8 +6,9 @@
 //! parser os encadeia), selecciona planos no Outliner, toca/pára no jogo pela
 //! bridge e cria planos a partir da câmara do viewport.
 //!
-//! O `viber cinematic` da CLI é XML-only (`SceneDoc`/`world.xml`, aposentado),
-//! por isso a autoria é aqui: o painel escreve no documento do Jackdaw.
+//! O antigo `viber cinematic` da CLI foi aposentado (era XML-only), por isso
+//! a autoria é aqui: o painel escreve no documento do Jackdaw e o play/stop
+//! vai por BRP (`viber.cinematic.*`).
 
 use std::collections::HashSet;
 
@@ -333,7 +334,7 @@ pub fn build(world: &mut World, parent: Entity) {
             text(root, "", 11.0, Color::srgb(0.70, 0.85, 0.70), PoseNote);
             text(
                 root,
-                "Toca no jogo pelo bridge (`VIBER_TOOLS_PORT`, por omissão 15702) — o jogo tem \
+                "Toca no jogo pelo bridge (`VAEL_TOOLS_PORT`, por omissão 15702) — o jogo tem \
                  de estar a correr com o Play. \"Novo plano\" põe um <Shot> no fim do filme com a \
                  pose da câmara do viewport; ajusta os números no inspector.",
                 11.0,

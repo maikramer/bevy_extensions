@@ -719,6 +719,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     app.add_plugins(physics::PhysicsPlugin {
         debug: std::env::var_os("VIBER_PHYSICS_DEBUG").is_some(),
     });
+    // O streaming de colliders do terreno é host-side (lê o `TerrainRuntime`
+    // do monólito); o `PhysicsPlugin` acima é o do `bevy_ext_physics`.
+    app.add_plugins(physics::TerrainCollidersPlugin);
     // Controller do herói (tnua) e step assist: no jogo, não no crate de
     // colliders.
     app.add_plugins(crate::player::HeroPhysicsPlugin);

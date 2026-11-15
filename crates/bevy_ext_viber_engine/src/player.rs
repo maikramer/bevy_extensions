@@ -980,6 +980,32 @@ pub fn attach_hero_config(
     }
 }
 
+/// Registo do controller do herói (tnua) e dos seus sistemas.
+///
+/// Vive no jogo, **não** no `bevy_ext_physics`: o crate dos colliders não sabe
+/// quem é o herói. Cada app (o `vael` e a engine standalone) regista este
+/// plugin ao lado do `PhysicsPlugin`.
+pub struct HeroPhysicsPlugin;
+
+impl bevy::app::Plugin for HeroPhysicsPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        app.init_resource::<HeroStepPlan>()
+            // `FixedUpdate` = o mesmo horizonte do `PhysicsPlugins::default()`
+            // (o `PhysicsSchedule` corre no `FixedPostUpdate`).
+            .add_plugins((
+                bevy_tnua::prelude::TnuaControllerPlugin::<HeroScheme>::new(FixedUpdate),
+                bevy_tnua_avian3d::prelude::TnuaAvian3dPlugin::new(FixedUpdate),
+            ))
+            .add_systems(Update, attach_hero_config)
+            .add_systems(
+                FixedUpdate,
+                (probe_steps, apply_steps, recover_stuck_ground)
+                    .chain()
+                    .after(bevy_tnua::prelude::TnuaPipelineSystems::Logic),
+            );
+    }
+}
+
 /// Degraus à frente do herói, decididos por frame (ver `apply_steps`).
 ///
 /// O `SpatialQuery` lê `Position` e o `apply` escreve-a: no MESMO sistema os
