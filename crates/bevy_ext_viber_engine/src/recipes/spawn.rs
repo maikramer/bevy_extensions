@@ -1772,47 +1772,65 @@ fn spawn_entity(
             lod_mid,
         } => {
             let path = url.trim_start_matches('/');
-            let handle: Handle<Gltf> = crate::meshopt::load_gltf(ctx.asset_server, path.to_owned());
             // Cristais/vidro (r3): a URL marca os materiais da cena para o
             // patch transmissivo do `prop_tint` quando o glTF aterrar.
             if path.contains("crystal") || path.contains("glass") {
                 entity.insert(crate::prop_tint::TransmissiveGltf);
             }
-            let lod_load = |url: &Option<String>| {
-                url.as_ref().map(|u| {
-                    crate::meshopt::load_gltf(
-                        ctx.asset_server,
-                        u.trim_start_matches('/').to_owned(),
-                    )
-                })
-            };
-            // Sem ladder autorada, um `*_lod0.glb` com irmãos `_lod1`/`_lod2`
-            // no pool ganha-a sozinho: as ~1300 entidades soltas do Vael
-            // (muralhas, bancos, NPCs — 20–40 k triângulos cada) desenhavam
-            // o tier 0 a qualquer distância, na câmara e nas cascatas.
-            let (lod1, lod2) = if lod1.is_none() && lod2.is_none() {
-                sibling_lods(url)
-            } else {
-                (lod1.clone(), lod2.clone())
-            };
-            // Corte por tamanho no ecrã quando a cena aterrar (ver
-            // `render_lod::AUTO_CULL_PER_RADIUS`): as instâncias cozidas do
-            // mundo estático não tinham culling nenhum.
-            entity.insert(crate::render_lod::AutoCull);
-            entity.insert(GltfScenePending {
-                handle,
-                lod1: lod_load(&lod1),
-                lod2: lod_load(&lod2),
-                lod_near: *lod_near,
-                lod_mid: *lod_mid,
-            });
             // Candidato ao batch de vegetação (`foliage::arm_candidates`
             // confirma um só mesh e nenhum colisor/script nos ancestrais).
             // Props com física ou script ficam entidades normais.
             // Destrutíveis/colhíveis têm `props` e o scripts de colheita
             // precisa de os despawnar/tombar; um mesh fundido não saberia.
-            if spec.script.is_none() && spec.physics.is_empty() && spec.props.is_empty() {
-                entity.insert(crate::foliage::FoliageCandidate { multi: false });
+            let foliage =
+                spec.script.is_none() && spec.physics.is_empty() && spec.props.is_empty();
+            if crate::gltf_residency::enabled() {
+                // Residência posicional (`gltf_residency`): a âncora nasce já
+                // e o GLB só é pedido quando o herói se aproxima. O `AutoCull`
+                // e o marcador de vegetação entram na activação — não há cena
+                // para medir nem para fundir enquanto a instância está adiada.
+                entity.insert(crate::gltf_residency::GltfSceneSpec {
+                    url: url.clone(),
+                    lod1: lod1.clone(),
+                    lod2: lod2.clone(),
+                    near: *lod_near,
+                    mid: *lod_mid,
+                    foliage,
+                });
+            } else {
+                let handle: Handle<Gltf> =
+                    crate::meshopt::load_gltf(ctx.asset_server, path.to_owned());
+                let lod_load = |url: &Option<String>| {
+                    url.as_ref().map(|u| {
+                        crate::meshopt::load_gltf(
+                            ctx.asset_server,
+                            u.trim_start_matches('/').to_owned(),
+                        )
+                    })
+                };
+                // Sem ladder autorada, um `*_lod0.glb` com irmãos `_lod1`/`_lod2`
+                // no pool ganha-a sozinho: as ~1300 entidades soltas do Vael
+                // (muralhas, bancos, NPCs — 20–40 k triângulos cada) desenhavam
+                // o tier 0 a qualquer distância, na câmara e nas cascatas.
+                let (lod1, lod2) = if lod1.is_none() && lod2.is_none() {
+                    sibling_lods(url)
+                } else {
+                    (lod1.clone(), lod2.clone())
+                };
+                // Corte por tamanho no ecrã quando a cena aterrar (ver
+                // `render_lod::AUTO_CULL_PER_RADIUS`): as instâncias cozidas do
+                // mundo estático não tinham culling nenhum.
+                entity.insert(crate::render_lod::AutoCull);
+                entity.insert(GltfScenePending {
+                    handle,
+                    lod1: lod_load(&lod1),
+                    lod2: lod_load(&lod2),
+                    lod_near: *lod_near,
+                    lod_mid: *lod_mid,
+                });
+                if foliage {
+                    entity.insert(crate::foliage::FoliageCandidate { multi: false });
+                }
             }
         }
         EntityKind::Primitive { shape, material } => {
@@ -2820,7 +2838,11 @@ pub fn gltf_scene_spawner(
             }
             Some(LoadState::Failed(err)) => {
                 bevy::log::warn!("gltf asset failed to load: {err}");
-                commands.entity(entity).remove::<GltfScenePending>();
+                commands.entity(entity).remove::<GltfScenePending>().insert(
+                    // A residência posicional não volta a pedir um URL que
+                    // falhou (re-activava-se todos os frames).
+                    crate::gltf_residency::GltfSceneFailed,
+                );
             }
             _ => {}
         }

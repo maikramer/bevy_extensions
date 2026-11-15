@@ -219,7 +219,8 @@ pub fn cut_wall_bands(spec: &CutSpec, grid: &dyn HeightField, texel: f32) -> Vec
         bands.push(CliffBand {
             stations: crest_stations,
             drop_normal,
-            top_y,
+            ceil_y: top_y.clone(),
+        top_y,
             bot_y,
             width,
             arc,

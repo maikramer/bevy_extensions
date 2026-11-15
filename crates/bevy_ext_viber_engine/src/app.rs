@@ -438,6 +438,10 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // O config viaja COMO RESOURCE: ambient (sfx_dir), save (dir), terreno
     // (textures_dir) e o spawn (bgm_dir) leem-no de lá.
     app.insert_resource(config.clone());
+    // O runtime de terreno lê `TerrainWorldAssets` (não o `GameConfig`): sem
+    // este recorte as layers resolvem contra a pasta do mundo e cada albedo
+    // vira um `Path not found`.
+    crate::terrain_host::install_world_assets(&mut app, &config, &world_dir);
     app.insert_resource(save::SaveDir(Some(config.save_dir().to_path_buf())));
     // O modelo do céu também viaja como resource — o IBL (`ibl.rs`) pinta o
     // cubemap com a MESMA radiância que o domo desenha e os probes regionais
@@ -715,6 +719,7 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         dir: world_dir_pre.join("locale"),
     });
     app.add_plugins(streaming::StreamingPlugin);
+    app.add_plugins(crate::gltf_residency::GltfResidencyPlugin);
     app.add_plugins(foliage::FoliagePlugin);
     // `VIBER_DRAW_DIAG=1`: malhas/triângulos por vista (câmara, cascatas, lanternas).
     app.add_plugins(crate::draw_diag::DrawDiagPlugin);

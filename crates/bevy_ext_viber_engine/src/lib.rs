@@ -75,6 +75,7 @@ pub mod foliage;
 pub mod frame_pacing;
 pub mod fx_specs;
 pub mod glb_bounds;
+pub mod gltf_residency;
 pub mod graphics;
 pub mod hot_reload;
 pub mod hud;

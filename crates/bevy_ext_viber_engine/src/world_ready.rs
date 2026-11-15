@@ -2,8 +2,10 @@
 //! inteiro.
 //!
 //! "Pronto" = o herói existe e assentou (sem [`SpawnGated`]/[`TeleportSettle`]),
-//! nenhum `<GltfScene>` está à espera do GLB ([`GltfScenePending`]), os spawn
-//! groups fecharam e os albedos do terreno estão residentes — e tudo isso
+//! nenhum `<GltfScene>` **do anel próximo** está à espera do GLB
+//! ([`GltfScenePending`] — o resto do mundo carrega por distância, ver
+//! [`crate::gltf_residency`]), os spawn groups fecharam e os albedos do
+//! terreno estão residentes — e tudo isso
 //! estável durante [`STABLE_FRAMES`] frames (as malhas/texturas sobem para a
 //! GPU nos frames a seguir ao load, e um sistema pode criar pendentes novos
 //! no frame seguinte).
@@ -275,8 +277,13 @@ fn set_upload_budget(
 fn update_world_readiness(
     time: Res<Time<Real>>,
     mut readiness: ResMut<WorldReadiness>,
-    pending: Query<(), With<GltfScenePending>>,
-    players: Query<(Has<SpawnGated>, Has<TeleportSettle>), With<Player>>,
+    pending: Query<(&GltfScenePending, Option<&GlobalTransform>)>,
+    // `GlobalTransform` opcional: apps mínimas (e testes) spawnam o `Player`
+    // sem transform — a prontidão não pode depender dele.
+    players: Query<
+        (Option<&GlobalTransform>, Has<SpawnGated>, Has<TeleportSettle>),
+        With<Player>,
+    >,
     server: Option<Res<AssetServer>>,
     gate: Option<Res<crate::terrain::runtime::TerrainTextureGate>>,
     groups: Option<Res<crate::spawner::PendingSpawnGroups>>,
@@ -304,12 +311,30 @@ fn update_world_readiness(
         readiness.restart(now);
     }
 
-    let pending_models = pending.iter().count();
+    // Só o anel do véu conta: o mundo entra por distância
+    // (`gltf_residency`) e o que está longe carrega em segundo plano — o véu
+    // não pode esperar pelo mapa inteiro. Sem herói (ou com a residência
+    // desligada, `ready_radius` infinito) conta tudo, como antes.
+    let ready_radius = crate::gltf_residency::ready_radius();
+    let hero = players
+        .iter()
+        .filter_map(|(transform, _, _)| transform)
+        .next()
+        .map(|t| t.translation());
+    let pending_models = match hero {
+        Some(hero) if ready_radius.is_finite() => pending
+            .iter()
+            .filter(|(_, transform)| {
+                transform.is_none_or(|t| t.translation().distance(hero) <= ready_radius)
+            })
+            .count(),
+        _ => pending.iter().count(),
+    };
     let textures_ready = match (&server, &gate) {
         (Some(server), Some(gate)) => gate.ready(server),
         _ => true,
     };
-    let player_ready = players.iter().any(|(gated, settling)| !gated && !settling);
+    let player_ready = players.iter().any(|(_, gated, settling)| !gated && !settling);
     let spawn_groups_ready = groups
         .as_deref()
         .is_none_or(|g| g.groups.iter().all(|g| g.done));

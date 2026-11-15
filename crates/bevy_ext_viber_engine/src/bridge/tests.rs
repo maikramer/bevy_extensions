@@ -405,6 +405,17 @@ const LUA4_TEST_PORT: u16 = 35706;
 
 /// App headless com runtime Luau + bridge: base para os testes `viber.lua`.
 fn lua_app(port: u16) -> App {
+    lua_app_with(port, |_| {})
+}
+
+/// Como [`lua_app`], mas corre `setup` depois dos plugins e **antes** dos
+/// spawns.
+///
+/// O `PhysicsPlugins` do Avian regista os required components do `RigidBody`
+/// (`RecomputeMassProperties`) no `build`; adicioná-lo depois de existir um
+/// archetype com `RigidBody` panica com `ArchetypeExists`. Os testes que
+/// querem física têm de a instalar por aqui.
+fn lua_app_with(port: u16, setup: impl FnOnce(&mut App)) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .add_plugins(crate::luau::LuauScriptPlugin::default())
@@ -412,6 +423,7 @@ fn lua_app(port: u16) -> App {
     // Assets para os testes de introspeção (sem AssetPlugin na app mínima).
     app.init_resource::<bevy::asset::Assets<bevy::mesh::Mesh>>();
     app.init_resource::<bevy::asset::Assets<bevy::pbr::StandardMaterial>>();
+    setup(&mut app);
     app.world_mut().spawn((
         Name::new("player"),
         crate::player::Player::default(),
@@ -835,7 +847,8 @@ fn test_bridge_lua_introspection() {
     );
     let result = response["result"].as_array().expect("lista");
     assert_eq!(result[0], serde_json::json!("rich"));
-    assert_eq!(result[1], serde_json::json!("Fixed"));
+    // Avian chama `Static` ao corpo fixo (o Rapier chamava-lhe `Fixed`).
+    assert_eq!(result[1], serde_json::json!("Static"));
     assert_eq!(result[2], serde_json::json!(true));
     assert_eq!(result[3], serde_json::json!(true));
     assert_eq!(result[4], serde_json::json!(true));
@@ -1727,21 +1740,31 @@ fn test_bridge_lua_control_round4() {
 
 #[test]
 fn test_bridge_raycast_headless() {
-    let mut app = lua_app(RAYCAST_TEST_PORT);
     // PhysicsPlugin REAL: é ele que registra o `PhysicsPlugins` do Avian; a
     // árvore de colliders é construída a partir dos componentes `Collider`
     // (sem o plugin a query fica vazia e o raio nunca apanhava nada). O
     // `resolve_pending_colliders` quer um AssetServer — entra o AssetPlugin
-    // mínimo.
-    app.add_plugins(bevy::asset::AssetPlugin::default());
-    app.add_plugins(bevy::transform::TransformPlugin);
-    // Stores que o `resolve_pending_colliders` toca por caminho de asset.
-    app.init_asset::<bevy::gltf::Gltf>();
-    app.init_asset::<bevy::gltf::GltfMesh>();
-    app.init_asset::<bevy::gltf::GltfPrimitive>();
-    app.init_asset::<bevy::gltf::GltfNode>();
-    app.init_asset::<bevy::image::Image>();
-    app.add_plugins(crate::physics::PhysicsPlugin { debug: false });
+    // mínimo. Tudo ANTES dos spawns do `lua_app`: o `MassPropertyPlugin` do
+    // Avian regista required components do `RigidBody` no `build` e não
+    // admite archetypes pré-existentes.
+    let mut app = lua_app_with(RAYCAST_TEST_PORT, |app| {
+        app.add_plugins(bevy::asset::AssetPlugin::default());
+        app.add_plugins(bevy::transform::TransformPlugin);
+        // O `ColliderCachePlugin` do Avian lê `AssetEvent<Mesh>`; sem o
+        // `RenderPlugin` ninguém o inicializa (ver docs/PHYSICS-AVIAN).
+        app.add_message::<bevy::asset::AssetEvent<bevy::mesh::Mesh>>();
+        // Stores que o `resolve_pending_colliders` toca por caminho de asset.
+        app.init_asset::<bevy::gltf::Gltf>();
+        app.init_asset::<bevy::gltf::GltfMesh>();
+        app.init_asset::<bevy::gltf::GltfPrimitive>();
+        app.init_asset::<bevy::gltf::GltfNode>();
+        app.init_asset::<bevy::image::Image>();
+        app.add_plugins(crate::physics::PhysicsPlugin { debug: false });
+    });
+    // Fora do `App::run()` o `finish` dos plugins não corre sozinho: é lá que
+    // o `SpatialQueryPlugin` regista os diagnostics e os sistemas de raycast
+    // panican sem eles (ver docs/PHYSICS-AVIAN).
+    app.finish();
     {
         let world = app.world_mut();
         // O Avian não tem entidade de contexto: o `PhysicsPlugin` regista as
@@ -1775,13 +1798,16 @@ fn test_bridge_raycast_headless() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // NOTA: o caminho de sync completo do Rapier (collider COMPONENTE → set
-    // interno) precisa de FixedUpdate + escada de sistemas que só o mundo
-    // inteiro tem; o hit GEOMÉTRICO valida-se no fumo ao vivo (qa-bridge).
-    // Headless garante: params/normalização, resposta estruturada e os dois
-    // caminhos "sem contexto" (erro) e "contexto vazio" (hit=false).
+    // Com o `PhysicsPlugin` real e o `finish()`, a árvore de colliders do
+    // Avian existe e o raio de cima apanha o TOPO do cubo. `Collider::cuboid`
+    // do Avian leva extensões COMPLETAS: 1 m de aresta, topo a 5 + 0.5.
     let r = handle.join().unwrap().expect("raycast responde");
-    assert_eq!(r["hit"], serde_json::json!(false));
+    assert_eq!(r["hit"], serde_json::json!(true), "raio devia apanhar o cubo: {r}");
+    let y = r["point"][1].as_f64().expect("ponto do hit");
+    assert!(
+        (y - 5.5).abs() < 0.05,
+        "hit no topo do cubo (y≈5.5), veio {y}: {r}"
+    );
 }
 
 // ── M4: apidoc cobre EXATAMENTE as funções registadas (guard) ────────────

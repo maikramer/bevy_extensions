@@ -59,6 +59,32 @@ pub fn install_terrain_collect(app: &mut bevy::app::App) {
     )));
 }
 
+/// Publica o recorte do `config.yaml` que o runtime de terreno lê
+/// ([`TerrainWorldAssets`](bevy_ext_terrain_runtime::host::TerrainWorldAssets))
+/// — o `TODO(viber-exit)` do host.
+///
+/// Sem esta resource o runtime resolve as texturas das layers contra a pasta
+/// do mundo (`grass/albedo.ktx2`, sem o `assets/textures/`): cada layer pedia
+/// um ficheiro inexistente (`ERROR Path not found` do Bevy) e caía no
+/// fallback — o chão desenhava com a textura errada. Os mapas de detalhe
+/// (`normal`/`height`/`ao`) ainda passavam pelo `asset_present`, que os
+/// descartava em silêncio.
+///
+/// Chamar ao lado de [`install_terrain_collect`], com o `config` já carregado
+/// e a pasta do JOGO (não a da cena).
+pub fn install_world_assets(
+    app: &mut bevy::app::App,
+    config: &crate::config::GameConfig,
+    world_dir: &std::path::Path,
+) {
+    app.insert_resource(bevy_ext_terrain_runtime::host::TerrainWorldAssets {
+        // `asset_roots` já devolve a pasta do jogo primeiro; o
+        // `TerrainWorldAssets::asset_roots` volta a pô-la e dedupa.
+        roots: config.asset_roots(world_dir),
+        textures_dir: config.assets.terrain_textures_dir.clone(),
+    });
+}
+
 /// Configuração do shader de água a partir do mundo declarativo (dia/clima,
 /// amplitude das ondas e sol estático).
 pub fn water_surface_config_from_world(entities: &[EntitySpec]) -> WaterSurfaceConfig {

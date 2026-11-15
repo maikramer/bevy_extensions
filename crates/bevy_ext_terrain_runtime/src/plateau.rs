@@ -272,6 +272,7 @@ pub fn plateau_wall_band(
     Some(CliffBand {
         stations,
         drop_normal,
+        ceil_y: top_y.clone(),
         top_y,
         bot_y,
         width,

@@ -269,9 +269,7 @@ pub fn restore_game_json(kv: &BTreeMap<String, serde_json::Value>) {
         .filter_map(|(key, value)| {
             let gv = match value {
                 serde_json::Value::Bool(flag) => GameValue::Bool(*flag),
-                serde_json::Value::Number(number) => {
-                    GameValue::Num(number.as_f64().unwrap_or(0.0))
-                }
+                serde_json::Value::Number(number) => GameValue::Num(number.as_f64().unwrap_or(0.0)),
                 serde_json::Value::String(text) => GameValue::Str(text.clone()),
                 _ => return None,
             };
@@ -303,9 +301,7 @@ pub fn apply_patch(
                 // escrito com a autoridade ligada.
                 serde_json::Value::Null => GameValue::Null,
                 serde_json::Value::Bool(flag) => GameValue::Bool(*flag),
-                serde_json::Value::Number(number) => {
-                    GameValue::Num(number.as_f64().unwrap_or(0.0))
-                }
+                serde_json::Value::Number(number) => GameValue::Num(number.as_f64().unwrap_or(0.0)),
                 serde_json::Value::String(text) => GameValue::Str(text.clone()),
                 _ => return None,
             };
@@ -776,8 +772,6 @@ fn sync_generation(
     }
 }
 
-
-
 /// Lock de teste para o store partilhado do processo: os testes que semeiam
 /// `viber.game()` não podem correr em paralelo (o static é por-processo).
 ///
@@ -1008,7 +1002,10 @@ mod tests {
         assert_eq!(snapshot.get("hp"), Some(&serde_json::json!(7)));
         assert_eq!(snapshot.get("nome"), Some(&serde_json::json!("herói")));
         assert_eq!(snapshot.get("ligado"), Some(&serde_json::json!(true)));
-        assert!(!snapshot.contains_key("sessao"), "tabela de sessão não entra");
+        assert!(
+            !snapshot.contains_key("sessao"),
+            "tabela de sessão não entra"
+        );
         assert!(!snapshot.contains_key("sumido"));
     }
 }

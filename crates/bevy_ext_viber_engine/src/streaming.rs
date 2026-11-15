@@ -95,6 +95,7 @@ pub fn stream_rings(
         Option<&crate::luau::LuaScriptRef>,
         Has<bevy::prelude::Mesh3d>,
         Has<crate::recipes::spawn::GltfScenePending>,
+        Has<crate::gltf_residency::GltfSceneSpec>,
         Has<Resident>,
         Has<Streamable>,
     )>,
@@ -137,10 +138,16 @@ pub fn stream_rings(
     // Chaves já escolhidas nesta passagem: `sleep.iter().any(...)` era O(n²)
     // quando muitos irmãos da mesma origem adormeciam no mesmo frame.
     let mut sleeping_keys: HashSet<String> = HashSet::new();
-    for (entity, global, source, name, scene, script, has_mesh, pending, resident, streamable) in
+    for (entity, global, source, name, scene, script, has_mesh, pending, deferred, resident, streamable) in
         &query
     {
         if !streamable {
+            continue;
+        }
+        // Uma `<GltfScene>` adiada (residência posicional) não tem cena nem
+        // malha por ainda não ter chegado perto: quem a acorda é o
+        // `gltf_residency`, não o registo frio.
+        if deferred {
             continue;
         }
         // Só adormece o que sabe acordar: cena (WorldAssetRoot) ou entidade

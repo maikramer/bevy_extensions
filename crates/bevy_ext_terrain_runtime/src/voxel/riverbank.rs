@@ -121,7 +121,8 @@ pub fn river_banks(
         bands.push(CliffBand {
             stations,
             drop_normal,
-            top_y,
+            ceil_y: top_y.clone(),
+        top_y,
             bot_y,
             width,
             arc,
@@ -196,6 +197,7 @@ pub fn lake_shore_band(
     Some(CliffBand {
         stations,
         drop_normal,
+        ceil_y: top_y.clone(),
         top_y,
         bot_y,
         width,
@@ -281,6 +283,7 @@ pub fn spring_band(
     Some(CliffBand {
         stations,
         drop_normal,
+        ceil_y: top_y.clone(),
         top_y,
         bot_y,
         width,
@@ -617,6 +620,7 @@ mod tests {
             ],
             drop_normal: vec![Vec2::new(1.0, 0.0), Vec2::new(1.0, 0.0)],
             top_y: vec![top + 2.0, top + 2.0],
+            ceil_y: vec![top + 2.0, top + 2.0],
             bot_y: vec![top - 9.0, top - 9.0],
             width: vec![5.0, 5.0],
             arc: vec![0.0, 40.0],
