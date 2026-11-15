@@ -1205,3 +1205,1037 @@ pub(crate) fn apply_radial_damage(
     }
 }
 
+// ═══ PONTE: comandos BMS → engine ═══════════════════════════════════════
+
+/// Alcance dos projéteis crus do BMS (o ponto-alvo do disparo: linha reta
+/// com `arc=false`, arco balístico baixo com `arc=true`).
+const BMS_PROJECTILE_RANGE: f32 = 40.0;
+/// Gravidade do arco balístico pedido com `arc = true` (m/s²).
+const BMS_PROJECTILE_GRAVITY: f32 = 9.81;
+
+/// Cursor de leitura das mensagens do BMS — um sistema exclusivo não tem o
+/// `MessageReader` de sistema; o cursor vive num recurso para não reler
+/// mensagens de frames anteriores (o `.after(drain_commands)` só ordena).
+#[derive(Resource, Default, Clone)]
+struct BmsCommandCursor(
+    bevy::ecs::message::MessageCursor<bevy_ext_luau::commands::ScriptCommandMessage>,
+);
+
+/// Ponte entre o host BMS e o monólito:
+/// - [`publish_host_state`] (PreUpdate, ANTES do publisher do BMS) preenche
+///   o [`bevy_ext_luau::ScriptHostState`] com o snapshot do frame — as
+///   extrações das queries do `luau_update` (posições/nomes incrementais,
+///   HP, props, hostis, prototypes, superfícies, câmara, locale, a11y…);
+/// - [`apply_bms_commands`] (Update, DEPOIS do dreno do BMS) converte os
+///   `ScriptCommand` do `bevy_ext_luau` para os do monólito e aplica com o
+///   MESMO [`apply_script_command`] do `luau_update` — um só caminho de
+///   aplicação, os mesmos recursos.
+///
+/// O plugin é aditivo: sem o `VaelScriptingPlugin` do BMS no app, os dois
+/// sistemas não fazem nada (as mensagens não existem; o `Option<ResMut>`
+/// do estado falha em silêncio).
+pub struct BmsBridgePlugin;
+
+impl bevy::app::Plugin for BmsBridgePlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        app.init_resource::<ScriptWarnState>()
+            .init_resource::<BmsCommandCursor>()
+            .add_systems(
+                bevy::app::PreUpdate,
+                publish_host_state
+                    // ANTES do publisher do BMS: o `publish_globals` copia
+                    // o recurso para os globals dos contextos; o tick de
+                    // timers lê o relógio publicado.
+                    .before(bevy_ext_luau::publish_globals)
+                    .before(bevy_ext_luau::timers::tick_timers),
+            )
+            .add_systems(
+                bevy::app::Update,
+                // DEPOIS do dreno do BMS: os comandos do frame corrente
+                // aplicam-se no mesmo frame.
+                apply_bms_commands.after(bevy_ext_luau::commands::drain_commands),
+            );
+    }
+}
+
+/// Sistema EXCLUSIVO: lê as `ScriptCommandMessage` escritas pelo
+/// `drain_commands` do BMS, converte cada variante para o `ScriptCommand`
+/// do monólito e aplica com [`apply_script_command`].
+fn apply_bms_commands(world: &mut World) {
+    // Lê e avança um cursor LOCAL (o recurso fica com o avançado — os
+    // borrows do World são por fases).
+    let (pending, cursor) = {
+        let Some(messages) =
+            world.get_resource::<Messages<bevy_ext_luau::commands::ScriptCommandMessage>>()
+        else {
+            return;
+        };
+        let mut cursor = world.resource::<BmsCommandCursor>().clone();
+        let pending = cursor
+            .0
+            .read(messages)
+            .map(|m| m.0.clone())
+            .collect::<Vec<_>>();
+        (pending, cursor)
+    };
+    world.resource_mut::<BmsCommandCursor>().0 = cursor.0;
+    for command in pending {
+        // A conversão pode aplicar inline (as variantes sem geméa no
+        // monólito — `SetPosition`, `RadialDamage` com `skip`, sinais) ou
+        // devolver o comando convertido para o caminho comum.
+        if let Some(mapped) = convert_bms_command(world, command) {
+            apply_script_command(world, mapped);
+        }
+    }
+}
+
+/// Converte um comando do BMS para o geméa do monólito. `None` = aplicado
+/// inline (ou morto, com aviso 1×) — nunca perde-se em silêncio.
+fn convert_bms_command(
+    world: &mut World,
+    command: bevy_ext_luau::commands::ScriptCommand,
+) -> Option<ScriptCommand> {
+    use bevy_ext_luau::commands::ScriptCommand as Bms;
+    match command {
+        // ── 1:1 (mesmos nomes e campos) ─────────────────────────────────
+        Bms::PlaySfx { clip, position } => {
+            Some(ScriptCommand::PlaySfx { clip, position })
+        }
+        Bms::Shake(amount) => Some(ScriptCommand::Shake(amount)),
+        Bms::FovKick(deg) => Some(ScriptCommand::FovKick(deg)),
+        Bms::HitStop(secs) => Some(ScriptCommand::HitStop(secs)),
+        Bms::DamageNumber { text, pos, color } => {
+            Some(ScriptCommand::DamageNumber { text, pos, color })
+        }
+        Bms::Ring { x, z, radius, color } => {
+            Some(ScriptCommand::Ring { x, z, radius, color })
+        }
+        Bms::Topple { entity } => Some(ScriptCommand::Topple { entity }),
+        Bms::OwnUiAction(name) => Some(ScriptCommand::OwnUiAction(name)),
+        Bms::Despawn(entity) => Some(ScriptCommand::Despawn(entity)),
+        Bms::OwnSystem(name) => Some(ScriptCommand::OwnSystem(name)),
+        Bms::ReleaseSystem(name) => Some(ScriptCommand::ReleaseSystem(name)),
+        Bms::SetVisible { entity, visible } => {
+            Some(ScriptCommand::SetVisible { entity, visible })
+        }
+        Bms::SetScale { entity, scale } => {
+            Some(ScriptCommand::SetScale { entity, scale })
+        }
+        Bms::SetPose { entity, pos, yaw } => {
+            Some(ScriptCommand::SetPose { entity, pos, yaw })
+        }
+        Bms::Burst { preset, pos, count } => {
+            Some(ScriptCommand::Burst { preset, pos, count })
+        }
+        Bms::Decal { url, position, normal, size, life, color } => Some(ScriptCommand::Decal {
+            url,
+            position,
+            normal,
+            size,
+            life,
+            color,
+        }),
+        Bms::SpawnPrototype { name, pos, seat, on_spawned, caller_path } => {
+            Some(ScriptCommand::SpawnPrototype {
+                name,
+                pos,
+                seat,
+                on_spawned,
+                caller_path,
+            })
+        }
+        Bms::HitFlash { entity, secs } => {
+            Some(ScriptCommand::HitFlash { entity, secs })
+        }
+        Bms::Corpse { entity } => Some(ScriptCommand::Corpse { entity }),
+        Bms::Attach { owner, slot, url, bone, pos, rot, scale } => {
+            Some(ScriptCommand::Attach {
+                owner,
+                slot,
+                url,
+                bone,
+                pos,
+                rot,
+                scale,
+            })
+        }
+        Bms::SoundLoop { id, clip, pitch, volume, position, ambience, owner } => {
+            Some(ScriptCommand::SoundLoop {
+                id,
+                clip,
+                pitch,
+                volume,
+                position,
+                ambience,
+                owner,
+            })
+        }
+        Bms::SoundStop(id) => Some(ScriptCommand::SoundStop(id)),
+        Bms::MusicLayer(layer) => Some(ScriptCommand::MusicLayer(layer)),
+        Bms::MusicCombat { active, boss } => {
+            Some(ScriptCommand::MusicCombat { active, boss })
+        }
+        Bms::AudioDuck { bus, gain, secs } => {
+            Some(ScriptCommand::AudioDuck { bus, gain, secs })
+        }
+        Bms::AudioReverb { preset, wet } => {
+            Some(ScriptCommand::AudioReverb { preset, wet })
+        }
+        Bms::Punch { stops, bloom } => Some(ScriptCommand::Punch { stops, bloom }),
+        Bms::CameraKick(impulse) => Some(ScriptCommand::CameraKick(impulse)),
+        Bms::SetLantern(intensity) => Some(ScriptCommand::SetLantern(intensity)),
+        Bms::SetBoneOffset { bone, rotation } => {
+            Some(ScriptCommand::SetBoneOffset { bone, rotation })
+        }
+        Bms::CameraFree(active) => Some(ScriptCommand::CameraFree(active)),
+        Bms::CameraPose { pos, look } => Some(ScriptCommand::CameraPose { pos, look }),
+        Bms::EntityDamage { entity, amount } => {
+            Some(ScriptCommand::EntityDamage { entity, amount })
+        }
+        Bms::EntityHeal { entity, amount } => {
+            Some(ScriptCommand::EntityHeal { entity, amount })
+        }
+        Bms::EntitySetMaxHp { entity, max } => {
+            Some(ScriptCommand::EntitySetMaxHp { entity, max })
+        }
+        Bms::Noise { pos, loudness } => Some(ScriptCommand::Noise { pos, loudness }),
+        Bms::SetPlayerSpeed(mps) => {
+            // BMS fala m/s; o monólito recebe o MULTIPLICADOR da base
+            // (`player.speed = BASE_SPEED * mult`), com o mesmo clamp
+            // 0.1..=5.0 que a API Lua do monólito aplicava.
+            let mult = (mps / crate::player::BASE_SPEED).clamp(0.1, 5.0);
+            Some(ScriptCommand::SetPlayerSpeed(mult))
+        }
+        Bms::PlayCinematic { id, anchor } => {
+            Some(ScriptCommand::PlayCinematic { id, anchor })
+        }
+        Bms::Say { text, secs, speaker } => {
+            Some(ScriptCommand::Say { text, secs, speaker })
+        }
+        Bms::Quit => Some(ScriptCommand::Quit),
+        Bms::A11ySet { subtitle_scale, shake, hitstop, interact_hold } => {
+            Some(ScriptCommand::A11ySet {
+                subtitle_scale,
+                shake,
+                hitstop,
+                interact_hold,
+            })
+        }
+        Bms::SetMarkers { blips, beacons, waypoint } => Some(ScriptCommand::SetMarkers {
+            blips,
+            beacons,
+            waypoint,
+        }),
+        Bms::Prompt { key, label } => Some(ScriptCommand::Prompt { key, label }),
+        Bms::SetLocale(lang) => Some(ScriptCommand::SetLocale(lang)),
+
+        // ── adaptadas (diferenças de campos) ────────────────────────────
+        Bms::Gesture { entity, name, speed, lock } => {
+            // O BMS resolve a própria entidade à fila (`Some`); `None`
+            // só chega de fora de um script (REPL) — sem alvo, no-op.
+            let Some(entity) = entity else {
+                warn_once(
+                    world,
+                    "bms:gesture-none",
+                    "ponte BMS: `Gesture` sem entidade (fora de on_update) — ignorado",
+                );
+                return None;
+            };
+            Some(ScriptCommand::Gesture {
+                entity,
+                name,
+                speed,
+                lock,
+                // O BMS não tem blend (o default do monólito, 250 ms).
+                blend: None,
+            })
+        }
+        Bms::SetInteraction { entity, label, key, range } => {
+            let Some(entity) = entity else {
+                warn_once(
+                    world,
+                    "bms:interaction-none",
+                    "ponte BMS: `SetInteraction` sem entidade (fora de on_update) — ignorado",
+                );
+                return None;
+            };
+            Some(ScriptCommand::SetInteraction {
+                entity,
+                label,
+                key,
+                range,
+            })
+        }
+        Bms::FaceTowards { entity, target } => {
+            Some(ScriptCommand::FaceTowards(entity, target))
+        }
+        Bms::MoveTowards { entity, target, speed } => {
+            // BMS leva o alvo em 3D; a locomoção do monólito é planar (o
+            // snap de Y é do `apply_ai_locomotion`).
+            Some(ScriptCommand::MoveTowards {
+                entity,
+                goal: Vec2::new(target.x, target.z),
+                speed,
+            })
+        }
+        Bms::ChangeScene { scene, entry } => Some(ScriptCommand::ChangeScene {
+            scene,
+            entry,
+            // O BMS não sabe quem pediu (sem `via`).
+            via: None,
+        }),
+        Bms::PushPlayer { dir, force } => {
+            // BMS: direção + força; o monólito leva a VELOCIDADE de
+            // deslocamento (`push_velocity` zera o Y e escala pelo decay,
+            // como o braço nativo).
+            Some(ScriptCommand::PushPlayer {
+                velocity: bevy_engine_core::push_velocity(dir.normalize_or_zero() * force),
+            })
+        }
+        Bms::EntityKnockback { entity, dir, force } => Some(ScriptCommand::EntityKnockback {
+            entity,
+            dir,
+            strength: force,
+        }),
+        Bms::SaveGame(slot) => Some(match slot {
+            None => ScriptCommand::SaveNow,
+            Some(slot) => ScriptCommand::SaveSlot(slot),
+        }),
+        Bms::LoadGame(slot) => Some(match slot {
+            None => ScriptCommand::LoadNow,
+            Some(slot) => ScriptCommand::LoadSlot(slot),
+        }),
+        Bms::TerrainEdit { kind, pos, radius, strength } => {
+            // O BMS fala `kind` string; o monólito leva a variante tipada.
+            // `smooth` não tem geméa no monólito (warn 1× e cai).
+            let edit = match kind.as_str() {
+                "lower" => crate::terrain::delta::TerrainEdit::Lower {
+                    at: Vec2::new(pos.x, pos.z),
+                    radius,
+                    depth: strength,
+                },
+                "raise" => crate::terrain::delta::TerrainEdit::Raise {
+                    at: Vec2::new(pos.x, pos.z),
+                    radius,
+                    height: strength,
+                },
+                "flatten" => crate::terrain::delta::TerrainEdit::Flatten {
+                    at: Vec2::new(pos.x, pos.z),
+                    radius,
+                    height: None,
+                },
+                other => {
+                    warn_once(
+                        world,
+                        "bms:terrain-smooth",
+                        &format!("ponte BMS: terrain '{other}' sem geméa no monólito — ignorado"),
+                    );
+                    return None;
+                }
+            };
+            Some(ScriptCommand::TerrainEdit { edit })
+        }
+        Bms::FireProjectile { from, dir, speed, damage, faction, arc, shooter } => {
+            Some(bms_fire_projectile(world, from, dir, speed, damage, faction, arc, shooter))
+        }
+
+        // ── sem geméa: aplicadas inline (ou mortas) ─────────────────────
+        Bms::SetPosition { entity, pos } => {
+            apply_set_position(world, entity, pos);
+            None
+        }
+        Bms::RadialDamage { pos, radius, max_damage, skip } => {
+            // Dano planar (x, z), como o braço do monólito; sem knockback
+            // (o BMS não traz o campo) e com o `skip` do emissor.
+            apply_radial_damage(world, pos.x, pos.z, radius, max_damage, 0.0, skip);
+            None
+        }
+        Bms::EmitSignal { emitter, signal, args } => {
+            deliver_emit(world, emitter, &signal, &args);
+            None
+        }
+        Bms::CallGroup { group, method, args, sender } => {
+            deliver_group(
+                world,
+                &group,
+                &method,
+                &args,
+                sender.map(|entity| entity.to_bits() as i64),
+            );
+            None
+        }
+        Bms::TimerFire { .. } => {
+            // Morto: o tick do BMS (`timers::tick_timers`) corre as
+            // callbacks diretamente — este comando nunca devia chegar à
+            // ponte; um aviso 1× marca a regressão sem travar o frame.
+            warn_once(
+                world,
+                "bms:timer-fire",
+                "ponte BMS: `TimerFire` chegou ao monólito (o tick BMS devia correr a callback) — ignorado",
+            );
+            None
+        }
+    }
+}
+
+/// Projétil CRU do BMS (`from/dir/speed/damage/faction/arc`) — o monólito
+/// só dispara de `<ProjectileTemplate>`. A ponte regista um template
+/// sintético DETERMINÍSTICO por conjunto de parâmetros (`bms:{facção}:
+/// {speed}:{damage}:{arc}`, recriado na troca de cena — o
+/// `install_templates` limpa o registo) e dispara para
+/// `from + dir·ALCANCE`: linha reta exata com `arc=false` (a
+/// `launch_velocity` com gravidade 0 devolve `dir·speed`), arco balístico
+/// baixo com `arc=true`.
+fn bms_fire_projectile(
+    world: &mut World,
+    from: Vec3,
+    dir: Vec3,
+    speed: f32,
+    damage: f32,
+    faction: String,
+    arc: bool,
+    shooter: Option<Entity>,
+) -> ScriptCommand {
+    use crate::projectile::{Faction, ProjectileTemplate};
+    let faction = match faction.as_str() {
+        "enemy" | "hostile" => Faction::Enemy,
+        "player" | "hero" | "ally" => Faction::Player,
+        "neutral" | "none" => Faction::Neutral,
+        other => {
+            // O BMS não valida a facção à fila — o default do monólito é
+            // enemy (mesma regra do `from_config`).
+            warn_once(
+                world,
+                &format!("bms:projectile-faction:{other}"),
+                &format!("ponte BMS: facção de projétil '{other}' desconhecida — enemy"),
+            );
+            Faction::Enemy
+        }
+    };
+    let template_id = format!("bms:{faction:?}:{speed}:{damage}:{arc}");
+    let speed = speed.max(0.1);
+    if let Some(mut templates) =
+        world.get_resource_mut::<crate::projectile::ProjectileTemplates>()
+        && !templates.0.contains_key(&template_id)
+    {
+        templates.0.insert(
+            template_id.clone(),
+            ProjectileTemplate {
+                id: template_id.clone(),
+                speed,
+                damage: damage.max(0.0),
+                // Vida suficiente para atravessar o alcance do disparo.
+                max_life: (BMS_PROJECTILE_RANGE / speed) + 0.5,
+                sensor_radius: 0.3,
+                faction,
+                gravity: if arc { BMS_PROJECTILE_GRAVITY } else { 0.0 },
+                color: match faction {
+                    Faction::Enemy => [1.0, 0.35, 0.2],
+                    Faction::Player => [0.35, 0.75, 1.0],
+                    Faction::Neutral => [0.9, 0.9, 0.8],
+                },
+                size: 0.12,
+            },
+        );
+    }
+    ScriptCommand::FireProjectile {
+        template: template_id,
+        origin: from,
+        target: from + dir * BMS_PROJECTILE_RANGE,
+        shooter,
+    }
+}
+
+/// `viber.set_position` do BMS — o mesmo algoritmo do compat
+/// `host.take_pending` do `luau_update`: a posição é de MUNDO e o
+/// `Transform` é local; a pose do pai infere-se do par
+/// (`GlobalTransform`, `Transform`) da própria entidade.
+fn apply_set_position(world: &mut World, entity: Entity, pos: Vec3) {
+    let parent_world = {
+        let local = world.get::<Transform>(entity).map(|t| t.compute_affine());
+        let global = world
+            .get::<GlobalTransform>(entity)
+            .map(|global| global.affine());
+        match (global, local) {
+            (Some(global), Some(local)) => global * local.inverse(),
+            _ => bevy::math::Affine3A::IDENTITY,
+        }
+    };
+    if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+        transform.translation = parent_world.inverse().transform_point3(pos);
+    }
+}
+
+// ═══ ENTREGA DE SINAIS (o `viber.emit`/`call_group` do BMS corre os
+// handlers nos contextos do host do monólito — o mesmo caminho do loop de
+// sinais do `luau_update`, aqui para UMA chamada por comando). ═══════════
+
+/// Entrega `viber.emit`: os alvos vêm dos `connect-<sinal>` do emissor
+/// (`self`/nome/`@grupo`), resolvidos pelos snapshots de nomes/grupos do
+/// host. Handlers que emitem outra vez entram na fila do próprio host
+/// (entregues pelo `luau_update` no frame seguinte).
+fn deliver_emit(
+    world: &mut World,
+    emitter: Option<Entity>,
+    signal: &str,
+    args: &[serde_json::Value],
+) {
+    let Some(emitter) = emitter else {
+        return; // sinal sem emissor: como no monólito, nada acontece
+    };
+    // Cópias locais: o borrow das conexões não pode atravessar o
+    // `run_method`.
+    let conns: Vec<(bevy_ext_luau::exports::ConnTarget, String)> = world
+        .get::<super::components::SignalConnections>(emitter)
+        .map(|connections| {
+            connections
+                .of(signal)
+                .iter()
+                .map(|conn| (conn.target.clone(), conn.method.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let sender = emitter.to_bits() as i64;
+    for (target_spec, method) in conns {
+        let targets: Vec<i64> = match &target_spec {
+            bevy_ext_luau::exports::ConnTarget::Name(name) if name == "self" => {
+                vec![sender]
+            }
+            bevy_ext_luau::exports::ConnTarget::Name(name) => {
+                host_members(world, &bevy_ext_luau::exports::ConnTarget::Name(name.clone()))
+            }
+            bevy_ext_luau::exports::ConnTarget::Group(group) => host_members(
+                world,
+                &bevy_ext_luau::exports::ConnTarget::Group(group.clone()),
+            ),
+        };
+        if targets.is_empty() {
+            warn_once(
+                world,
+                &format!("signal-target:{signal}:{target_spec}"),
+                &format!("[luau] sinal '{signal}': alvo '{target_spec}' sem entidades"),
+            );
+            continue;
+        }
+        for bits in targets {
+            let Some(target) = Entity::try_from_bits(bits as u64) else {
+                continue;
+            };
+            run_on_target(world, target, &method, args, Some(sender));
+        }
+    }
+}
+
+/// Entrega `viber.call_group`: o método corre em todos os membros
+/// publicados do grupo.
+fn deliver_group(
+    world: &mut World,
+    group: &str,
+    method: &str,
+    args: &[serde_json::Value],
+    sender: Option<i64>,
+) {
+    let members = host_members(
+        world,
+        &bevy_ext_luau::exports::ConnTarget::Group(group.to_string()),
+    );
+    for bits in members {
+        let Some(target) = Entity::try_from_bits(bits as u64) else {
+            continue;
+        };
+        run_on_target(world, target, method, args, sender);
+    }
+}
+
+/// Membros de um alvo (`nome` ou `@grupo`) segundo os snapshots do ctx do
+/// host do monólito (o mesmo material que o loop de sinais usava).
+fn host_members(world: &World, target: &bevy_ext_luau::exports::ConnTarget) -> Vec<i64> {
+    let Some(host) = world.get_resource::<LuaScriptHost>() else {
+        return Vec::new();
+    };
+    let Some(ctx) = host.lua.app_data_ref::<ScriptCtx>() else {
+        return Vec::new();
+    };
+    match target {
+        bevy_ext_luau::exports::ConnTarget::Name(name) => {
+            ctx.named_entities.get(name).cloned().unwrap_or_default()
+        }
+        bevy_ext_luau::exports::ConnTarget::Group(group) => {
+            ctx.groups.get(group).cloned().unwrap_or_default()
+        }
+    }
+}
+
+/// Corre `method(args…)` no contexto do alvo — 1:1 com a entrega do loop
+/// de sinais do `luau_update` (semente de contexto, aviso de método
+/// ausente, erro pcall-style por path).
+fn run_on_target(
+    world: &mut World,
+    target: Entity,
+    method: &str,
+    args: &[serde_json::Value],
+    sender: Option<i64>,
+) {
+    let Some(path) = world
+        .get::<LuaScriptRef>(target)
+        .map(|lref| lref.path.clone())
+    else {
+        warn_once(
+            world,
+            &format!("signal-noscript:{target}:{method}"),
+            &format!("[luau] {method}: o alvo {target} não tem script — ignorado"),
+        );
+        return;
+    };
+    let origin = scripted_pos(world, target).unwrap_or_default();
+    let range = world
+        .get::<super::components::ScriptInteraction>(target)
+        .map(|interaction| interaction.range);
+    let name = world.get::<Name>(target).map(Name::to_string);
+    let props = world
+        .get::<super::components::ScriptProps>(target)
+        .map(|props| props.0.clone());
+    if let Some(host) = world.get_resource::<LuaScriptHost>()
+        && let Some(mut ctx) = host.lua.app_data_mut::<ScriptCtx>()
+    {
+        ctx.interaction_range = range;
+        ctx.self_name = name;
+        ctx.self_props = props;
+    }
+    // Argumentos JSON → valores Lua (o `viber.emit` BMS empacota em JSON).
+    let packed = {
+        let Some(host) = world.get_resource::<LuaScriptHost>() else {
+            return;
+        };
+        mlua::MultiValue::from_vec(
+            args.iter()
+                .filter_map(|value| bevy_ext_luau::game::json_to_lua(&host.lua, value).ok())
+                .collect(),
+        )
+    };
+    if let Some(mut host) = world.get_resource_mut::<LuaScriptHost>() {
+        match host.run_method(target, &path, origin, method, packed, sender) {
+            Ok(true) => {}
+            Ok(false) => {
+                warn_once(
+                    world,
+                    &format!("signal-method:{path}:{method}"),
+                    &format!("[luau] {path}: não define `function {method}(…)` (alvo de sinal/grupo)"),
+                );
+            }
+            Err(error) => {
+                host.warn_once(&path, &error);
+            }
+        }
+    }
+}
+
+// ═══ PONTE: estado do monólito → globals do BMS ═════════════════════════
+
+/// Consultas de superfície do monólito sobre o SEAM do BMS
+/// (`bevy_ext_luau::SurfaceQueries`): o leitor do terreno (altura + voxel +
+/// overlay de edições vivas — recriado por frame, as edições são mutáveis)
+/// e os registos de estradas/água imutáveis pós-bootstrap.
+struct BmsSurfaces {
+    reader: crate::terrain::runtime::TerrainReader,
+    registries: std::sync::Arc<super::ctx::SurfaceRegistries>,
+    /// Metade do tamanho do mundo (`in_field` do runtime — fora da pegada
+    /// não há terreno: as amostras saturariam na borda).
+    field_half: f32,
+}
+
+impl bevy_ext_luau::SurfaceQueries for BmsSurfaces {
+    fn ground_below(&self, x: f32, y: f32, z: f32) -> Option<f32> {
+        self.reader.voxel.surface_below(&self.reader.base(), x, z, y)
+    }
+
+    fn ground_top(&self, x: f32, z: f32) -> Option<f32> {
+        (x >= -self.field_half && x <= self.field_half && z >= -self.field_half && z <= self.field_half)
+            .then(|| self.reader.sample(x, z))
+    }
+
+    fn on_road(&self, x: f32, z: f32) -> bool {
+        self.registries.on_road(x, z)
+    }
+
+    fn in_water(&self, x: f32, z: f32) -> bool {
+        self.registries.in_water(x, z)
+    }
+
+    fn nearest_road(&self, x: f32, z: f32) -> Option<bevy_ext_luau::RoadSample> {
+        self.registries.nearest_road(x, z).map(road_sample_flat)
+    }
+
+    fn road_at(&self, s: f32) -> Option<bevy_ext_luau::RoadSample> {
+        self.registries.road_at(s).map(road_sample_flat)
+    }
+}
+
+/// Espelho plano do `RoadSample` (10 números, os MESMOS campos).
+fn road_sample_flat(sample: crate::terrain::roads::RoadSample) -> bevy_ext_luau::RoadSample {
+    bevy_ext_luau::RoadSample {
+        s: sample.s,
+        length: sample.length,
+        half_width: sample.half_width,
+        lateral: sample.lateral,
+        deck: sample.deck,
+        deck_y: sample.deck_y,
+        heading: sample.heading,
+        center_dist: sample.center_dist,
+        cx: sample.cx,
+        cz: sample.cz,
+    }
+}
+
+/// Sobra do snapshot incremental de nomes (`forget_named` do `luau_update`):
+/// uma entidade sai dos vetores por nome e dos mapas de posição/nome; o
+/// nome morre com o último bits.
+fn forget_named(
+    named: &mut HashMap<String, Vec<i64>>,
+    positions: &mut HashMap<i64, Vec3>,
+    names: &mut HashMap<i64, String>,
+    bits: i64,
+) {
+    if positions.remove(&bits).is_none() && names.remove(&bits).is_none() {
+        return;
+    }
+    named.retain(|_, list| {
+        list.retain(|b| *b != bits);
+        !list.is_empty()
+    });
+}
+
+/// Queries do publisher (as MESMAS do `luau_update`) num `SystemParam` —
+/// o sistema passava do teto de 16 parâmetros do Bevy.
+#[derive(bevy::ecs::system::SystemParam)]
+struct PublishStateParams<'w, 's> {
+    players: Query<
+        'w,
+        's,
+        (Entity, &'static GlobalTransform, Option<&'static Health>),
+        With<Player>,
+    >,
+    animators: Query<'w, 's, &'static crate::animation::CharacterAnimator>,
+    names: Query<'w, 's, (Entity, &'static Name, &'static GlobalTransform), Without<Player>>,
+    names_changed: Query<
+        'w,
+        's,
+        (Entity, &'static Name, &'static GlobalTransform),
+        (Without<Player>, Or<(Changed<Name>, Changed<GlobalTransform>)>),
+    >,
+    names_removed: bevy::ecs::lifecycle::RemovedComponents<'w, 's, Name>,
+    healths: Query<'w, 's, (Entity, &'static Health, &'static GlobalTransform), Without<Player>>,
+    script_props: Query<'w, 's, (Entity, &'static ScriptProps)>,
+    groups: Query<'w, 's, (Entity, &'static crate::luau::Groups)>,
+    hostiles: Query<
+        'w,
+        's,
+        (Entity, Option<&'static LuaScriptRef>, &'static GlobalTransform),
+        (With<crate::vitals::Hostile>, Without<Player>),
+    >,
+}
+
+/// Recursos do publisher — todos `Option`: apps mínimas de teste montam o
+/// sistema sem os plugins de cena/áudio/save/rede.
+#[derive(bevy::ecs::system::SystemParam)]
+struct PublishStateResources<'w> {
+    scene: Option<bevy::ecs::system::Res<'w, crate::scene_loader::CurrentScene>>,
+    biome: Option<bevy::ecs::system::Res<'w, crate::ambient::CurrentBiome>>,
+    host: Option<bevy::ecs::system::Res<'w, LuaScriptHost>>,
+    prototypes: Option<bevy::ecs::system::Res<'w, crate::recipes::spawn::PrototypeLibrary>>,
+    camera_snapshot: Option<bevy::ecs::system::Res<'w, crate::camera::CameraSnapshot>>,
+    cinematic: Option<bevy::ecs::system::Res<'w, crate::cinematic::CinematicPlayback>>,
+    terrain: Option<bevy::ecs::system::Res<'w, crate::terrain::runtime::TerrainRuntime>>,
+    a11y: Option<bevy::ecs::system::Res<'w, crate::a11y::A11y>>,
+    net: Option<bevy::ecs::system::Res<'w, crate::netplay::NetLink>>,
+    locale: Option<bevy::ecs::system::Res<'w, crate::locale::Locale>>,
+    save_key: Option<bevy::ecs::system::Res<'w, crate::save::WorldSaveKey>>,
+    save_dir: Option<bevy::ecs::system::Res<'w, crate::save::SaveDir>>,
+}
+
+/// Preenche o [`bevy_ext_luau::ScriptHostState`] a partir do World — as
+/// MESMAS extrações que o `luau_update` semeava no `ScriptCtx`, com os
+/// mesmos avisos de custo (nomes incrementais, prototypes só quando mudam).
+#[allow(clippy::type_complexity)]
+fn publish_host_state(
+    time: Res<Time>,
+    mut state: Option<ResMut<bevy_ext_luau::ScriptHostState>>,
+    mut queries: PublishStateParams,
+    res: PublishStateResources,
+    mut names_seeded: Local<bool>,
+    // Registos de estradas/água — imutáveis pós-bootstrap (reconstruídos
+    // só quando muda o runtime do terreno).
+    mut road_water: Local<Option<std::sync::Arc<super::ctx::SurfaceRegistries>>>,
+    mut slots_timer: Local<Option<f64>>,
+) {
+    // Sem o plugin BMS no app não há estado a preencher (e o custo de
+    // publicar seria lixo puro).
+    let Some(state) = state.as_deref_mut() else {
+        return;
+    };
+    state.time = time.elapsed_secs_f64();
+
+    // Herói: posição de MUNDO, forward (+Z), HP e bits — a mesma extração
+    // da query `players` do `luau_update`.
+    if let Ok((entity, global, health)) = queries.players.single() {
+        let f = crate::player::hero_forward(global);
+        state.player = Some(global.translation());
+        state.player_forward = Vec2::new(f.x, f.z);
+        state.player_hp = health.map(|h| (h.current, h.max));
+        state.player_id = Some(entity.to_bits() as i64);
+        // Duração de cada clip do rig do herói (`viber.clip_duration`).
+        state.clip_durations = queries
+            .animators
+            .get(entity)
+            .map(|animator| {
+                animator
+                    .clip_names
+                    .iter()
+                    .zip(animator.durations.iter())
+                    .map(|(name, duration)| {
+                        (crate::animation::normalize_clip_name(name), *duration)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    } else {
+        state.player = None;
+        state.player_forward = Vec2::ZERO;
+        state.player_hp = None;
+        state.player_id = None;
+        state.clip_durations.clear();
+    }
+
+    // Cena/bioma (`viber.scene_name`/`scene_entry`/`biome`).
+    state.scene = res.scene.as_ref().and_then(|s| s.id.clone());
+    state.scene_entry = res.scene.as_ref().and_then(|s| s.entry.clone());
+    state.biome = res.biome.as_ref().and_then(|b| b.id.clone());
+
+    // Pasta de scripts (`viber.load`); o publisher do BMS espelha-a no
+    // static do `game` — só `Some` escreve (apps mínimas não limpa).
+    state.scripts_dir = res.host.as_ref().map(|host| host.scripts_dir.clone());
+
+    // Esquema `--@export` por path — vive no ctx do host (o mesmo mapa que
+    // o `LuaScriptHost::load_script` mantém; os Arcs são partilhados).
+    state.exports = res
+        .host
+        .as_ref()
+        .and_then(|host| host.lua.app_data_ref::<ScriptCtx>())
+        .map(|ctx| ctx.exports.clone())
+        .unwrap_or_default();
+
+    // Snapshot de nomes/posições — INCREMENTAL como no `luau_update`
+    // (reconstruir 79k nomes por frame custava ~18 ms no simple-rpg) e
+    // escrito DIRETO no recurso (sem clones por frame). Os vetores por
+    // nome ficam ORDENADOS por bits (ordem estável).
+    if !*names_seeded {
+        *names_seeded = true;
+        queries.names_removed.clear();
+        state.named_entities.clear();
+        state.positions.clear();
+        state.names.clear();
+        for (entity, name, transform) in &queries.names {
+            let bits = entity.to_bits() as i64;
+            state
+                .named_entities
+                .entry(name.to_string())
+                .or_default()
+                .push(bits);
+            state.positions.insert(bits, transform.translation());
+            state.names.insert(bits, name.to_string());
+        }
+        for list in state.named_entities.values_mut() {
+            list.sort_unstable();
+        }
+    } else {
+        for entity in queries.names_removed.read() {
+            let bits = entity.to_bits() as i64;
+            forget_named(
+                &mut state.named_entities,
+                &mut state.positions,
+                &mut state.names,
+                bits,
+            );
+        }
+        for (entity, name, transform) in &queries.names_changed {
+            let bits = entity.to_bits() as i64;
+            let renamed = state
+                .names
+                .get(&bits)
+                .is_some_and(|old| old != name.as_str());
+            if renamed {
+                forget_named(
+                    &mut state.named_entities,
+                    &mut state.positions,
+                    &mut state.names,
+                    bits,
+                );
+            }
+            let list = state.named_entities.entry(name.to_string()).or_default();
+            if let Err(at) = list.binary_search(&bits) {
+                list.insert(at, bits);
+            }
+            state.positions.insert(bits, transform.translation());
+            state.names.insert(bits, name.to_string());
+        }
+    }
+
+    // HP por entidade COM vitais (sem o herói) e hostis vivos — o mesmo
+    // par de loops do `luau_update` (hostis com HP ≤ 0 saem).
+    let mut hp_snapshot: HashMap<i64, (f32, f32)> = HashMap::new();
+    for (entity, health, _) in &queries.healths {
+        hp_snapshot.insert(entity.to_bits() as i64, (health.current, health.max));
+    }
+    state.hostiles = queries
+        .hostiles
+        .iter()
+        .filter_map(|(entity, script, global)| {
+            let Some(&(current, max)) = hp_snapshot.get(&(entity.to_bits() as i64)) else {
+                return None;
+            };
+            if current <= 0.0 {
+                return None;
+            }
+            let kind = script
+                .map(|script| crate::script_kind::script_kind(&script.path))
+                .unwrap_or_else(|| "creature".to_string());
+            let forward = global.rotation() * Vec3::Z;
+            Some(bevy_ext_luau::HostileSnap {
+                id: entity.to_bits() as i64,
+                kind,
+                pos: global.translation(),
+                hp: current,
+                max,
+                forward: Vec2::new(forward.x, forward.z),
+            })
+        })
+        .collect();
+    state.hp_snapshot = hp_snapshot;
+
+    // Props autorais (`viber.nearby`/`viber.prop`) — dados, não regra.
+    state.props = queries
+        .script_props
+        .iter()
+        .map(|(entity, props)| (entity.to_bits() as i64, props.0.clone()))
+        .collect();
+
+    // Grupos por entidade (bits → nomes) para `viber.group`/`in_group`.
+    state.groups = queries
+        .groups
+        .iter()
+        .map(|(entity, member_of)| (entity.to_bits() as i64, member_of.0.as_ref().clone()))
+        .collect();
+
+    // Biblioteca de prototypes: imutável pós-arranque — só re-semeia
+    // quando muda (ou na 1.ª vez).
+    if let Some(lib) = res.prototypes.as_ref()
+        && (lib.is_changed() || state.prototype_names.is_empty())
+    {
+        state.prototype_names = lib.0.keys().cloned().collect();
+    }
+
+    // Presets de partícula válidos (`viber.burst`).
+    state.particle_presets = crate::particles::PRESET_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+
+    // Superfícies: o registo de estradas/água é construído UMA vez (o
+    // mundo carvado não muda; troca de cena insere um runtime novo) e o
+    // leitor de alturas é recriado por frame — as edições vivas do terreno
+    // mutam o overlay e o `ground_below` tem de as ver (o monólito
+    // recriava o leitor do ctx todos os frames).
+    let rebuild = road_water.is_none() || res.terrain.as_ref().is_some_and(|rt| rt.is_added());
+    if rebuild {
+        *road_water = res.terrain.as_ref().map(|rt| {
+            std::sync::Arc::new(super::ctx::SurfaceRegistries {
+                roads: rt.roads.clone(),
+                water: rt.water.clone(),
+            })
+        });
+    }
+    state.surfaces = road_water.as_ref().zip(res.terrain.as_ref()).map(
+        |(registries, rt)| {
+            let handle: bevy_ext_luau::SurfaceQueriesHandle = std::sync::Arc::new(BmsSurfaces {
+                reader: rt.reader(),
+                registries: registries.clone(),
+                field_half: rt.spec.world_size * 0.5,
+            });
+            handle
+        },
+    );
+
+    // Pose da câmara de jogo (`viber.camera_state`).
+    state.camera = res
+        .camera_snapshot
+        .as_deref()
+        .map(|snap| (snap.pos, snap.yaw_deg, snap.pitch_deg));
+
+    // Cinemática a tocar (`viber.cinematic_playing`).
+    state.cinematic = res
+        .cinematic
+        .as_deref()
+        .and_then(|c| c.playing().map(str::to_owned));
+
+    // Acessibilidade (`viber.a11y`): o jogo desenha; a engine aplica.
+    state.a11y = res
+        .a11y
+        .as_deref()
+        .map(|a11y| {
+            (
+                a11y.subtitle_scale,
+                a11y.shake,
+                a11y.hitstop,
+                a11y.interact_hold,
+            )
+        })
+        .unwrap_or((1.0, true, true, false));
+
+    // Papel de rede (`viber.net_role`).
+    state.net_role = Some(
+        match res.net.as_deref().map(|net| &net.role) {
+            Some(crate::netplay::NetRole::Host { .. }) => "host",
+            Some(crate::netplay::NetRole::Join { .. }) => "join",
+            _ => "off",
+        }
+        .to_string(),
+    );
+
+    // Locale: a tabela só clona quando o idioma muda (o monólito semeava
+    // uma vez por run — troca em runtime via `SetLocale`).
+    if let Some(locale) = res.locale.as_deref()
+        && state.locale_lang.as_deref() != Some(locale.lang.as_str())
+    {
+        state.locale_lang = Some(locale.lang.clone());
+        state.locale_table = Some(locale.table.clone());
+    }
+
+    // Metadados dos slots (`viber.save_slots`): ler 5 JSONs por frame é
+    // lixo — refresca no 1.º frame e a cada 2 s (um save novo aparece no
+    // menu de continuar no refresh seguinte).
+    let now = time.elapsed_secs_f64();
+    if slots_timer.is_none_or(|last| now - last >= 2.0) {
+        *slots_timer = Some(now);
+        let key = res.save_key.as_deref().and_then(|k| k.0.clone());
+        let dir = res.save_dir.as_deref().and_then(|d| d.0.clone());
+        state.save_slots = Some(
+            crate::save::list_save_slots(key.as_deref(), dir.as_deref())
+                .into_iter()
+                .map(|slot| {
+                    vec![
+                        ("slot".to_string(), serde_json::json!(slot.slot)),
+                        ("path".to_string(), serde_json::json!(slot.path)),
+                        ("exists".to_string(), serde_json::json!(slot.exists)),
+                        ("bytes".to_string(), serde_json::json!(slot.bytes)),
+                        ("saved_at".to_string(), serde_json::json!(slot.saved_at)),
+                        ("level".to_string(), serde_json::json!(slot.level)),
+                        ("gold".to_string(), serde_json::json!(slot.gold)),
+                        ("scene".to_string(), serde_json::json!(slot.scene)),
+                        ("playtime".to_string(), serde_json::json!(slot.playtime)),
+                        ("title".to_string(), serde_json::json!(slot.title)),
+                    ]
+                })
+                .collect(),
+        );
+    }
+}

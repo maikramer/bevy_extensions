@@ -783,6 +783,11 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         app.add_plugins(luau::LuauScriptPlugin {
             scripts_dir: config.scripts_dir_on(&world_dir),
             });
+        // Ponte para o host BMS (`bevy_ext_luau`): aplica os comandos que
+        // os scripts BMS enfileiram pelo caminho ÚNICO do monólito e
+        // publica o estado do frame para os globals do BMS. Sem o plugin
+        // BMS no app os dois sistemas são no-op (inofensivo).
+        app.add_plugins(luau::bms_bridge::BmsBridgePlugin);
     }
 
     // Serviços de engine que o movimento, o som e o HUD leem.
