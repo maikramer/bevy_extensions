@@ -1,7 +1,7 @@
 //! Profiler da engine — o análogo nativo do profiler do motor TS
 //! (`?profiler=1`), com
 //! os mesmos tabs: **Sistemas** (timings por sistema + grupos + contadores),
-//! **Mundo** (player/câmara/entidades próximas), **Física** (Rapier),
+//! **Mundo** (player/câmara/entidades próximas), **Física** (Avian),
 //! **Áudio** (buses/sinks) e **Extras** (toggles de debug da engine).
 //!
 //! Superfície:
@@ -922,7 +922,7 @@ impl Plugin for ProfilerPlugin {
             app.add_plugins(LogDiagnosticsPlugin::default());
         }
         // Âncoras antes/depois do `PhysicsSet::StepSimulation` — o schedule
-        // por omissão do RapierPhysicsPlugin no bevy_rapier 0.36.
+        // por omissão do PhysicsPlugins do Avian.
         timed::physics_anchors(app, bevy::app::FixedPostUpdate);
         let extras = ProfilerExtras {
             items: vec![

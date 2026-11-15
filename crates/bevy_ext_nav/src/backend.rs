@@ -14,7 +14,7 @@
 //!   regular XZ lattice over the tile. Cells over water or on a cliff face are
 //!   left out entirely: a hole in the input is a hole in the navmesh, which is
 //!   exactly what "you cannot walk here" means.
-//! * **the obstacles** — the static Rapier colliders inside the tile. A
+//! * **the obstacles** — the static Avian colliders inside the tile. A
 //!   `trimesh` collider (the city walls, the houses, the bridges — the pipeline
 //!   bakes a `*_collision.glb` for each) goes in as its own triangles, so a
 //!   gateway stays a gateway; anything else goes in as the box of its local
@@ -28,7 +28,8 @@
 
 use bevy::prelude::*;
 use bevy_ext_core::{AiLocomotion, Player, RagdollBodyOf, VoxelCollider};
-use bevy_rapier3d::prelude::Collider;
+use avian3d::parry::math::Pose;
+use avian3d::prelude::{Collider, Sensor};
 use bevy_rerecast::prelude::NavmeshSettings;
 use bevy_rerecast::rerecast::{AreaType, TriMesh};
 
@@ -46,7 +47,7 @@ pub type ObstacleFilter = (
     Without<Player>,
     // Triggers (loja/porta/água) não são paredes: sem isto viravam
     // obstáculos NOT_WALKABLE no navmesh.
-    Without<bevy_rapier3d::prelude::Sensor>,
+    Without<Sensor>,
     Without<RagdollBodyOf>,
 );
 
@@ -284,16 +285,15 @@ fn obstacle_trimesh(
     min: Vec3,
     max: Vec3,
 ) -> Option<TriMesh> {
-    // `Collider::raw` already carries the scale (`Collider::scale` folded it
-    // in), so only translation and rotation come from the transform —
-    // `compute_transform().scale` would apply it a second time.
+    // `shape_scaled` já leva a escala do collider dobrada, por isso só
+    // translação e rotação vêm do transform.
     let placement = global.compute_transform();
     let iso = Transform {
         translation: placement.translation,
         rotation: placement.rotation,
         scale: Vec3::ONE,
     };
-    let local = collider.raw.compute_local_aabb();
+    let local = collider.shape_scaled().compute_aabb(&Pose::identity());
     let local_min = Vec3::new(local.mins.x, local.mins.y, local.mins.z);
     let local_max = Vec3::new(local.maxs.x, local.maxs.y, local.maxs.z);
     if local_max.y - local_min.y < MIN_OBSTACLE_HEIGHT {
@@ -307,12 +307,12 @@ fn obstacle_trimesh(
     }
 
     let mut mesh = TriMesh::default();
-    if let Some(trimesh) = collider.as_trimesh() {
+    if let Some(trimesh) = collider.shape_scaled().as_trimesh() {
         // The baked collision mesh: gateways, arches and bridge decks stay
         // open because their real geometry is what gets voxelised.
-        for (a, b, c) in trimesh.triangles() {
+        for tri in trimesh.triangles() {
             let base = mesh.vertices.len() as u32;
-            for point in [a, b, c] {
+            for point in [tri.a, tri.b, tri.c] {
                 mesh.vertices.push(iso.transform_point(point).into());
             }
             mesh.indices.push(UVec3::new(base, base + 1, base + 2));

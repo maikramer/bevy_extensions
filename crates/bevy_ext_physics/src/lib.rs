@@ -29,6 +29,7 @@ pub mod ragdoll;
 
 pub use corpse::{Corpse, CORPSE_LIFETIME};
 pub use physics::{PhysicsPlugin, PENDING_TIMEOUT};
+pub use physics::{RayHit, RayQuery, ray_from_world};
 pub use physics_fx::PhysicsFxPlugin;
 pub use profiling::{Group, timed};
 pub use ragdoll::{RagdollPlugin, RAGDOLL_SECS};

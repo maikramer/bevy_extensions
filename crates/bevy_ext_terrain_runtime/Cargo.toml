@@ -35,7 +35,7 @@ bevy_ext_world.workspace = true
 # Loader de texturas world-tiled (`WorldTiledTextures`/`load_tiled_image`/`patch_image`).
 bevy_ext_gltf.workspace = true
 # Colliders voxel: trimesh por coluna assado no swap atómico do LOD.
-bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"] }
+avian3d = { version = "0.8", default-features = false, features = ["3d"] }
 anyhow.workspace = true
 # Decode `.ahgt` (half-f16) e cache de splat em disco.
 half = "2"

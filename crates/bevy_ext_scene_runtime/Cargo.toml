@@ -41,16 +41,11 @@ bevy = { version = "0.20.1", default-features = false, features = [
 # `../bevy_ext_scene`): senão o cargo compila duas cópias do pacote e os
 # tipos deixam de casar com os da engine.
 bevy_ext_scene = { version = "0.1.0", path = "../bevy_ext_scene" }
-# Física (o spawn monta corpos/colisores Rapier; o gate congela até haver chão).
-bevy_rapier3d = { version = "0.37", default-features = false, features = [
-    "dim3",
-    "async-collider",
-    "debug-render-3d",
-] }
-# Port avian (onda exit3/wave-b): o gate congela `LinearVelocity` e usa o
+# Física (Avian; o spawn monta corpos/colisores e o gate congela
+# `LinearVelocity` até haver chão).
+# Port avian (ondas exit3): o gate congela `LinearVelocity` e usa o
 # `RigidBodyDisabled` do avian3d — o mesmo estilo do `bevy_ext_water`
 # (dep default-features=false, `3d` + `parry-f32`). O spawn de corpos da
-# era Rapier em `recipes::spawn` segue em `bevy_rapier3d` (port na wave E).
 avian3d = { version = "0.8", default-features = false, features = [
     "3d",
     "parry-f32",
@@ -91,7 +86,6 @@ bevy_ext_gltf = { version = "0.1.0", path = "../bevy_ext_gltf" }
 # Câmara de jogo — o contrato `OrbitCamera`/`DEFAULT_ORBIT_PIVOT_HEIGHT`
 # (onda exit2/hubs, TypePath `viber::recipes::spawn` congelado lá): o spawn
 # e as cópias de câmara/player deste crate partilham UM tipo com o jogo.
-bevy_ext_engine = { version = "0.1.0", path = "../bevy_ext_engine" }
 
 # Primitivas procedurais de qualidade (grad de material por spec, cache de
 # meshes/materials por chave) — o mesmo pipeline do spawner do monólito

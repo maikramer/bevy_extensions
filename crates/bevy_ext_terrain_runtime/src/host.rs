@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
+use avian3d::prelude::{Collider, TrimeshFlags};
 
 // ── cena (contratos do scene_loader) ─────────────────────────────────────
 // TODO(viber-exit): o `scene_loader` do monólito define os MESMOS tipos —
@@ -354,23 +355,27 @@ impl ColumnColliderBake {
     /// o clássico ghost collision de trimesh. Sem fallback convex-hull: um
     /// hull de uma coluna de 64 m seria um bloco mentiroso; bake falhado é
     /// warn + coluna sem collider, e a rede de segurança do player cobre.
-    pub fn bake(&self) -> Option<bevy_rapier3d::prelude::Collider> {
+    pub fn bake(&self) -> Option<avian3d::prelude::Collider> {
         if self.is_empty() {
             return None;
         }
-        match bevy_rapier3d::prelude::Collider::trimesh_with_flags(
+        // Flags conservadoras; geometria que não fecha cai no hull convexo
+        // (melhor um collider aproximado que nenhum).
+        match Collider::try_trimesh_with_config(
             self.vertices.clone(),
             self.indices.clone(),
-            bevy_rapier3d::prelude::TriMeshFlags::FIX_INTERNAL_EDGES
-                | bevy_rapier3d::prelude::TriMeshFlags::DELETE_DEGENERATE_TRIANGLES,
+            TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
         ) {
             Ok(collider) => Some(collider),
-            Err(err) => {
-                bevy::log::warn!(
-                    "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
-                );
-                None
-            }
+            Err(err) => match Collider::convex_hull(&self.vertices) {
+                Some(collider) => Some(collider),
+                None => {
+                    bevy::log::warn!(
+                        "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
+                    );
+                    None
+                }
+            },
         }
     }
 }

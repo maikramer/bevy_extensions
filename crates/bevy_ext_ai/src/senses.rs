@@ -159,40 +159,26 @@ pub fn sense_step(
     }
 }
 
-fn los_hit(world: &World, origin: Vec3, target: Vec3) -> Option<f32> {
-    use bevy_rapier3d::prelude::{
-        QueryFilter, QueryFilterFlags, RapierContextColliders, RapierContextSimulation,
-        RapierQueryPipeline, RapierRigidBodySet,
-    };
-    use bevy_rapier3d::rapier::parry::query::DefaultQueryDispatcher;
+fn los_hit(world: &mut World, origin: Vec3, target: Vec3) -> Option<f32> {
     let dir = target - origin;
     let dist = dir.length();
     if dist < 1e-3 {
         return None;
     }
-    let context = world
-        .iter_entities()
-        .find(|e| e.contains::<RapierContextSimulation>())
-        .map(|e| e.id())?;
-    let simulation = world.get::<RapierContextSimulation>(context)?;
-    let colliders = world.get::<RapierContextColliders>(context)?;
-    let bodies = world.get::<RapierRigidBodySet>(context)?;
     // Sensores (volumes de loja/porta/água) não são geometria: um deles
     // entre a criatura e o herói cegava-a por dentro de uma zona invisível.
-    // O character controller também os exclui.
-    let filter = QueryFilter {
-        flags: QueryFilterFlags::EXCLUDE_SENSORS,
-        ..QueryFilter::default()
-    };
-    RapierQueryPipeline::new_scoped(
-        &simulation.broad_phase,
-        colliders,
-        bodies,
-        &filter,
-        &DefaultQueryDispatcher,
-        |pipeline| pipeline.cast_ray(origin, dir / dist, dist, true),
+    bevy_ext_physics::ray_from_world(
+        world,
+        bevy_ext_physics::RayQuery {
+            origin,
+            dir: dir / dist,
+            max_distance: dist,
+            solid: true,
+            include_sensors: false,
+            exclude: Vec::new(),
+        },
     )
-    .map(|(_, toi)| toi)
+    .map(|hit| hit.distance)
 }
 
 /// Som pontual (golpe, projétil, `viber.noise`) — o leitor corre antes da FSM.

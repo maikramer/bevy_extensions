@@ -644,23 +644,23 @@ fn update_voxel_columns(
                         Some(collider) => {
                             commands.entity(*entity).try_insert((
                                 collider,
-                                bevy_rapier3d::prelude::RigidBody::Fixed,
+                                avian3d::prelude::RigidBody::Static,
                                 crate::host::VoxelCollider,
                             ));
                         }
                         None => {
                             commands
                                 .entity(*entity)
-                                .try_remove::<bevy_rapier3d::prelude::Collider>()
-                                .try_remove::<bevy_rapier3d::prelude::RigidBody>()
+                                .try_remove::<avian3d::prelude::Collider>()
+                                .try_remove::<avian3d::prelude::RigidBody>()
                                 .try_remove::<crate::host::VoxelCollider>();
                         }
                     }
                 } else {
                     commands
                         .entity(*entity)
-                        .try_remove::<bevy_rapier3d::prelude::Collider>()
-                        .try_remove::<bevy_rapier3d::prelude::RigidBody>()
+                        .try_remove::<avian3d::prelude::Collider>()
+                        .try_remove::<avian3d::prelude::RigidBody>()
                         .try_remove::<crate::host::VoxelCollider>();
                 }
             }

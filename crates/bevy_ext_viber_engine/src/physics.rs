@@ -661,6 +661,7 @@ pub fn immediate_collider(shape: &ColliderShape) -> Option<(Collider, Transform)
 /// scale não-uniforme usa o maior eixo (elipsoide → ball); cilindro/cápsula
 /// usam o maior eixo horizontal para o raio (elipse → círculo).
 pub fn collider_for_shape(shape: &crate::recipes::Shape, scale: Vec3) -> Collider {
+    use crate::recipes::Shape;
     match shape {
         crate::recipes::Shape::Cuboid { half_size } => Collider::cuboid(
             (half_size[0] * scale.x * 2.0).max(1e-3),
@@ -685,6 +686,28 @@ pub fn collider_for_shape(shape: &crate::recipes::Shape, scale: Vec3) -> Collide
             (half_height * scale.y * 2.0).max(1e-3),
         ),
         // Planos XZ: lâmina fina (a mesma convenção do Pad/Plane).
+        Shape::RoundedCuboid { half_size, .. } => Collider::cuboid(
+            (half_size[0] * scale.x * 2.0).max(1e-3),
+            (half_size[1] * scale.y * 2.0).max(1e-3),
+            (half_size[2] * scale.z * 2.0).max(1e-3),
+        ),
+        Shape::Cone {
+            half_height,
+            radius,
+            ..
+        } => Collider::cone(
+            (radius * scale.x.max(scale.z)).max(1e-3),
+            (half_height * scale.y * 2.0).max(1e-3),
+        ),
+        other @ (Shape::Pyramid { .. }
+        | Shape::Lathe { .. }
+        | Shape::Sweep { .. }
+        | Shape::Extruded { .. }
+        | Shape::Torus { .. }) => {
+            // Formas procedurais: collider exacto (trimesh da malha gerada)
+            // vive no gradmesh — o None só acontece no Plane, tratado acima.
+            bevy_ext_gradmesh::collider(other, scale).expect("gradmesh collider")
+        }
         crate::recipes::Shape::Plane { half_size } => Collider::cuboid(
             (half_size[0] * scale.x * 2.0).max(1e-3),
             0.04,

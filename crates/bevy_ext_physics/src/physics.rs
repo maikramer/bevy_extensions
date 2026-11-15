@@ -2008,3 +2008,62 @@ mod shape_collider_tests {
         }
     }
 }
+
+/// Pedido de raio contra a física, a partir de um `World` exclusivo.
+#[derive(Clone, Debug)]
+pub struct RayQuery {
+    pub origin: Vec3,
+    pub dir: Vec3,
+    pub max_distance: f32,
+    /// `true` = um raio que começa dentro de geometria devolve `distance 0`.
+    pub solid: bool,
+    /// `true` inclui sensores (`viber.raycast`); o chão e os ocultadores não.
+    pub include_sensors: bool,
+    pub exclude: Vec<Entity>,
+}
+
+/// Hit de [`ray_from_world`].
+#[derive(Clone, Copy, Debug)]
+pub struct RayHit {
+    pub entity: Entity,
+    pub distance: f32,
+    pub normal: Vec3,
+    pub point: Vec3,
+}
+
+fn ray_query_system(
+    In(query): In<RayQuery>,
+    spatial: SpatialQuery,
+    sensors: Query<(), With<Sensor>>,
+) -> Option<RayHit> {
+    let Ok(dir) = Dir3::new(query.dir) else {
+        return None;
+    };
+    let filter = SpatialQueryFilter::from_excluded_entities(query.exclude);
+    let skip_sensors = !query.include_sensors;
+    let hit = spatial.cast_ray_predicate(
+        query.origin,
+        dir,
+        query.max_distance.max(0.0),
+        query.solid,
+        &filter,
+        &move |entity| !skip_sensors || sensors.get(entity).is_err(),
+    )?;
+    Some(RayHit {
+        entity: hit.entity,
+        distance: hit.distance,
+        normal: hit.normal,
+        point: query.origin + *dir * hit.distance,
+    })
+}
+
+/// Primeiro hit do raio contra a física, a partir de um `World` exclusivo.
+///
+/// O sensor é excluído pelo componente `Sensor` da entidade do collider (o
+/// `QueryFilter::exclude_sensors` do Rapier não existe no Avian).
+pub fn ray_from_world(world: &mut World, query: RayQuery) -> Option<RayHit> {
+    world
+        .run_system_cached_with(ray_query_system, query)
+        .ok()
+        .flatten()
+}

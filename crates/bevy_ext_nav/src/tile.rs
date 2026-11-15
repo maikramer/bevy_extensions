@@ -100,7 +100,7 @@ pub fn retile_navmesh(
     obstacles: Query<
         &GlobalTransform,
         (
-            With<bevy_rapier3d::prelude::Collider>,
+            With<avian3d::prelude::Collider>,
             crate::backend::ObstacleFilter,
         ),
     >,

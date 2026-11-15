@@ -7,7 +7,7 @@
 //! [`crate::camera`].
 //!
 //! O corpo é DINÂMICO (Avian) e o movimento é resolvido pelo `bevy-tnua`
-//! (`TnuaBuiltinWalk` + `TnuaBuiltinJump`); o autostep do Rapier é agora
+//! (`TnuaBuiltinWalk` + `TnuaBuiltinJump`); o autostep é agora
 //! [`probe_steps`]. A intenção horizontal continua a ser calculada aqui, com o
 //! mesmo low-pass/feel de antes.
 
@@ -355,7 +355,7 @@ pub fn facing_slerp_factor(current: Quat, target: Quat, rotation_speed: f32, dt:
 /// buffer + coyote + cooldown. Ground snap via `TerrainRuntime` when the
 /// scene has one; a scene without terrain (an interior) still walks — the
 /// room colliders and the interior floor are the ground. Walls stop the
-/// hero through the Rapier character controller.
+/// herói contra a física (Avian).
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
 pub fn player_movement(
@@ -416,7 +416,7 @@ pub fn player_movement(
     }
     // Modal aberto consome o teclado: WASD/Espaço não movem/saltam por
     // trás da loja/menu (W/S navegavam E andavam). O `translation` PENDENTE
-    // do character controller limpa-se TAMBÉM — no bevy_rapier3d 0.36 ele
+    // do character controller limpa-se TAMBÉM — no Rapier ele
     // persiste e é reaplicado em todos os steps (o herói deslizava com o
     // menu aberto e, se estava em salto, subia indefinidamente).
     if menus.any() {

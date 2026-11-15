@@ -27,7 +27,7 @@ bevy_landmass = "0.13"
 landmass_rerecast = "0.4"
 # Só os colliders 3D: o backend do navmesh lê os obstáculos estáticos
 # (trimeshes assados e AABBs) e o retile conta-os.
-bevy_rapier3d = { version = "0.37", default-features = false, features = ["dim3"] }
+avian3d = { version = "0.8", default-features = false, features = ["3d"] }
 
 # NOTA(viber-exit): a dependência transitória direta do monólito `viber`
 # (`path = "../../../Viber"`) chegou a estar declarada para os tipos de
