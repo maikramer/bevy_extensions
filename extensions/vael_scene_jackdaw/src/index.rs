@@ -15,11 +15,14 @@ use bevy::ecs::reflect::ReflectComponent;
 use bevy::prelude::*;
 use bevy::reflect::{FromReflect, PartialReflect, ReflectRef};
 use bevy_ext_scene::{
-    ColliderShape, ColliderSpec, Destructible, FloraStation, Harvestable, PortalSpec, ScriptRef,
+    AudioMixerSpec, BiomeRegionSpec, CameraSpec, ColliderShape, ColliderSpec, Destructible,
+    FloraStation, Harvestable, InteriorSceneSpec, MusicLayerSpec, PortalSpec, ScriptRef,
     SpawnExclusionSpec,
 };
 use jackdaw_extension::document::SceneFilePath;
 use jackdaw_extension::prelude::Icon;
+
+use crate::trigger::CinematicTrigger;
 
 pub const WORLD_NODE: &str = "bevy_world_xml::bsn::WorldNode";
 pub const COLLIDER: &str = "bevy_ext_scene::ColliderSpec";
@@ -30,6 +33,13 @@ pub const EXCLUSION: &str = "bevy_ext_scene::SpawnExclusionSpec";
 pub const PORTAL: &str = "bevy_ext_scene::PortalSpec";
 pub const FLORA: &str = "bevy_ext_scene::FloraStation";
 pub const SCRIPT: &str = "bevy_ext_scene::ScriptRef";
+pub const CAMERA: &str = "bevy_ext_scene::CameraSpec";
+pub const INTERIOR: &str = "bevy_ext_scene::InteriorSceneSpec";
+pub const MIXER: &str = "bevy_ext_scene::AudioMixerSpec";
+pub const MUSIC_LAYER: &str = "bevy_ext_scene::MusicLayerSpec";
+pub const BIOME: &str = "bevy_ext_scene::BiomeRegionSpec";
+/// Componente do jogo (não do crate de specs): lido por reflexão pelo path.
+pub const TRIGGER: &str = "vael::cinematic_trigger::CinematicTrigger";
 
 /// Anel vertical (raio no plano XZ) desenhado pelos gizmos.
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +71,18 @@ pub struct NodeInfo {
     /// `Terrain`: heightmap, lado do mundo e altura máxima.
     pub terrain: Option<(String, f32, f32)>,
     pub script: Option<String>,
+    /// Pai na árvore (os planos de uma cinemática leem-se pela ordem).
+    pub parent: Option<Entity>,
+    /// Posição entre irmãos (ordem do documento).
+    pub order: Option<usize>,
+    /// Atributos do `WorldNode` (o painel de cinemáticas lê `from`/`look`).
+    pub attrs: Vec<(String, String)>,
+    pub camera: Option<CameraSpec>,
+    pub interior: Option<InteriorSceneSpec>,
+    pub mixer: Option<AudioMixerSpec>,
+    pub music_layer: Option<MusicLayerSpec>,
+    pub biome: Option<BiomeRegionSpec>,
+    pub trigger: Option<CinematicTrigger>,
     pub problems: Vec<String>,
 }
 
@@ -91,6 +113,12 @@ struct Ids {
     portal: Option<(ComponentId, ReflectComponent)>,
     flora: Option<(ComponentId, ReflectComponent)>,
     script: Option<(ComponentId, ReflectComponent)>,
+    camera: Option<(ComponentId, ReflectComponent)>,
+    interior: Option<(ComponentId, ReflectComponent)>,
+    mixer: Option<(ComponentId, ReflectComponent)>,
+    music_layer: Option<(ComponentId, ReflectComponent)>,
+    biome: Option<(ComponentId, ReflectComponent)>,
+    trigger: Option<(ComponentId, ReflectComponent)>,
 }
 
 fn lookup(world: &World, registry: &bevy::reflect::TypeRegistry, path: &str) -> Option<(ComponentId, ReflectComponent)> {
@@ -124,6 +152,12 @@ pub fn scan(world: &mut World) {
         portal: lookup(world, &registry, PORTAL),
         flora: lookup(world, &registry, FLORA),
         script: lookup(world, &registry, SCRIPT),
+        camera: lookup(world, &registry, CAMERA),
+        interior: lookup(world, &registry, INTERIOR),
+        mixer: lookup(world, &registry, MIXER),
+        music_layer: lookup(world, &registry, MUSIC_LAYER),
+        biome: lookup(world, &registry, BIOME),
+        trigger: lookup(world, &registry, TRIGGER),
     };
     let Some((world_node, _)) = &ids.world_node else {
         return;
@@ -142,6 +176,12 @@ pub fn scan(world: &mut World) {
         ids.portal.as_ref().map(|(id, _)| *id),
         ids.flora.as_ref().map(|(id, _)| *id),
         ids.script.as_ref().map(|(id, _)| *id),
+        ids.camera.as_ref().map(|(id, _)| *id),
+        ids.interior.as_ref().map(|(id, _)| *id),
+        ids.mixer.as_ref().map(|(id, _)| *id),
+        ids.music_layer.as_ref().map(|(id, _)| *id),
+        ids.biome.as_ref().map(|(id, _)| *id),
+        ids.trigger.as_ref().map(|(id, _)| *id),
     ]
     .into_iter()
     .flatten()
@@ -168,6 +208,17 @@ pub fn scan(world: &mut World) {
         }
     }
     drop(registry);
+
+    // Posição entre irmãos: os planos de uma cinemática leem-se pela ordem do
+    // documento (é a ordem em que o parser os encadeia).
+    for (entity, info) in changed.iter_mut() {
+        let Some(parent) = info.parent else {
+            continue;
+        };
+        if let Some(children) = world.get::<Children>(parent) {
+            info.order = children.iter().position(|child| child == *entity);
+        }
+    }
 
     let mut index = world.resource_mut::<SceneIndex>();
     let removed = index.nodes.keys().any(|entity| !alive.contains(entity));
@@ -202,6 +253,7 @@ pub fn scan(world: &mut World) {
 
 fn read_node(entity: EntityRef, ids: &Ids) -> NodeInfo {
     let mut info = NodeInfo::default();
+    info.parent = entity.get::<ChildOf>().map(ChildOf::parent);
     if let Some((_, reflect)) = &ids.world_node
         && let Some(node) = reflect.reflect(entity)
     {
@@ -232,6 +284,10 @@ fn read_node(entity: EntityRef, ids: &Ids) -> NodeInfo {
             "prop-flora",
             "script",
             "particle-emitter",
+            "distance",
+            "camera-distance",
+            "layer",
+            "polygon",
         ]
             .iter()
             .filter(|key| get(key).is_some())
@@ -242,6 +298,7 @@ fn read_node(entity: EntityRef, ids: &Ids) -> NodeInfo {
         if let Some(url) = get("url") {
             info.problems.push(format!("?url {url}"));
         }
+        info.attrs = pairs;
     }
     info.collider = read_typed::<ColliderSpec>(entity, ids.collider.as_ref());
     info.body = ids.body.is_some_and(|id| entity.contains_id(id));
@@ -270,6 +327,35 @@ fn read_node(entity: EntityRef, ids: &Ids) -> NodeInfo {
     }
     if let Some(script) = read_typed::<ScriptRef>(entity, ids.script.as_ref()) {
         info.script = Some(script.path);
+    }
+    info.camera = read_typed::<CameraSpec>(entity, ids.camera.as_ref());
+    if info.camera.is_some() {
+        info.icon = Some(Icon::Camera);
+    }
+    info.interior = read_typed::<InteriorSceneSpec>(entity, ids.interior.as_ref());
+    if info.interior.is_some() {
+        info.icon = Some(Icon::House);
+    }
+    info.mixer = read_typed::<AudioMixerSpec>(entity, ids.mixer.as_ref());
+    if info.mixer.is_some() {
+        info.icon = Some(Icon::AudioLines);
+    }
+    info.music_layer = read_typed::<MusicLayerSpec>(entity, ids.music_layer.as_ref());
+    if info.music_layer.is_some() {
+        info.icon = Some(Icon::Music);
+    }
+    info.biome = read_typed::<BiomeRegionSpec>(entity, ids.biome.as_ref());
+    if info.biome.is_some() {
+        info.icon = Some(Icon::Trees);
+    }
+    info.trigger = read_typed::<CinematicTrigger>(entity, ids.trigger.as_ref());
+    if let Some(trigger) = &info.trigger {
+        info.icon = Some(Icon::Video);
+        info.ring = Some(Ring {
+            at: None,
+            radius: trigger.radius,
+            color: Color::srgb(0.95, 0.75, 0.20),
+        });
     }
     if let Some(harvest) = &info.harvest {
         info.icon = Some(match harvest.kind.as_str() {
@@ -354,6 +440,64 @@ fn check(info: &mut NodeInfo, root: Option<&Path>, files: &mut HashMap<String, b
     }
     if info.destructible.is_some() && info.collider.is_none() && info.legacy_attrs == 0 {
         info.problems.push("destrutível sem colisor (não se acerta)".into());
+    }
+    if let Some(camera) = &info.camera {
+        if camera.distance.is_some_and(|distance| distance <= 0.0) {
+            info.problems.push("câmara com distância ≤ 0".into());
+        }
+        if camera
+            .fov
+            .is_some_and(|fov| !(10.0..=170.0).contains(&fov))
+        {
+            info.problems.push("câmara com fov fora de 10..170".into());
+        }
+    }
+    if let Some(interior) = &info.interior {
+        if interior.size.min_element() <= 0.0 {
+            info.problems.push("sala de interior com tamanho ≤ 0".into());
+        }
+        if interior
+            .camera_distance
+            .is_some_and(|distance| distance <= 0.0)
+        {
+            info.problems.push("câmara de interior com distância ≤ 0".into());
+        }
+    }
+    if let Some(layer) = &info.music_layer
+        && layer
+            .sound
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
+        info.problems.push("camada de música sem som".into());
+    }
+    if let Some(trigger) = &info.trigger {
+        if trigger.cinematic.trim().is_empty() {
+            info.problems.push("gatilho de cinemática sem id".into());
+        }
+        if !(trigger.radius > 0.0) {
+            info.problems.push("gatilho de cinemática com raio ≤ 0".into());
+        }
+    }
+    if info.tag == "Shot" {
+        let has = |key: &str| attr(&info.attrs, key).is_some_and(|v| !v.trim().is_empty());
+        if !has("from") {
+            info.problems.push("plano sem `from`".into());
+        }
+        if !has("look") {
+            info.problems.push("plano sem `look`".into());
+        }
+        if attr(&info.attrs, "duration")
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .is_some_and(|duration| duration <= 0.0)
+        {
+            info.problems.push("plano com duration ≤ 0".into());
+        }
+    }
+    if info.tag == "Cinematic" && attr(&info.attrs, "id").is_none_or(|id| id.trim().is_empty()) {
+        info.problems.push("cinemática sem id".into());
     }
 }
 
@@ -450,8 +594,7 @@ fn region_of(tag: &str, pairs: &[(String, String)]) -> Option<(Vec3, Vec3)> {
 
 fn icon_of(tag: &str, url: Option<&str>) -> Option<Icon> {
     Some(match tag {
-        "GltfScene" | "GLTFLoader" => {
-            let url = url.unwrap_or_default().to_ascii_lowercase();
+        "GltfScene" | "GLTFLoader" => {            let url = url.unwrap_or_default().to_ascii_lowercase();
             if url.contains("/characters/") || url.contains("/creatures/") {
                 Icon::User
             } else if ["/forest/", "/vegetation/", "tree", "pine", "bush", "cactus"]
@@ -477,6 +620,12 @@ fn icon_of(tag: &str, url: Option<&str>) -> Option<Icon> {
         "SpawnExclusion" => Icon::Ban,
         "Road" | "Way" | "Line" | "Segment" => Icon::Route,
         "MusicLayer" => Icon::Music,
+        "AudioMixer" => Icon::AudioLines,
+        "BiomeRegion" => Icon::Trees,
+        "OrbitCamera" | "ThirdPersonCamera" => Icon::Camera,
+        "InteriorScene" => Icon::House,
+        "Cinematic" => Icon::Clapperboard,
+        "Shot" => Icon::Film,
         "UiText" => Icon::Type,
         "Include" => Icon::Package,
         "Box" | "Cylinder" | "Capsule" | "Composition" => Icon::Shapes,

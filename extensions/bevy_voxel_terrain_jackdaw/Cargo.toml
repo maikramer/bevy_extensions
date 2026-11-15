@@ -1,6 +1,6 @@
 [package]
 name = "bevy_voxel_terrain_jackdaw"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Official Jackdaw editor extension for bevy_voxel_terrain: VoxelTerrain panel and viewport preview"

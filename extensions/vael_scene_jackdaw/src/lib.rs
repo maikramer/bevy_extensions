@@ -10,10 +10,13 @@
 //!
 //! Tudo é lido por reflexão (type path): os tipos chegam pelo schema do jogo.
 
+mod bridge;
+mod cinematics;
 mod gizmos;
 mod index;
 mod panel;
 mod placement;
+mod trigger;
 mod validate;
 
 use bevy::prelude::*;
@@ -53,6 +56,15 @@ impl JackdawExtension for VaelSceneExtension {
         ctx.register_operator::<gizmos::CycleGizmosOp>()
             .register_operator::<panel::NextProblemOp>()
             .register_operator::<validate::ValidateAndSaveOp>()
+            .register_operator::<cinematics::PrevOp>()
+            .register_operator::<cinematics::NextOp>()
+            .register_operator::<cinematics::PrevShotOp>()
+            .register_operator::<cinematics::NextShotOp>()
+            .register_operator::<cinematics::SelectShotOp>()
+            .register_operator::<cinematics::PlayOp>()
+            .register_operator::<cinematics::StopOp>()
+            .register_operator::<cinematics::PoseOp>()
+            .register_operator::<cinematics::AddShotOp>()
             .register_operator::<placement::PlaceOp>()
             .register_operator::<placement::BrushOp>()
             .register_operator::<placement::StopOp>()
@@ -64,6 +76,7 @@ impl JackdawExtension for VaelSceneExtension {
         ctx.register_menu_entry::<validate::ValidateAndSaveOp>(TopLevelMenu::File);
         ctx.register_menu_entry::<gizmos::CycleGizmosOp>(TopLevelMenu::View);
         ctx.register_menu_entry::<panel::NextProblemOp>(TopLevelMenu::Tools);
+        ctx.register_menu_entry::<cinematics::PlayOp>(TopLevelMenu::Tools);
         ctx.register_viewport_overlay::<gizmos::CycleGizmosOp>("Vael: gizmos da cena", true);
 
         ctx.register_inspector_category(InspectorCategory {
@@ -71,6 +84,18 @@ impl JackdawExtension for VaelSceneExtension {
             label: "Gameplay".into(),
             icon: Icon::Swords,
             order: 25,
+        })
+        .register_inspector_category(InspectorCategory {
+            id: "camera".into(),
+            label: "Câmara".into(),
+            icon: Icon::Camera,
+            order: 30,
+        })
+        .register_inspector_category(InspectorCategory {
+            id: "audio".into(),
+            label: "Áudio".into(),
+            icon: Icon::Music,
+            order: 32,
         })
         .register_inspector_category(InspectorCategory {
             id: "vael_dsl".into(),
@@ -82,6 +107,12 @@ impl JackdawExtension for VaelSceneExtension {
         .register_component_category::<bevy_ext_scene::BodySpec>("physics")
         .register_component_category::<bevy_ext_scene::Destructible>("gameplay")
         .register_component_category::<bevy_ext_scene::Harvestable>("gameplay")
+        .register_component_category::<bevy_ext_scene::CameraSpec>("camera")
+        .register_component_category::<bevy_ext_scene::InteriorSceneSpec>("camera")
+        .register_component_category::<trigger::CinematicTrigger>("camera")
+        .register_component_category::<bevy_ext_scene::AudioMixerSpec>("audio")
+        .register_component_category::<bevy_ext_scene::MusicLayerSpec>("audio")
+        .register_component_category::<bevy_ext_scene::BiomeRegionSpec>("audio")
         .register_component_category::<WorldNodePath>("vael_dsl");
 
         ctx.register_entity_icon_predicate(index::icon_predicate);
@@ -106,6 +137,16 @@ impl JackdawExtension for VaelSceneExtension {
                     panel::build(window.world_mut(), parent);
                 }),
         );
+        ctx.register_window(
+            WindowDescriptor::new(cinematics::WINDOW_ID)
+                .with_name("Vael: Cinemáticas")
+                .with_default_area(DefaultArea::BottomDock)
+                .with_priority(30)
+                .with_build(|window| {
+                    let parent = window.target_entity();
+                    cinematics::build(window.world_mut(), parent);
+                }),
+        );
     }
 
     fn app_plugin(&self) -> Option<Box<dyn Plugin>> {
@@ -117,6 +158,8 @@ impl JackdawExtension for VaelSceneExtension {
                 .init_resource::<panel::ProblemCursor>()
                 .init_resource::<validate::LastValidation>()
                 .add_observer(validate::on_saved)
+                .init_resource::<cinematics::Cinematics>()
+                .init_resource::<cinematics::CinematicFocus>()
                 .init_resource::<placement::AssetLibrary>()
                 .init_resource::<placement::Ground>()
                 .add_observer(placement::on_click)
@@ -124,6 +167,7 @@ impl JackdawExtension for VaelSceneExtension {
                     Update,
                     (
                         index::scan,
+                        cinematics::refresh,
                         panel::refresh,
                         gizmos::draw,
                         placement::refresh_catalog,

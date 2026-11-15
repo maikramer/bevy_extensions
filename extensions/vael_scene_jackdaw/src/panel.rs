@@ -95,6 +95,38 @@ pub fn problems(index: &SceneIndex) -> Vec<(Entity, String)> {
                 .map(move |problem| (*entity, format!("{who}: {problem}")))
         })
         .collect();
+    // Cinemáticas: ids repetidos, filmes sem planos e gatilhos órfãos (só se
+    // vê com a cena inteira, não por nó).
+    let cinematics = crate::cinematics::collect(index);
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for row in &cinematics {
+        *counts.entry(row.id.as_str()).or_default() += 1;
+    }
+    for row in &cinematics {
+        let who = format!("Cinematic {}", row.id);
+        if !row.id.is_empty() && counts.get(row.id.as_str()).copied().unwrap_or(0) > 1 {
+            out.push((row.entity, format!("{who}: id de cinemática repetido")));
+        }
+        if row.shots.is_empty() {
+            out.push((row.entity, format!("{who}: cinemática sem planos")));
+        }
+    }
+    let ids: std::collections::HashSet<&str> =
+        cinematics.iter().map(|row| row.id.as_str()).collect();
+    for (entity, info) in &index.nodes {
+        let Some(trigger) = &info.trigger else {
+            continue;
+        };
+        let id = trigger.cinematic.trim();
+        if id.is_empty() || ids.contains(id) {
+            continue;
+        }
+        let who = info
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{} {entity}", info.tag));
+        out.push((*entity, format!("{who}: gatilho para cinemática inexistente `{id}`")));
+    }
     out.sort_by(|a, b| a.1.cmp(&b.1));
     out
 }
@@ -117,12 +149,17 @@ pub fn refresh(
     let destructibles = count(&|i| i.destructible.is_some());
     let harvest = count(&|i| i.harvest.is_some());
     let legacy = count(&|i| i.legacy_attrs > 0);
+    let cameras = count(&|i| i.camera.is_some());
+    let interiors = count(&|i| i.interior.is_some());
+    let cinematics = count(&|i| i.tag == "Cinematic");
+    let triggers = count(&|i| i.trigger.is_some());
     let found = problems(&index);
     if let Ok(mut status) = status.single_mut() {
         status.0 = format!(
             "{} nós do mundo\nTipados: {colliders} colisores · {bodies} corpos · {destructibles} \
-             destrutíveis · {harvest} colheitas\nAinda em DSL (migráveis): {legacy}\nGizmos: {} · \
-             problemas: {}",
+             destrutíveis · {harvest} colheitas\nCâmara: {cameras} · interiores: {interiors} · \
+             cinemáticas: {cinematics} · gatilhos: {triggers}\nAinda em DSL (migráveis): {legacy}\n\
+             Gizmos: {} · problemas: {}",
             index.nodes.len(),
             gizmos.mode.label(),
             found.len()

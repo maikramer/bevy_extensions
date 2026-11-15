@@ -1,6 +1,6 @@
 [package]
 name = "vael_scene_jackdaw"
-version = "0.1.5"
+version = "0.1.7"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Jackdaw editor extension for Vael scenes: outliner icons, typed-component categories, gizmos (colliders, spawn regions, portals, lights) and a scene panel with checks"
@@ -21,6 +21,10 @@ label = "Vael: Cena"
 bevy = "0.20"
 jackdaw_extension = "0.20"
 jackdaw_api = "0.20"
+
+# JSON-RPC do bridge do jogo (painel das cinemáticas); não é um tipo
+# partilhado com o editor, compila-se normalmente nesta extensão.
+serde_json = "1"
 
 # Componentes tipados da cena (colisor, corpo, destrutível, colheita).
 bevy_ext_scene = { path = "../../crates/bevy_ext_scene" }
