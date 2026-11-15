@@ -1079,11 +1079,11 @@ dependencies = [
 name = "bevy_ext_physics"
 version = "0.1.0"
 dependencies = [
+ "avian3d",
  "bevy",
  "bevy_ext_core",
  "bevy_ext_scene",
  "bevy_ext_terrain_runtime",
- "bevy_rapier3d",
 ]
 
 [[package]]
