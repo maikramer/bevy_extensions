@@ -1,12 +1,12 @@
 //! Adaptadores entre a crate `bevy_ext_water` e o mundo do Vael.
 //!
 //! A crate só depende de bevy (+ avian). Tudo o que é ESPECÍFICO deste jogo
-//! fica aqui:
+//! fica aqui (o `impl WaterSource for TerrainRuntime` vive no próprio crate
+//! de terreno — regra de orphan: nem o trait nem o tipo são desta engine):
 //!
-//! - [`WaterSource`] para o [`TerrainRuntime`] (corpos + leito);
 //! - ambiente (`WeatherState`/`AtmosphereState` → `WaterEnvironment`);
 //! - foco da janela (posição do herói → `WaterFocus`);
-//! - obstáculos de corrente (colliders Rapier + sólidos voxel →
+//! - obstáculos de corrente (colliders avian + sólidos voxel →
 //!   `WaterObstacles`, só quando algo muda);
 //! - partículas (`WaterSplashEvent` → `spawn_burst`) e o marcador
 //!   `WaterBodied` no herói/criaturas.
@@ -16,8 +16,7 @@ use avian3d::prelude::Collider;
 
 use bevy_ext_water::obstacles::obstacles_signature;
 use bevy_ext_water::{
-    SplashPreset, WaterBodied, WaterEnvironment, WaterFocus, WaterObstacles, WaterSource,
-    WaterSplashEvent,
+    SplashPreset, WaterBodied, WaterEnvironment, WaterFocus, WaterObstacles, WaterSplashEvent,
 };
 
 use super::runtime::TerrainRuntime;
@@ -31,20 +30,6 @@ use super::water_waves::{DOMAIN_SNAP_M, WAVE_WORLD_SIZE, WaterWaveWorld};
 use crate::particles::spawn_burst;
 use crate::recipes::ParticleSpec;
 use crate::worldsys::{AtmosphereState, WeatherState};
-
-impl WaterSource for TerrainRuntime {
-    fn bodies(&self) -> &[bevy_ext_water::WaterBody] {
-        &self.water
-    }
-
-    fn bed_y(&self, x: f32, z: f32) -> Option<f32> {
-        self.in_field(x, z).then(|| self.sample(x, z))
-    }
-
-    fn signature(&self) -> u64 {
-        bevy_ext_water::waves::bodies_signature(&self.water)
-    }
-}
 
 /// Colliders que são paredes/pilares para a corrente (não o chão voxel, não
 /// os npcs/herói/corpos de ragdoll).

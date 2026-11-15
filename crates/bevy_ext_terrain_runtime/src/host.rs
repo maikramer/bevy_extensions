@@ -638,3 +638,36 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::ChunkMeshData;
+
+    /// Dois triângulos formando um quadrado unitário a y=5, origin-relative.
+    fn quad_mesh_data(y: f32) -> ChunkMeshData {
+        ChunkMeshData {
+            positions: vec![[0.0, y, 0.0], [1.0, y, 0.0], [1.0, y, 1.0], [0.0, y, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            uvs: vec![[0.0, 0.0]; 4],
+            colors: Vec::new(),
+            indices: vec![0, 1, 2, 0, 2, 3],
+        }
+    }
+
+    #[test]
+    fn test_the_bake_offsets_boxes_into_world_space() {
+        let mut bake = ColumnColliderBake::new();
+        bake.add_mesh_data(Vec3::new(10.0, 0.0, 20.0), &quad_mesh_data(5.0));
+        bake.add_mesh_data(Vec3::new(-10.0, 8.0, -20.0), &quad_mesh_data(5.0));
+        assert_eq!(bake.triangle_count(), 4, "2 caixas × 2 triângulos");
+        // Vértices da 2.ª caixa: base = 4, então o índice global 4 é o canto
+        // mínimo dela (origin + [0,5,0]).
+        assert_eq!(bake.indices[2], [4, 5, 6]);
+        assert_eq!(
+            bake.vertices[4],
+            Vec3::new(-10.0, 13.0, -20.0),
+            "origin da caixa soma às posições origin-relative"
+        );
+    }
+}

@@ -126,6 +126,12 @@ pub mod spawner;
 pub mod streaming;
 pub mod world_ready;
 pub mod terrain;
+/// Glue IR→shader do terreno (fase D de `docs/DELETE-MONOLITH.md`): o walk
+/// de `<DayCycle>`/`<Weather>`/`<Lake>`/`<Sky>` não pode viver no
+/// `bevy_ext_terrain_runtime` (o IR de parsing não é dependência dele). O
+/// `app.rs` do Vael cita `viber::terrain_host::{water_surface_config_from_world,
+/// terrain_chunk_config_from_world}` no arranque.
+pub mod terrain_host;
 pub mod textures;
 pub mod time_fx;
 pub mod ui;

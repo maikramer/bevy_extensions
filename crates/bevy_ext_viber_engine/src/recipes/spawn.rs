@@ -481,6 +481,15 @@ fn spawn_parsed(world: &mut World, pending: PendingWorld, persistent: bool) {
     };
     collect_terrain(&parsed.entities, &mut pending_terrain);
     if !persistent {
+        // O runtime extraído (`bevy_ext_terrain_runtime`, fase D de
+        // docs/DELETE-MONOLITH.md) lê O SEU `PendingTerrain` (o bootstrap dele
+        // é `remove_resource` deste): mesmos campos POR VALOR (spec/features
+        // são os tipos do crate via shim), tipo contentor próprio.
+        world.insert_resource(bevy_ext_terrain_runtime::runtime::PendingTerrain {
+            base_dir: pending_terrain.base_dir.clone(),
+            terrain: pending_terrain.terrain.clone(),
+            features: pending_terrain.features.clone(),
+        });
         world.insert_resource(pending_terrain);
     }
     // Prototypes para spawn em runtime (viber.spawn_prototype) — o WorldIR

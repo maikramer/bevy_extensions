@@ -1516,9 +1516,14 @@ pub const PHYSICS_CHUNK_RADIUS: f32 = 3.0;
 /// O collider vive na entidade da coluna (um trimesh por coluna, triângulos
 /// dos caixas transvoxel), não nas caixas — uma aresta interna a cada 64 m
 /// em vez de a cada 32 m, e zero superfícies coincidentes na pilha vertical.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct VoxelCollider;
+///
+/// RE-EXPORT do `host.rs` do `bevy_ext_terrain_runtime` (fase D): quem
+/// assa/insere colliders de coluna é o runtime extraído (`voxel::spawn` +
+/// ladder no `plugin.rs`), e o marker TEM de ser o MESMO tipo — senão o
+/// `stream_voxel_colliders` daqui via colunas já marcadas como sem collider
+/// e assava o trimesh em duplicado (e o `spawn_gate`/`water_bridge` não as
+/// via). O TypePath histórico `viber::physics` está congelado no crate.
+pub use bevy_ext_terrain_runtime::host::VoxelCollider;
 
 /// Banda de colisão em metros para um spec.
 ///
@@ -1591,78 +1596,12 @@ impl TerrainCollisionStatus {
 /// memória extra além do bake em curso. Posições são origin-relative nos
 /// três eixos (o contracto de [`crate::terrain::voxel::spawn_box_entity`]),
 /// por isso cada caixa entra com o próprio `origin` como offset.
-#[derive(Debug, Default)]
-pub struct ColumnColliderBake {
-    vertices: Vec<Vec3>,
-    indices: Vec<[u32; 3]>,
-}
-
-impl ColumnColliderBake {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Caminho quente: os buffers que o mesher acabou de produzir.
-    pub fn add_mesh_data(&mut self, origin: Vec3, data: &crate::terrain::mesh::ChunkMeshData) {
-        let base = self.vertices.len() as u32;
-        self.vertices
-            .extend(data.positions.iter().map(|p| origin + Vec3::from(*p)));
-        for tri in data.indices.as_chunks::<3>().0 {
-            self.indices
-                .push([tri[0] + base, tri[1] + base, tri[2] + base]);
-        }
-    }
-
-    /// Caminho de reparação: ler de volta um `Mesh` já residente no asset
-    /// store (CPU-resident por construção, `to_bevy_mesh`).
-    pub fn add_bevy_mesh(&mut self, origin: Vec3, mesh: &Mesh) {
-        let Some((vertices, indices)) = mesh_vertices_indices(mesh) else {
-            return;
-        };
-        let base = self.vertices.len() as u32;
-        self.vertices
-            .extend(vertices.into_iter().map(|p| origin + p));
-        for tri in indices {
-            self.indices
-                .push([tri[0] + base, tri[1] + base, tri[2] + base]);
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.indices.is_empty()
-    }
-
-    pub fn triangle_count(&self) -> usize {
-        self.indices.len()
-    }
-
-    /// Assa o trimesh da coluna.
-    ///
-    /// `FIX_INTERNAL_EDGES` (que implica merge de vértices duplicados) povoa
-    /// pseudo-normais: sem elas o parry devolve normal de contacto por
-    /// triângulo e o character controller engancha em cada aresta interna —
-    /// o clássico ghost collision de trimesh. Sem fallback convex-hull: um
-    /// hull de uma coluna de 64 m seria um bloco mentiroso; bake falhado é
-    /// warn + coluna sem collider, e a rede de segurança do player cobre.
-    pub fn bake(&self) -> Option<Collider> {
-        if self.is_empty() {
-            return None;
-        }
-        match Collider::try_trimesh_with_config(
-            self.vertices.clone(),
-            self.indices.clone(),
-            TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
-        ) {
-            Ok(collider) => Some(collider),
-            Err(err) => {
-                bevy::log::warn!(
-                    "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
-                );
-                None
-            }
-        }
-    }
-}
+///
+/// RE-EXPORT do `host.rs` do `bevy_ext_terrain_runtime` (fase D) — mesmo
+/// motivo do [`VoxelCollider`]: o bake tem de ser O MESMO tipo usado pelo
+/// runtime extraído, senão as colunas levavam trimesh duplicado. O bake do
+/// crate tem o fallback de hull convexo que a cópia daqui não tinha.
+pub use bevy_ext_terrain_runtime::host::ColumnColliderBake;
 
 /// Adds and removes the terrain collider on voxel COLUMNS around the player.
 ///
@@ -1820,18 +1759,15 @@ mod terrain_collider_tests {
 
     #[test]
     fn test_the_bake_offsets_boxes_into_world_space() {
+        // Os buffers (`vertices`/`indices`) são privados no crate desde a
+        // fase D — o teste dos offsets mora lá
+        // (`bevy_ext_terrain_runtime::host::tests`). Aqui fica o contrato do
+        // consumidor: a contagem e o bake.
         let mut bake = ColumnColliderBake::new();
         bake.add_mesh_data(Vec3::new(10.0, 0.0, 20.0), &quad_mesh_data(5.0));
         bake.add_mesh_data(Vec3::new(-10.0, 8.0, -20.0), &quad_mesh_data(5.0));
         assert_eq!(bake.triangle_count(), 4, "2 caixas × 2 triângulos");
-        // Vértices da 2.ª caixa: base = 4, então o índice global 4 é o canto
-        // mínimo dela (origin + [0,5,0]).
-        assert_eq!(bake.indices[2], [4, 5, 6]);
-        assert_eq!(
-            bake.vertices[4],
-            Vec3::new(-10.0, 13.0, -20.0),
-            "origin da caixa soma às posições origin-relative"
-        );
+        assert!(bake.bake().is_some());
     }
 
     #[test]
