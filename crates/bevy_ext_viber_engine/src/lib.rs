@@ -53,7 +53,11 @@ pub mod bridge;
 // `CameraSnapshot`) são do `bevy_ext_core` — o caminho `viber::camera`
 // reexporta o módulo e os tipos são OS MESMOS no jogo.
 pub use bevy_ext_engine::camera_glue as camera;
-pub mod cinematic;
+// Cinemáticas movidas ao `bevy_ext_engine` (exit5/G-2); o caminho
+// `viber::cinematic` reexporta o módulo e os TypePaths `viber::cinematic::`
+// ficam congelados no crate. O gémeo tem os formatadores de pose locais
+// (réplica dos `scene::pose` puros) e o gate de pausa por relva ocupada.
+pub use bevy_ext_engine::cinematic as cinematic;
 pub mod cinematic_cli;
 // Contrato `config.yaml` movido ao `bevy_ext_engine` (onda exit3/wave-b) —
 // o MESMO tipo no jogo; o `fixture()` dos testes do audit também vem daí.
