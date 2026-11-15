@@ -34,9 +34,11 @@ use crate::project::{MAIN_SCENE, Project};
 pub struct SceneEntity;
 
 /// Entidade que sobrevive a trocas de cena (autoloads, câmara de editor, sonda IBL…).
-#[derive(Component, Debug, Default, Clone, Copy, Reflect)]
-#[reflect(Component)]
-pub struct Persistent;
+///
+/// Contrato movido ao `bevy_ext_postfx::env` (exit3/wave-c): o volume de
+/// névoa volumétrica que o crate spawna leva O MESMO marcador para sobreviver
+/// ao varrimento; o TypePath `viber::scene_loader` fica congelado no crate.
+pub use bevy_ext_postfx::env::Persistent;
 
 // O schedule saiu para o `bevy_ext_engine::scene_loader` (onda exit2/hubs)
 // — o grass/cinemática extraídos entram no MESMO schedule; o caminho

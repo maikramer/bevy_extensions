@@ -24,7 +24,9 @@ pub type Rgb = [f32; 3];
 /// ([`crate::runtime`]) leem `night`/`day`/`golden`/`exposure_scale`/
 /// `bloom_boost`. A paleta (`zenith`/`horizon`/`fog`/`sun_tint`) é do domo —
 /// transportada integralmente para o contrato não partir os publicadores.
-#[derive(Debug, Clone, Resource, Reflect)]
+// `Copy` como no `worldsys` do monólito (o dono histórico): os campos são
+// todos Copy (Vec3/f32/Rgb) e o domo/IBL copiam o estado por aí.
+#[derive(Debug, Clone, Copy, Resource, Reflect)]
 #[reflect(Resource)]
 #[type_path = "viber::worldsys"]
 pub struct AtmosphereState {

@@ -644,6 +644,13 @@ struct LinePanel;
 /// Altura das barras de cinema (% do ecrã).
 const LETTERBOX_PCT: f32 = 11.0;
 
+/// Set do tick da cinemática no `Update` (`start_cinematics` →
+/// `tick_cinematic` → overlay): o glue do postfx
+/// (`postfx::publish_cinematic_focus`) ordena-se DEPOIS dele para o
+/// `drive_dof_focus` do crate ler o foco do MESMO frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CinematicTick;
+
 pub struct CinematicPlugin;
 
 impl Plugin for CinematicPlugin {
@@ -664,7 +671,8 @@ impl Plugin for CinematicPlugin {
                     ensure_overlay,
                     drive_overlay,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(CinematicTick),
             )
             .add_systems(
                 PostUpdate,

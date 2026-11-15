@@ -730,6 +730,25 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // Pós-processamento (exposição/bloom/SSAO) na câmara do mundo; os
     // `pp-*` das `<BiomeRegion>` conduzem-no. `VIBER_NO_POSTFX=1` desliga.
     app.add_plugins(postfx::PostFxPlugin);
+    // Glue do shim `postfx.rs`: o foco de DOF das cinemáticas passa ao
+    // contrato do crate (depois do tick que move o playback, antes do drive
+    // que lê — o MESMO frame).
+    app.add_systems(
+        bevy::app::Update,
+        postfx::publish_cinematic_focus
+            .after(crate::cinematic::CinematicTick)
+            .before(postfx::FxDrive),
+    );
+    // DLSS (feature `dlss`): o reset de teleporte do histórico NGX era
+    // registado pelo plugin do postfx no monólito; o crate não o conhece.
+    #[cfg(feature = "dlss")]
+    {
+        crate::dlss::register_teleport_reset(app);
+        app.add_systems(
+            bevy::app::Update,
+            postfx::swap_taa_for_dlss.after(bevy_ext_postfx::AttachCameras),
+        );
+    }
     // `<PostFxDebugToggle>`: teclas que comutam os gates de pós-processo ao
     // vivo (inerte sem a tag no mundo).
     app.add_plugins(crate::postfx_toggle::PostFxDebugTogglePlugin);
@@ -889,6 +908,16 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // inertes.
     if ui {
         app.add_plugins(ui::UiPlugin);
+        // Glue do shim `ui.rs`: o retrato do MUNDO e a fonte do HUD chegam
+        // ao crate extraído antes do collect ler os binds.
+        app.add_systems(
+            bevy::app::Update,
+            (
+                ui::publish_ui_world_state,
+                ui::publish_ui_font,
+            )
+                .before(ui::UiSet::Collect),
+        );
     } else {
         app.init_resource::<crate::ui::runtime::UiRegistry>()
             .init_resource::<crate::ui::UiModalsOpen>();
@@ -911,7 +940,11 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     if ui && scripts == ScriptsMode::Compat {
         app.add_systems(
             bevy::app::Update,
-            ui::install_ui_script_api
+            // O handle da VM (`UiScriptHost`) sai ANTES do install — o
+            // `install_ui_script_api` do crate lê O CONTRATO, não o host
+            // Luau deste monólito.
+            (ui::publish_ui_script_host, ui::install_ui_script_api)
+                .chain()
                 .before(luau::luau_on_add)
                 .before(luau::luau_update),
         );
@@ -934,9 +967,29 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
             (ui::UiSet::Collect, ui::UiSet::Build, ui::UiSet::Bind).before(luau::luau_update),
         );
     }
-    app.add_systems(bevy::app::Startup, spawn::startup);
+    // O spawn do mundo junta-se ao set do contrato do nav crate: o NavPlugin
+    // aplica a `<NavMesh>` e cria o arquipélago DEPOIS dele (Startup). O
+    // handle do terreno (`nav::publish_nav_ground`) sai a seguir ao spawn.
+    app.add_systems(
+        bevy::app::Startup,
+        (spawn::startup, nav::publish_nav_ground)
+            .chain()
+            .in_set(nav::WorldSpawned),
+    );
     // Trocas de cena (`crate::scene_loader`): o mesmo spawn, num schedule re-executável.
-    app.add_systems(crate::scene_loader::SceneLoad, spawn::startup);
+    // O nav crate registra o par tag+arquipélago no `SceneLoad` do core — o
+    // runtime do Viber corre o SEU schedule (um tipo só, `bevy_ext_engine`),
+    // por isso a reaplicação entra aqui, a seguir ao spawn e ao handle.
+    app.add_systems(
+        crate::scene_loader::SceneLoad,
+        (
+            spawn::startup,
+            nav::publish_nav_ground,
+            nav::apply_navmesh_tag,
+            nav::spawn_archipelago,
+        )
+            .chain(),
+    );
     app.add_plugins(crate::scene_loader::SceneLoaderPlugin);
     // Câmara livre de editor (`--camera free`, src/editor_camera.rs): a
     // navegação orbit/pan/zoom de edição via bridge (`viber.camera.*`).

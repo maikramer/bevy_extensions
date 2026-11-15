@@ -88,6 +88,17 @@ bevy_ext_physics = { version = "0.1.0", path = "../bevy_ext_physics" }
 # Decoder GLB meshopt/KTX2 (`load_gltf` + ladder implícita de LODs).
 bevy_ext_gltf = { version = "0.1.0", path = "../bevy_ext_gltf" }
 
+# Câmara de jogo — o contrato `OrbitCamera`/`DEFAULT_ORBIT_PIVOT_HEIGHT`
+# (onda exit2/hubs, TypePath `viber::recipes::spawn` congelado lá): o spawn
+# e as cópias de câmara/player deste crate partilham UM tipo com o jogo.
+bevy_ext_engine = { version = "0.1.0", path = "../bevy_ext_engine" }
+
+# Primitivas procedurais de qualidade (grad de material por spec, cache de
+# meshes/materials por chave) — o mesmo pipeline do spawner do monólito
+# (exit3/wave-c: a cópia do spawn.rs voltou a ter o pipeline; sem o dep o
+# spawner cairia no StandardMaterial e o jogo perdia os materiais).
+bevy_gradmesh = "0.3.9"
+
 # TODO(viber-exit): dependência TRANSITÓRIA ao monólito (a cópia
 # `bevy_ext_viber_engine`, com o lib name histórico `viber`) — o hub do
 # runtime de cena ainda consome da engine o parser do mundo

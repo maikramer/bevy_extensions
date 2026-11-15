@@ -168,9 +168,11 @@ fn bake_terrain_image(runtime: &TerrainRuntime) -> Image {
 }
 
 /// Radius of the minimap in world meters (authored `range` attribute).
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-pub struct MinimapRange(pub f32);
+///
+/// Contrato movido ao `bevy_ext_ui::ui::host` (exit3/wave-c) — o `ui::scale`
+/// extraído re-assenta O MESMO componente; o TypePath
+/// `viber::hud::minimap` fica congelado no crate.
+pub use bevy_ext_ui::ui::host::MinimapRange;
 
 /// Minimap position (UI px offsets from the map center) for a world delta
 /// `(dx, dz)` from the player, north-up: camera yaw rotates the plot so the

@@ -74,39 +74,12 @@ pub struct SceneEntryPoint {
 }
 
 /// `<ScenePortal>`: dados autorados.
-#[derive(Debug, Clone, PartialEq, Reflect)]
-#[type_path = "viber::scene_loader"]
-pub struct ScenePortalSpec {
-    /// Id da cena alvo (`main`, `interiors/chapel`).
-    pub target: String,
-    /// Entrada na cena alvo; `@back` = o portal por onde se entrou; `None` = a primeira.
-    pub entry: Option<String>,
-    pub prompt: String,
-    pub key: String,
-    /// Alcance da interação (m, autorado — escalado como os outros).
-    pub radius: f32,
-    /// Atravessa sozinho a esta distância (sem tecla).
-    pub auto_radius: Option<f32>,
-    pub sound: Option<String>,
-    pub toast: Option<String>,
-    pub arrive_offset: [f32; 3],
-}
-
-impl Default for ScenePortalSpec {
-    fn default() -> Self {
-        Self {
-            target: String::new(),
-            entry: None,
-            prompt: "Entrar".into(),
-            key: "e".into(),
-            radius: 2.8,
-            auto_radius: None,
-            sound: None,
-            toast: None,
-            arrive_offset: [0.0; 3],
-        }
-    }
-}
+///
+/// O spec É o do monólito (`viber::scene_loader`, exit3/wave-c): o IR do
+/// parse (`super::EntityKind::ScenePortal`) carrega ESTE tipo e o spawner
+/// insere-o tal e qual — um só tipo no runtime. O TypePath do COMPONENTE
+/// ([`ScenePortal`], congelado) não muda.
+pub use viber::scene_loader::ScenePortalSpec;
 
 /// Componente do portal vivo.
 #[derive(Component, Debug, Clone, Reflect)]

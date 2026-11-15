@@ -58,9 +58,10 @@ pub struct HideInInterior;
 /// O `#hud` declarativo é só uma parte do HUD: minimapa, bússola e seta são
 /// widgets NATIVOS. O título/morte escondem o HUD inteiro; sem isto os
 /// widgets nativos ficavam por cima do véu.
-#[derive(bevy::prelude::Resource, Debug, Clone, Copy, Default, bevy::prelude::Reflect)]
-#[reflect(Resource)]
-pub struct HudHidden(pub bool);
+///
+/// Contrato movido ao `bevy_ext_ui::ui::host` (exit3/wave-c) — a UI extraída
+/// lê O MESMO recurso; o TypePath `viber::hud` fica congelado no crate.
+pub use bevy_ext_ui::ui::host::HudHidden;
 
 /// Esconde/repõe os [`HideInInterior`] quando o herói entra/sai de um interior —
 /// ou quando o jogo esconde o HUD (título, morte).

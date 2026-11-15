@@ -10,11 +10,13 @@ use mlua::{Lua, Table};
 
 use super::ctx::ScriptCtx;
 
-// O CONTRATO dos eventos saiu para o `bevy_ext_engine::luau` (onda
-// exit2/hubs) — as cinemáticas extraídas empurram/drenam a MESMA fila;
-// o caminho histórico continua a resolver. Aqui fica o host Luau
-// (instalação de `viber.events` e fan-out por script).
-pub use bevy_ext_engine::luau::{EVENT_QUEUE_CAP, ScriptEventQueue, ScriptGameEvent};
+// O CONTRATO dos eventos vive agora no `bevy_ext_ui::ui::host` (exit3/wave-c):
+// a UI declarativa extraída empurra `UiAction` para A MESMA fila que o
+// `luau_update` drena (antes da troca eram DOIS tipos — as ações de UI nunca
+// chegavam aos scripts). O `to_table` acompanha o tipo no host; o caminho
+// histórico continua a resolver. O `EVENT_QUEUE_CAP` é do `bevy_ext_engine`.
+pub use bevy_ext_ui::ui::host::{ScriptEventQueue, ScriptGameEvent};
+pub use bevy_ext_engine::luau::EVENT_QUEUE_CAP;
 
 
 /// Instala `viber.events()` na tabela `viber`.

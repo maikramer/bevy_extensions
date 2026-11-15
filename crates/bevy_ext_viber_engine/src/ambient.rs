@@ -130,9 +130,11 @@ pub const LIGHT_BUDGET_INTERVAL: f32 = 1.0;
 /// sombras só gere estas. Sem o marcador não havia como distinguir "autorada
 /// sem sombra" de "autorada com sombra que o orçamento desligou" — o
 /// `shadow_maps_enabled` perde a informação original no primeiro toggle.
-#[derive(Debug, Clone, Copy, Component, Reflect)]
-#[reflect(Component)]
-pub struct AuthoredShadowLight;
+///
+/// Contrato movido ao `bevy_ext_postfx::env` (exit3/wave-c): o
+/// `torch_pool_drive` do crate lê O MESMO marcador; o TypePath
+/// `viber::ambient` fica congelado no crate.
+pub use bevy_ext_postfx::env::AuthoredShadowLight;
 /// Intervalo entre gestos idle de NPC (s, ±jitter).
 pub const GESTURE_MIN_INTERVAL: f32 = 7.0;
 
@@ -1371,9 +1373,11 @@ pub const LANTERN_RANGE: f32 = 12.0;
 const LANTERN_HEIGHT: f32 = 2.2;
 
 /// Marker da lanterna do viajante (uma instância por mundo).
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct TravellerLantern;
+///
+/// Contrato movido ao `bevy_ext_postfx::env` (exit3/wave-c) — o
+/// `torch_pool_drive` do crate lê O MESMO marcador; o TypePath
+/// `viber::ambient` fica congelado no crate.
+pub use bevy_ext_postfx::env::TravellerLantern;
 
 /// Intensidade da lanterna controlada pelo JOGO (`viber.lantern(intensity)`).
 ///

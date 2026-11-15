@@ -293,19 +293,15 @@ pub fn daylight_factor(minute: f32, dawn: f32, dusk: f32) -> f32 {
 
 /// `<Weather>` wind/cloud/rain config.
 ///
-/// `rain` é INTENSIDADE CONTÍNUA 0..1 (não bool): 0 = seco, 1 = tempestade.
-/// Com `cycle` a falso é estática como autorada (backwards compat); com
-/// `cycle` a verdadeiro o [`weather_drive`] rola novos alvos e faz o lerp
-/// de [`WEATHER_TRANSITION_SECS`].
-#[derive(Debug, Clone, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct WeatherState {
-    pub wind: [f32; 2],
-    pub wind_strength: f32,
-    pub clouds: f32,
-    pub rain: f32,
-    pub cycle: bool,
-}
+// ── Contratos partilhados com o pós-processamento ────────────────────────
+// Movidos ao `bevy_ext_postfx::env` (exit3/wave-c): o crate de postfx lê
+// ESTES recursos no grading/keys/tochas — um só tipo no jogo, os TypePaths
+// `viber::worldsys` ficam congelados no crate. Os DRIVES (quem publica os
+// estados) continuam AQUI — o dono único da condução fica para a wave G.
+pub use bevy_ext_postfx::env::{
+    AtmosphereState, BiomeRegionData, BiomeRegions, EngineConfigData, EngineConfigs,
+    MOONLIGHT_RATIO, MOON_COLOR, SunLightBase, SunState, WeatherState, point_in_polygon,
+};
 
 /// Período do ciclo de weather (`<Weather cycle>`) em segundos.
 ///
@@ -440,84 +436,8 @@ pub fn rain_scale_at(regions: Option<&BiomeRegions>, x: f32, z: f32) -> Option<f
         .and_then(|r| r.rain_scale)
 }
 
-/// `<BiomeRegion>` polygon + fog/tint data (fog rendering follow-up).
-#[derive(Debug, Clone, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct BiomeRegionData {
-    pub id: String,
-    /// `display-name`: nome de exposição da zona no HUD (`zone.name`).
-    /// Vazio = a engine usa a sua tabela de fallback (e, em último caso,
-    /// deriva um título do próprio id).
-    pub display_name: String,
-    pub polygon: Vec<[f32; 2]>,
-    pub fog_density: f32,
-    pub tint: Option<[f32; 3]>,
-    /// `pp-exposure`: linear exposure multiplier inside the region
-    /// (`None` = the world base). Read by [`crate::postfx`].
-    pub pp_exposure: Option<f32>,
-    /// `pp-bloom-strength`: bloom intensity inside the region.
-    pub pp_bloom_strength: Option<f32>,
-    /// `rain-scale`: fator da chuva do `<Weather>` com o herói dentro da
-    /// região (0 = seca, 1 = a do mundo; `None` = 1). Escala o ALVO do
-    /// ciclo, portanto a chuva abranda/volta com a mesma rampa de sempre ao
-    /// atravessar a fronteira — sem degrau.
-    pub rain_scale: Option<f32>,
-}
-
-/// Todas as `<BiomeRegion>` do mundo (loop 9: fog/tint por bioma).
-#[derive(Debug, Clone, Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct BiomeRegions {
-    pub list: Vec<BiomeRegionData>,
-}
-
-/// Generic engine config element kept as raw data.
-#[derive(Debug, Clone, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct EngineConfigData {
-    pub tag: String,
-    pub attrs: Vec<(String, String)>,
-}
-
-impl EngineConfigData {
-    /// Raw value of `key` (attr names are already lowercased by the recipe).
-    pub fn attr(&self, key: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    }
-
-    /// `key` parsed as a finite `f32`; `None` when absent or unparsable.
-    pub fn f32_attr(&self, key: &str) -> Option<f32> {
-        self.attr(key)
-            .and_then(|v| v.trim().parse::<f32>().ok())
-            .filter(|v| v.is_finite())
-    }
-}
-
-/// Every `EngineConfig` element of the world, in document order.
-///
-/// One resource for all of them: a world declares `<NavMesh>`, `<SpawnGate>`,
-/// `<PostFxDebugToggle>`… side by side (and `<ProjectileTemplate>` many
-/// times), so a resource per element would keep only the last one.
-#[derive(Debug, Clone, Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct EngineConfigs {
-    pub list: Vec<EngineConfigData>,
-}
-
-impl EngineConfigs {
-    /// First element with this (lowercase) tag.
-    pub fn first(&self, tag: &str) -> Option<&EngineConfigData> {
-        self.list.iter().find(|c| c.tag == tag)
-    }
-
-    /// Every element with this (lowercase) tag, in document order.
-    pub fn all<'a>(&'a self, tag: &'a str) -> impl Iterator<Item = &'a EngineConfigData> + 'a {
-        self.list.iter().filter(move |c| c.tag == tag)
-    }
-}
+// `BiomeRegionData`/`BiomeRegions`/`EngineConfigData`/`EngineConfigs` vivem
+// no re-export do contrato lá em cima (bevy_ext_postfx::env).
 
 /// Deferred world-system requests collected while spawning entities.
 #[derive(Debug, Resource, Default, Reflect)]
@@ -1043,10 +963,8 @@ pub fn align_up_to(normal: Vec3, authored: Quat) -> Quat {
     Quat::from_rotation_arc(Vec3::Y, n) * authored
 }
 
-/// Iluminância da luz direcional à noite, como fração da que o mundo
-/// autorou (`<DirectionalLight illuminance>`): a **lua**. Baixa o bastante
-/// para uma tocha valer a pena, alta o bastante para o chão continuar a ler-se.
-pub const MOONLIGHT_RATIO: f32 = 0.06;
+// `MOONLIGHT_RATIO`/`MOON_COLOR`/`SunLightBase`/`SunState` vivem no re-export
+// do contrato lá em cima (bevy_ext_postfx::env).
 /// Elevação mínima (graus) da luz direcional.
 ///
 /// O sol real desce a −25° à noite; apontar a luz direcional para lá
@@ -1057,28 +975,6 @@ pub const MOONLIGHT_RATIO: f32 = 0.06;
 pub const MIN_LIGHT_ELEVATION_DEG: f32 = 8.0;
 /// Elevação da lua (graus) — alta, para banhar o chão em vez de o rasar.
 pub const MOON_ELEVATION_DEG: f32 = 52.0;
-/// Cor linear da luz da lua (azul frio).
-pub const MOON_COLOR: [f32; 3] = [0.40, 0.54, 0.86];
-
-/// Iluminância/cor que o mundo autorou para uma `DirectionalLight`, capturada
-/// antes de [`sun_drive`] começar a escrevê-las.
-#[derive(Debug, Clone, Copy, Component, Reflect)]
-#[reflect(Component)]
-pub struct SunLightBase {
-    pub illuminance: f32,
-    pub color: Color,
-}
-
-/// Posição do sol (e estado dia/noite) calculada a partir do relógio.
-#[derive(Debug, Clone, Copy, Resource, Default, Reflect)]
-#[reflect(Resource)]
-pub struct SunState {
-    /// Direção PARA o sol, normalizada (mundo, Y-up).
-    pub dir: Vec3,
-    pub elevation_deg: f32,
-    /// 0 = dia pleno, 1 = noite plena.
-    pub night: f32,
-}
 
 /// Elevação (graus) do sol para o minuto do dia: sobe `max_elevation` ao
 /// meio-dia e desce abaixo do horizonte à noite.
@@ -1378,52 +1274,8 @@ const SUN_TINT_HIGH: Rgb = [1.0, 0.96, 0.88];
 const SUN_TINT_LOW: Rgb = [1.0, 0.46, 0.14];
 const MOON_TINT: Rgb = [0.62, 0.72, 1.0];
 
-/// Paleta atmosférica da hora corrente — publicada por [`atmosphere_drive`].
-#[derive(Debug, Clone, Copy, Resource, Reflect)]
-#[reflect(Resource)]
-pub struct AtmosphereState {
-    /// Direção PARA o sol (mundo, Y-up) — a astronómica, pode estar abaixo.
-    pub sun_dir: Vec3,
-    /// Direção PARA a lua (oposta ao sol, elevada).
-    pub moon_dir: Vec3,
-    /// `1` dia pleno, `0` noite plena (rampa pela elevação do sol).
-    pub day: f32,
-    /// `1` noite plena.
-    pub night: f32,
-    /// Pico quando o sol raspa o horizonte (hora dourada / crepúsculo).
-    pub golden: f32,
-    /// Cor do céu no zénite / no horizonte (linear).
-    pub zenith: Rgb,
-    pub horizon: Rgb,
-    /// Cor da névoa de distância (linear) — o horizonte, ligeiramente
-    /// dessaturado, é o que dá a perspetiva aérea.
-    pub fog: Rgb,
-    /// Cor do inscattering do sol na névoa (o lado do mundo virado ao sol
-    /// fica dourado ao pôr-do-sol; é o que faltava nas "paredes cinzentas").
-    pub sun_tint: Rgb,
-    /// Multiplicador de exposição sugerido (1 = base do mundo).
-    pub exposure_scale: f32,
-    /// Reforço de bloom sugerido (fontes quentes à noite / sol rasante).
-    pub bloom_boost: f32,
-}
-
-impl Default for AtmosphereState {
-    fn default() -> Self {
-        Self {
-            sun_dir: Vec3::Y,
-            moon_dir: -Vec3::Y,
-            day: 1.0,
-            night: 0.0,
-            golden: 0.0,
-            zenith: ZENITH_DAY,
-            horizon: HORIZON_DAY,
-            fog: HORIZON_DAY,
-            sun_tint: SUN_TINT_HIGH,
-            exposure_scale: 1.0,
-            bloom_boost: 0.0,
-        }
-    }
-}
+// `AtmosphereState` vive no re-export do contrato lá em cima
+// (bevy_ext_postfx::env) — o Default usa a MESMA paleta do dia pleno.
 
 /// Resolve a paleta atmosférica para uma elevação solar (graus).
 ///

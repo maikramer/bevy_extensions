@@ -1412,15 +1412,10 @@ mod tests {
 /// without a hero).
 pub const PHYSICS_CHUNK_RADIUS: f32 = 3.0;
 
-/// Marks a voxel COLUMN that currently owns a terrain trimesh collider.
-///
-/// O collider vive na entidade da coluna (um trimesh por coluna, triângulos
-/// dos caixas transvoxel), não nas caixas — uma aresta interna a cada 64 m
-/// em vez de a cada 32 m, e zero superfícies coincidentes na pilha vertical.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-#[type_path = "viber::physics"]
-pub struct VoxelCollider;
+// Contrato movido ao `bevy_ext_core` (com o consumidor `bevy_ext_nav`, que
+// filtra obstáculos pelo MESMO tipo que a física insere); o TypePath
+// `viber::physics` fica congelado no core.
+pub use bevy_ext_core::VoxelCollider;
 
 /// Banda de colisão em metros para um spec.
 ///
