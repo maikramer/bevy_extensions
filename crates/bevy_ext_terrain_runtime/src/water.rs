@@ -33,36 +33,19 @@ use super::paths::{
 };
 use super::roads::ADAPTIVE_FALLOFF_FACTOR;
 
+// Os tipos de consulta e os espelhos CPU das ondas vivem na crate
+// `bevy_ext_water` (só bevy + avian). Aqui ficam o carve/specs do terreno,
+// que conhecem a grelha e as margens.
+pub use bevy_ext_water::body::{
+    CONTOUR_PEAK, CascadeInfo, LAKE_HARMONIC_MAX, LAKE_STRETCH_MAX, LakeAuthoring, LakeShape,
+    WaterBody, WaterDomainSample, WaterKind,
+};
+pub use bevy_ext_water::mirror::{surface_height_at, wave_fbm, wave_height_at, wave_value_noise};
+
 /// Lake contour: number of rim rays sampled (`rimY` ring). 64
 /// porque o 7.º harmónico do contorno oscila 8× por volta — 32 raios
 /// perdiam o mínimo do rim (e o nível de água subia um fiapo).
 const RIM_RAYS: usize = 64;
-/// Amplitude MÍNIMA do alongamento — até o lago mais redondo do mundo tem
-/// um oval subtil (o utilizador viu "círculos" nos lagos antigos).
-const LAKE_STRETCH_MIN: f32 = 0.10;
-/// Amplitude MÁXIMA do alongamento — o harmónico 2 dirigido
-/// (`stretch·cos(2(θ−axis))`) que dá os lagos ovais/alongados.
-pub(crate) const LAKE_STRETCH_MAX: f32 = 0.20;
-/// Amplitudes MÍNIMAS dos harmónicos lineares (k = 1, 3, 5, 7): k=1
-/// desloca a bacia (baía assimétrica), 3/5 dão lóbulos e baías, 7 dá o
-/// recorte fino da linha de água. Os mínimos mantêm TODOS os lagos fora do
-/// círculo perfeito — o sorteio por lago vive em `[min, max]`.
-const LAKE_HARMONIC_MIN: [f32; 4] = [0.03, 0.05, 0.03, 0.02];
-/// Amplitudes MÁXIMAS dos harmónicos lineares (k = 1, 3, 5, 7).
-const LAKE_HARMONIC_MAX: [f32; 4] = [0.06, 0.10, 0.05, 0.04];
-/// Peak of the organic contour relative to the design radius
-/// (`1 + LAKE_STRETCH_MAX + Σ LAKE_HARMONIC_MAX = 1.45`; validado pelo
-/// teste `test_contour_peak_covers_the_harmonics`). The carve AABB must
-/// cover `radius · CONTOUR_PEAK · CARVE_MARGIN` — capping it at plain
-/// `radius · CARVE_MARGIN` clipped the bowl of large lakes and left the
-/// water mirror over dry land on the harmonic lobes. Público para o audit
-/// (`src/audit.rs`) testar pontas/traçados de estradas contra o worst-case.
-pub const CONTOUR_PEAK: f32 = 1.0
-    + LAKE_STRETCH_MAX
-    + LAKE_HARMONIC_MAX[0]
-    + LAKE_HARMONIC_MAX[1]
-    + LAKE_HARMONIC_MAX[2]
-    + LAKE_HARMONIC_MAX[3];
 /// Lake carve margin over the design radius (`carveMargin`).
 pub const CARVE_MARGIN: f32 = 1.25;
 /// River station spacing (meters, `STATION_SPACING`).
@@ -103,105 +86,84 @@ fn river_phase(path: &[Vec2]) -> f32 {
     (s.sin() * 43_758.55).fract() * std::f32::consts::TAU
 }
 
-// ── Espelho CPU do campo de ondas (buoyancy estilo bevy_water) ─────────────
-//
-// O pacote bevy_water expõe `get_wave_point` — a MESMA função de onda da GPU
-// em CPU, para flutuação de corpos. O Viber segue o mesmo contrato: estas
-// funções replicam linha a linha o `wave_height`/`fbm`/`value_noise`/
-// `hash21` do `water.wgsl` (os parâmetros são os do `WaterSurfaceConfig`),
-// para a engine saber onde está a lâmina REAL. Qualquer mudança nas ondas do
-// shader TEM de se espelhar aqui — os testes de propriedade abaixo e o
-// comentário "espelho linha a linha" são a única guarda (sem harness GPU).
-
-/// Hash inteiro do `water.wgsl` — aritmética u32 wrapping; `q` é a célula
-/// da grelha (floor em i32, bitcast dois-complementos).
-fn wave_hash21(q: [i32; 2]) -> f32 {
-    let mut h = (q[0] as u32).wrapping_mul(0x27d4_eb2d) ^ (q[1] as u32).wrapping_mul(0x1656_67b1);
-    h = (h ^ (h >> 15)).wrapping_mul(0x2c1b_3c6d);
-    h = (h ^ (h >> 13)).wrapping_mul(0x297a_2d39);
-    h ^= h >> 16;
-    (h & 0x00ff_ffff) as f32 * (1.0 / 16_777_216.0)
-}
-
-fn wave_value_noise(p: Vec2) -> f32 {
-    let i = Vec2::new(p.x.floor(), p.y.floor());
-    let f = p - i;
-    // Quintic (smootherstep) — igual ao shader.
-    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    let a = wave_hash21([i.x as i32, i.y as i32]);
-    let b = wave_hash21([i.x as i32 + 1, i.y as i32]);
-    let c = wave_hash21([i.x as i32, i.y as i32 + 1]);
-    let d = wave_hash21([i.x as i32 + 1, i.y as i32 + 1]);
-    let ab = a + (b - a) * u.x;
-    let cd = c + (d - c) * u.x;
-    ab + (cd - ab) * u.y
-}
-
-fn wave_fbm(p: Vec2, drift: Vec2) -> f32 {
-    let mut q = p;
-    let mut amp = 0.5f32;
-    let mut sum = 0.0;
-    let mut norm = 0.0;
-    for i in 0..4 {
-        sum += (wave_value_noise(q + drift * (1.0 + i as f32 * 0.35)) - 0.5) * amp;
+/// Deterministic multi-octave signed FBM (`[-1, 1]`) for bank scallops,
+/// slumps, and shoreline irregularity across a characteristic length scale.
+pub fn bank_erosion_fbm(p: Vec2, base_meters: f32) -> f32 {
+    let mut q = p / base_meters.max(0.25);
+    let mut amp = 0.56f32;
+    let mut sum = 0.0f32;
+    let mut norm = 0.0f32;
+    for _ in 0..3 {
+        sum += (wave_value_noise(q) * 2.0 - 1.0) * amp;
         norm += amp;
-        // rot = mat2x2(0.80, 0.60, -0.60, 0.80) (colunas), ×2.03 + offset.
         let x = 0.80 * q.x - 0.60 * q.y;
         let y = 0.60 * q.x + 0.80 * q.y;
-        q = Vec2::new(x, y) * 2.03 + Vec2::new(11.7, 5.3);
-        amp *= 0.5;
+        q = Vec2::new(x, y) * 2.13 + Vec2::new(17.3, 9.1);
+        amp *= 0.52;
     }
-    sum / norm
+    if norm > 0.0 {
+        (sum / norm).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
-/// Altura da onda num ponto do mundo — o `get_wave_point` do bevy_water,
-/// espelho CPU do `wave_height` do shader. `wind`/`wind_strength`/`wave_amp`
-/// são os valores do `WaterSurfaceConfig` (que também especializam as consts
-/// CFG_* do WGSL). Não considera o desvanecimento de margem (mask) — quem
-/// flutua está dentro do corpo.
-pub fn wave_height_at(p: Vec2, t: f32, wind: [f32; 2], wind_strength: f32, wave_amp: f32) -> f32 {
-    let wdir = (Vec2::new(wind[0], wind[1]) + Vec2::new(1e-4, 0.0)).normalize();
-    let strength = wind_strength.clamp(0.05, 3.0);
-    let speed = 0.7 + 0.5 * strength;
+/// Narrow drainage rill factor (`[0, 1]`) oriented transversely down banks to
+/// carve natural stormwater micro-gullies into steep slopes.
+pub fn bank_erosion_rill(p: Vec2, along_dir: Vec2, spacing_meters: f32) -> f32 {
+    let tangent = along_dir.normalize_or_zero();
+    let perp = Vec2::new(-tangent.y, tangent.x);
+    let u = p.dot(tangent) / spacing_meters.max(0.5);
+    let v = p.dot(perp) / (spacing_meters.max(0.5) * 3.2);
+    let n = wave_value_noise(Vec2::new(u, v) + Vec2::new(31.7, -14.2)) * 2.0 - 1.0;
+    let detail = wave_value_noise(Vec2::new(u * 2.7, v * 2.3) - Vec2::new(7.1, 22.9)) * 2.0 - 1.0;
+    let ridge = (1.0 - (n * 0.78 + detail * 0.22).abs()).clamp(0.0, 1.0);
+    ridge.powf(3.0)
+}
 
-    // DOMAIN WARP — o MESMO do `wave_height` do shader (espelho linha a
-    // linha: cristas curvadas em vez de famílias de linhas paralelas).
-    let warp = Vec2::new(
-        wave_value_noise(p * 0.11 + Vec2::new(t * 0.03, 0.0)),
-        wave_value_noise(p * 0.13 - Vec2::new(0.0, t * 0.025)),
-    ) * 2.2
-        - Vec2::splat(1.1);
-    let q = p + warp;
+/// Computes signed smoothed meander curvature (`[-1, 1]`, positive when turning
+/// left in XZ) at each river station so cutbanks and point bars form naturally.
+pub fn station_curvatures(stations: &[Vec2]) -> Vec<f32> {
+    let n = stations.len();
+    if n < 3 {
+        return vec![0.0; n];
+    }
+    let mut raw = vec![0.0f32; n];
+    for i in 0..n {
+        let a = stations[i.saturating_sub(2)];
+        let b = stations[i];
+        let c = stations[(i + 2).min(n - 1)];
+        let d1 = (b - a).normalize_or_zero();
+        let d2 = (c - b).normalize_or_zero();
+        if d1.length_squared() > 0.5 && d2.length_squared() > 0.5 {
+            let cross = d1.x * d2.y - d1.y * d2.x;
+            let span = (b.distance(a) + c.distance(b)).max(1.0);
+            raw[i] = (cross / span * 26.0).clamp(-1.0, 1.0);
+        }
+    }
+    box_smooth(&mut raw, 3);
+    raw
+}
 
-    // Direções giradas em relação ao vento (graus): 0, +34, −51, +73.
-    let d0 = wdir;
-    let d1 = Vec2::new(
-        wdir.x * 0.829 - wdir.y * 0.559,
-        wdir.x * 0.559 + wdir.y * 0.829,
-    );
-    let d2 = Vec2::new(
-        wdir.x * 0.629 + wdir.y * 0.777,
-        -wdir.x * 0.777 + wdir.y * 0.629,
-    );
-    let d3 = Vec2::new(
-        wdir.x * 0.292 - wdir.y * 0.956,
-        wdir.x * 0.956 + wdir.y * 0.292,
-    );
-
-    let (k0, k1, k2, k3) = (0.897f32, 1.366, 2.094, 3.396);
-    let mut h = 0.0;
-    h += (q.dot(d0) * k0 - t * k0.sqrt() * 1.35 * speed).sin() * 0.22;
-    h += (q.dot(d1) * k1 + t * k1.sqrt() * 1.10 * speed).sin() * 0.18;
-    h += (q.dot(d2) * k2 - t * k2.sqrt() * 0.95 * speed).sin() * 0.12;
-    h += (q.dot(d3) * k3 + t * k3.sqrt() * 0.80 * speed).sin() * 0.07;
-
-    let drift = wdir * t * 0.35 * speed;
-    // 0.32 — o MESMO peso do termo FBM no `water.wesl` (`wave_height`). Com
-    // 0.62 o espelho CPU devolvia quase o dobro da amplitude que a GPU
-    // desenha, e um flutuador (a API `get_wave_point`) andava até ~0.2·amp
-    // acima/abaixo da lâmina visível.
-    h += wave_fbm(q * 0.9 + drift, drift * 0.4) * 0.32 * (0.6 + 0.4 * strength.min(2.0));
-    h * wave_amp
+/// Signed meander bend bias (`[-1, 1]`) for point `p` relative to `hit`:
+/// `+1.0` = outer cutbank, `-1.0` = inner point bar.
+pub fn river_outer_bias(
+    stations: &[Vec2],
+    curvatures: &[f32],
+    hit: &PathHit,
+    p: Vec2,
+) -> f32 {
+    if stations.len() < 2 || curvatures.len() != stations.len() {
+        return 0.0;
+    }
+    let seg = hit.segment.min(stations.len().saturating_sub(2));
+    let dir = (stations[seg + 1] - stations[seg]).normalize_or_zero();
+    let perp = Vec2::new(-dir.y, dir.x);
+    let side = (p - hit.point).dot(perp);
+    let d = hit.point.distance(p).max(0.25);
+    let side_sign = (side / d).clamp(-1.0, 1.0);
+    let k = station_lerp(curvatures, hit);
+    (-k * side_sign).clamp(-1.0, 1.0)
 }
 
 /// Estilo de margem (`bank="soft|beach|cliff|terraced|gorge|overhang"` no
@@ -345,27 +307,6 @@ impl Default for IslandSpec {
             height: 1.2,
         }
     }
-}
-
-/// Autoria da forma de um lago (`<Lake seed stretch axis lobes>`) — os
-/// quatro knobs opcionais sobre o contorno orgânico. Tudo `None` = o
-/// comportamento histórico (uniformes sorteados pelo hash da posição), pelo
-/// que mundos existentes ficam bit-exact.
-///
-/// * `seed` — troca a FONTE dos uniformes para o SplitMix64 da engine
-///   ([`crate::rng`]): mesma seed, mesma forma, em qualquer posição.
-/// * `stretch` — amplitude do alongamento (0 = redondo, clamp 0..0.45).
-/// * `axis` — direção do alongamento, em GRAUS (o hash sorteava-a).
-/// * `lobes` — multiplicador das amplitudes harmónicas (0 = sem baías,
-///   1 = o natural sorteado, até 1.6; acima reescala o contorno para
-///   continuar dentro do envelope [`CONTOUR_PEAK`], ver
-///   [`LakeShape::fit_to_contour_envelope`]).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct LakeAuthoring {
-    pub seed: Option<u64>,
-    pub stretch: Option<f32>,
-    pub axis_deg: Option<f32>,
-    pub lobes: Option<f32>,
 }
 
 /// Declarative lake (`<Lake at radius depth water-offset color opacity>`).
@@ -524,401 +465,6 @@ pub struct FallHint {
     pub min_drop: f32,
 }
 
-/// Uma queda contígua do perfil de um rio — cascata ou cachoeira.
-///
-/// É o registro partilhado por todos os consumidores: o mesh (face
-/// vertical dos segmentos `lip..base`, cortina alargada se cachoeira), a
-/// névoa/spray (na base, escalados por [`Self::drop`]), o áudio
-/// (posição/força) e a anotação de parede (rio × cliff, feita no bootstrap
-/// quando a banda correspondente existe).
-#[derive(Debug, Clone, Copy, PartialEq, bevy::prelude::Reflect)]
-#[type_path = "viber::terrain::water"]
-pub struct CascadeInfo {
-    /// Estação LIP — onde a queda começa (borda de montante).
-    pub lip: usize,
-    /// Primeira estação DEPOIS da queda (fim da face; caldeirão aqui).
-    pub base: usize,
-    /// Queda acumulada da face (m) — `top_y − bot_y`.
-    pub drop: f32,
-    /// Tier: cachoeira (queda ≥ `waterfall_min_drop`) vs cascata simples.
-    pub waterfall: bool,
-    /// A queda despenca numa PAREDE voxel (rio × cliff): `bot_y` vem do
-    /// pé da banda (não do perfil do rio) e o mesh desenha UM quadro do
-    /// brow ao toe em vez de faces por segmento.
-    pub wall: bool,
-    /// Topo da face — a lâmina no lip (no brow, se parede).
-    pub top_y: f32,
-    /// Fundo da face — a lâmina na base (o pé da banda, se parede; submerso
-    /// no caldeirão quando o pool desce abaixo do pé).
-    pub bot_y: f32,
-}
-
-/// Kind of a registered [`WaterBody`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, bevy::prelude::Reflect)]
-#[type_path = "viber::terrain::water"]
-pub enum WaterKind {
-    Lake,
-    River,
-}
-
-/// Query registry entry produced by every water carve.
-#[derive(Debug, Clone, PartialEq, bevy::prelude::Reflect)]
-#[type_path = "viber::terrain::water"]
-pub struct WaterBody {
-    pub kind: WaterKind,
-    /// Anchor point (lake center; river centroid).
-    pub at: Vec2,
-    /// Lake: design water radius. River: `0.0`.
-    pub radius: f32,
-    /// Avoid-zone radius (lake: carve radius; river: half carve width).
-    pub carve_radius: f32,
-    /// Raio O(1) de rejeição das queries de rio: distância máxima das
-    /// estações ao `at` MAIS a maior meia-largura. O ponto mais próximo do
-    /// caminho vive num segmento entre estações (casco convexo — fica tão
-    /// perto do centro como as estações), pelo que `|p − at| > hull`
-    /// garante ponto seco, e o +meia-largura estende a garantia à lâmina
-    /// (e a `blend_surface_y` soma a margem fora). Lagos não o usam (as
-    /// queries deles já são O(1)): `0.0`.
-    pub hull: f32,
-    /// Lake mirror height (rivers: mean surface height).
-    pub water_y: f32,
-    /// Lake: reach do ESPELHO sobre o contorno nominal — o MESMO fator
-    /// [`lake_mirror_reach`] que o mesh do espelho aplica ao anel exterior;
-    /// [`WaterBody::distance_to_waterline`] mede até
-    /// `contorno × mirror_reach` (a linha de água real, não o contorno
-    /// nominal — a banda de areia/lama do splat fica ancorada ao bordo da
-    /// água). Rio / corpo à mão: `1.0` (contrato antigo).
-    pub mirror_reach: f32,
-    /// Lake: a forma orgânica do contorno (cache do `LakeShape::new(at)` —
-    /// as queries não voltam a fazer hash da posição). Rio / corpo à mão:
-    /// [`LakeShape::default`] (círculo, nunca consultado).
-    pub shape: LakeShape,
-    /// River stations in world XZ (empty for lakes).
-    pub stations: Vec<Vec2>,
-    /// River surface height per station (empty for lakes).
-    pub surface_y: Vec<f32>,
-    /// River full water width (lakes: `0.0`).
-    pub water_width: f32,
-    /// Meia-largura EFETIVA da água POR estação (poços largos, rápidos
-    /// estreitos, já escalada pelo reach da linha de água no carve — a
-    /// ribbon e as queries de água partilham esta métrica; ver
-    /// [`river_water_mesh`]). Vazio = largura constante
-    /// (`water_width * 0.5` em toda a linha) — é o contrato que os
-    /// consumidores antigos assumem.
-    pub half_width: Vec<f32>,
-    /// Rio: profundidade EFETIVA do canal POR estação — poços fundos,
-    /// rápidos rasos, caldeirão de cascata/nascente; é este vetor que o
-    /// carve usa no perfil do canal e que alimenta o reach da linha de
-    /// água guardado em `half_width`. Vazio = profundidade constante
-    /// (contrato antigo: o consumidor usa a nominal da spec — ver
-    /// [`WaterBody::depth_at`]).
-    pub depths: Vec<f32>,
-    /// Quedas do perfil (queda `surface[i] − surface[i+1] > CASCADE_DROP`
-    /// contígua = UMA entrada). Vazio = rio sem quedas. Ver
-    /// [`CascadeInfo`] para o contrato por consumidor.
-    pub cascades: Vec<CascadeInfo>,
-}
-
-impl WaterBody {
-    /// Meia-largura da água numa estação (com fallback do contrato antigo).
-    pub fn half_width_at(&self, i: usize) -> f32 {
-        self.half_width
-            .get(i)
-            .copied()
-            .unwrap_or(self.water_width * 0.5)
-    }
-    /// Profundidade EFETIVA do canal numa estação. `fallback` é a
-    /// profundidade NOMINAL da spec — o contrato antigo dos corpos sem
-    /// `depths` (construídos à mão ou por versões anteriores do carve).
-    pub fn depth_at(&self, i: usize, fallback: f32) -> f32 {
-        self.depths.get(i).copied().unwrap_or(fallback)
-    }
-    /// Meia-largura EFETIVA interpolada no ponto do caminho (`hit`) — a
-    /// linha de água real (as larguras guardadas já incluem o reach do
-    /// carve). Fallback do contrato antigo quando o vetor está vazio.
-    fn half_width_lerp(&self, hit: &PathHit) -> f32 {
-        if self.half_width.is_empty() {
-            self.water_width * 0.5
-        } else {
-            station_lerp(&self.half_width, hit)
-        }
-    }
-    /// Contorno orgânico do lago na direção `delta` (a partir do centro) —
-    /// a métrica radial partilhada pelas queries de espelho.
-    fn contour_at_delta(&self, delta: Vec2) -> f32 {
-        self.shape.contour(self.radius, delta.y.atan2(delta.x))
-    }
-
-    /// Point is inside the carve zone (spawner `avoid-water`).
-    pub fn contains(&self, p: Vec2) -> bool {
-        match self.kind {
-            WaterKind::Lake => p.distance(self.at) <= self.carve_radius,
-            WaterKind::River => {
-                !self.stations.is_empty()
-                    // Rejeição O(1) pelo casco antes do scan O(estações): um
-                    // ponto a 200 m de um rio de 2 km não paga 2 000 segmentos
-                    // — e quem paga são a relva (por célula de lattice) e os
-                    // scripts (por frame). `hull <= 0` (corpo construído à
-                    // mão que não computou o casco) desliga o rejeite em vez
-                    // de negar tudo.
-                    && (self.hull <= 0.0
-                        || (p - self.at).length_squared()
-                            <= (self.hull + self.carve_radius).powi(2))
-                    && distance_to_path(&self.stations, p) <= self.carve_radius
-            }
-        }
-    }
-
-    /// Point is inside the carve zone plus `margin` (spawner `near-water`).
-    pub fn is_near(&self, p: Vec2, margin: f32) -> bool {
-        match self.kind {
-            WaterKind::Lake => p.distance(self.at) <= self.carve_radius + margin,
-            WaterKind::River => {
-                !self.stations.is_empty()
-                    && (self.hull <= 0.0
-                        || (p - self.at).length_squared()
-                            <= (self.hull + self.carve_radius + margin).powi(2))
-                    && distance_to_path(&self.stations, p) <= self.carve_radius + margin
-            }
-        }
-    }
-
-    /// Water surface height at `p` when the point is over the water ribbon
-    /// (rivers: nearest station surface; lakes: flat mirror when inside the
-    /// design radius). `None` when the point is on dry land.
-    pub fn surface_y_at(&self, p: Vec2) -> Option<f32> {
-        match self.kind {
-            WaterKind::Lake => {
-                // Linha de água REAL (contorno × reach): um lóbulo de água
-                // no contorno orgânico tem de responder "água" mesmo fora
-                // do raio nominal — e um recorte tem de responder "seco"
-                // mesmo dentro dele (assentamento `in-water` à lâmina).
-                let delta = p - self.at;
-                let contour = self.contour_at_delta(delta) * self.mirror_reach;
-                (delta.length() <= contour).then_some(self.water_y)
-            }
-            WaterKind::River => {
-                // Mesma rejeição O(1) do casco (`contains`): além do hull não
-                // há lâmina — o teste fino só corre perto do rio. `hull <= 0`
-                // (corpo à mão) desliga o rejeite.
-                if self.hull > 0.0 && (p - self.at).length_squared() > self.hull.powi(2) {
-                    return None;
-                }
-                let hit = nearest_on_path(&self.stations, p)?;
-                let d = hit.point.distance(p);
-                // Meia-largura EFETIVA da estação — a ribbon acaba em
-                // `half · reach` (guardado no carve); usar a nominal punha a
-                // lâmina/queries sobre a margem seca.
-                (d <= self.half_width_lerp(&hit)).then(|| {
-                    if self.surface_y.is_empty() {
-                        self.water_y
-                    } else {
-                        station_lerp(&self.surface_y, &hit)
-                    }
-                })
-            }
-        }
-    }
-
-    /// Horizontal distance from `p` to the waterline (meters; **negative**
-    /// inside the water mirror). This is the geometry line — the shoreline a
-    /// renderer or spawner cares about — not the carve radius: over a lake
-    /// slope the carve reaches past the mirror, and painting sand to the carve
-    /// radius would put beaches on dry hillsides. No lago a linha é o
-    /// contorno ×[`WaterBody::mirror_reach`] — o bordo REAL do espelho (a
-    /// mesma métrica do mesh): medir ao contorno nominal punha a praia de
-    /// areia/lama do splat para lá (fundo) ou para dentro (raso) da água.
-    pub fn distance_to_waterline(&self, p: Vec2) -> f32 {
-        match self.kind {
-            WaterKind::Lake => {
-                let delta = p - self.at;
-                let theta = delta.y.atan2(delta.x);
-                let contour = self.shape.contour(self.radius, theta) * self.mirror_reach;
-                delta.length() - contour
-            }
-            WaterKind::River => match nearest_on_path(&self.stations, p) {
-                Some(hit) => hit.point.distance(p) - self.half_width_lerp(&hit),
-                None => f32::INFINITY,
-            },
-        }
-    }
-
-    /// Water surface height above `p` for ground-color work (the splat map):
-    /// like [`WaterBody::surface_y_at`] but with a **margin** so a texel just
-    /// outside the mirror still resolves a surface while it lies inside the
-    /// waterline-plus-margin band. `None` far from any water.
-    pub fn blend_surface_y(&self, p: Vec2, margin: f32) -> Option<f32> {
-        match self.kind {
-            WaterKind::Lake => {
-                // Mesma métrica de [`WaterBody::surface_y_at`] + margem.
-                let delta = p - self.at;
-                let contour = self.contour_at_delta(delta) * self.mirror_reach;
-                (delta.length() <= contour + margin).then_some(self.water_y)
-            }
-            WaterKind::River => {
-                // Mesma rejeição O(1) do casco, +margem (`blend_surface_y`);
-                // `hull <= 0` (corpo à mão) desliga o rejeite.
-                if self.hull > 0.0 && (p - self.at).length_squared() > (self.hull + margin).powi(2)
-                {
-                    return None;
-                }
-                let hit = nearest_on_path(&self.stations, p)?;
-                let d = hit.point.distance(p);
-                // Meia-largura EFETIVA + margem (mesma métrica de
-                // [`WaterBody::surface_y_at`]).
-                (d <= self.half_width_lerp(&hit) + margin).then(|| {
-                    if self.surface_y.is_empty() {
-                        self.water_y
-                    } else {
-                        station_lerp(&self.surface_y, &hit)
-                    }
-                })
-            }
-        }
-    }
-}
-
-/// Personalidade orgânica de um lago: alongamento dirigido + harmónicos
-/// lineares (k = 1, 3, 5, 7) com amplitude e fase sorteadas por hash da
-/// posição — a mesma posição devolve sempre a MESMA forma ("mesma seed,
-/// mesmo mundo"), mas lagos diferentes ficam diferentes: uns quase redondos,
-/// outros ovais com baías e lóbulos. O contorno é RADIAL (star-shaped) de
-/// propósito: rim, mesh do espelho, pedras de margem, parede gorge, espuma e
-/// o audit amostram todos `r(θ)` — um contorno não-estrela partia-os.
-#[derive(Debug, Clone, Copy, PartialEq, bevy::prelude::Reflect)]
-#[type_path = "viber::terrain::water"]
-pub struct LakeShape {
-    /// Direção do alongamento (radianos).
-    axis: f32,
-    /// Amplitude do alongamento — `stretch·cos(2(θ − axis))`.
-    stretch: f32,
-    /// Harmónicos lineares: `(k, amplitude, fase)`.
-    harmonics: [(f32, f32, f32); 4],
-}
-
-impl LakeShape {
-    /// Contorno de um lago ancorado em `at` — determinístico por posição.
-    /// Hash da família `sin·43758` do repo, um salt POR parâmetro: as fases
-    /// antigas derivavam todas de UM `base` e as silhuetas repetiam-se
-    /// entre lagos.
-    #[allow(dead_code)] // construtor histórico — usado pelos testes em tests/
-    pub(crate) fn new(at: Vec2) -> Self {
-        Self::from_authoring(at, &LakeAuthoring::default())
-    }
-
-    /// Contorno com autoria opcional ([`LakeAuthoring`]). Sem autoria é o
-    /// caminho histórico do [`Self::new`] — bit-exact em mundos existentes.
-    /// Com `seed`, os uniformes saem do SplitMix64 da engine
-    /// ([`bevy_ext_core::rng::splitmix64`], topo 24 bits → f32 [0,1)): mesma seed,
-    /// mesma forma, em qualquer canto do mundo.
-    pub fn from_authoring(at: Vec2, a: &LakeAuthoring) -> Self {
-        let h = |salt: f32| -> f32 {
-            let s = at.x * 12.989_8_f32 + at.y * 78.233_f32;
-            ((s * salt + salt * 91.7).sin() * 43_758.55_f32)
-                .fract()
-                .abs()
-        };
-        let g = |salt: u64| -> f32 {
-            let mut state = a.seed.unwrap_or(0) ^ salt.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            ((bevy_ext_core::rng::splitmix64(&mut state) >> 40) as f32) / 16_777_216.0
-        };
-        // Um uniforme por parâmetro, da fonte que a autoria escolher.
-        let pick =
-            |fsalt: f32, usalt: u64| -> f32 { if a.seed.is_some() { g(usalt) } else { h(fsalt) } };
-        let mut harmonics = std::array::from_fn(|i| {
-            let amp = LAKE_HARMONIC_MIN[i]
-                + (LAKE_HARMONIC_MAX[i] - LAKE_HARMONIC_MIN[i])
-                    * pick(2.3 + i as f32 * 1.37, 11 + i as u64);
-            let phase = pick(3.7 + i as f32 * 1.73, 21 + i as u64) * std::f32::consts::TAU;
-            ([1.0_f32, 3.0, 5.0, 7.0][i], amp, phase)
-        });
-        let mut axis = pick(0.77, 1) * std::f32::consts::TAU;
-        let mut stretch = LAKE_STRETCH_MIN + (LAKE_STRETCH_MAX - LAKE_STRETCH_MIN) * pick(1.31, 2);
-        if let Some(deg) = a.axis_deg {
-            axis = deg.to_radians();
-        }
-        if let Some(s) = a.stretch {
-            stretch = s.clamp(0.0, 0.45);
-        }
-        if let Some(lobes) = a.lobes {
-            let m = lobes.clamp(0.0, 1.6);
-            for h_ in &mut harmonics {
-                h_.1 *= m;
-            }
-        }
-        let mut shape = Self {
-            axis,
-            stretch,
-            harmonics,
-        };
-        shape.fit_to_contour_envelope();
-        shape
-    }
-
-    /// Reescala os desvios do círculo para o contorno caber no envelope
-    /// `[1 − CONTOUR_PEAK, CONTOUR_PEAK]` — o MESMO pior caso que o carve
-    /// (`carve_r`), o espelho (`lake_mirror_reach`) e o audit assumem.
-    /// Autorias agressivas (`stretch` alto × `lobes` alto) são comprimidas
-    /// proporcionalmente, nunca rejeitadas: o lago fica menos exuberante em
-    /// vez de partir os consumidores que contam com o envelope.
-    fn fit_to_contour_envelope(&mut self) {
-        let (mut max, mut min) = (f32::NEG_INFINITY, f32::INFINITY);
-        for i in 0..128 {
-            let r = self.radius_frac(i as f32 / 128.0 * std::f32::consts::TAU);
-            max = max.max(r);
-            min = min.min(r);
-        }
-        let mut scale = 1.0_f32;
-        if max > CONTOUR_PEAK {
-            scale = scale.min((CONTOUR_PEAK - 1.0) / (max - 1.0));
-        }
-        if min < 1.0 - CONTOUR_PEAK {
-            scale = scale.min((1.0 - CONTOUR_PEAK) / (min - 1.0));
-        }
-        if scale < 1.0 {
-            // 0.995 = margem para o máximo verdadeiro cair ENTRE as amostras
-            // da sondagem (subavaliação ≲0,1% do desvio).
-            let scale = scale * 0.995;
-            self.stretch *= scale;
-            for h in &mut self.harmonics {
-                h.1 *= scale;
-            }
-        }
-    }
-
-    /// Fração do raio nominal em `theta` — o contorno orgânico em si,
-    /// dentro de `[1 − pico, CONTOUR_PEAK]` (ver
-    /// `test_contour_peak_covers_the_harmonics`).
-    pub fn radius_frac(&self, theta: f32) -> f32 {
-        let mut r = 1.0 + self.stretch * (2.0 * (theta - self.axis)).cos();
-        for &(k, a, p) in &self.harmonics {
-            r += a * (k * theta + p).sin();
-        }
-        r
-    }
-
-    /// Raio do contorno em `theta` para um lago de raio nominal `radius`.
-    pub fn contour(&self, radius: f32, theta: f32) -> f32 {
-        radius * self.radius_frac(theta)
-    }
-}
-
-impl Default for LakeShape {
-    /// Corpo circular — rios e corpos construídos à mão não usam a forma.
-    fn default() -> Self {
-        Self {
-            axis: 0.0,
-            stretch: 0.0,
-            harmonics: [
-                (1.0, 0.0, 0.0),
-                (3.0, 0.0, 0.0),
-                (5.0, 0.0, 0.0),
-                (7.0, 0.0, 0.0),
-            ],
-        }
-    }
-}
-
 /// Lake mirror height: the 64-ray rim minimum minus `water_offset`. Um
 /// `water-level` autoral ganha sempre — é o contrato idempotente do bake.
 pub fn lake_water_height(grid: &BrushGrid, spec: &LakeSpec) -> f32 {
@@ -956,16 +502,45 @@ pub fn carve_lake(grid: &mut BrushGrid, spec: &LakeSpec, index: usize) -> Option
     // fundos (1.28·1.16 > 1.25).
     let carve_r = spec.radius * CARVE_MARGIN.max(CONTOUR_PEAK * mirror_reach);
 
-    // Bowl floor: C1 at the contour rim (`(1 − t²)^1.5` has zero derivative).
+    // Bowl floor: C1 at the contour rim (`(1 − t²)^1.5` has zero derivative),
+    // with natural shallow-bar / eroded-cove imperfections outside the center.
+    let waterline_reach_f = mirror_reach;
+    let erode_lake = !spec.bank.is_voxel();
     let bowl = |p: Vec2| -> f32 {
         let d = p.distance(spec.at);
         let theta = (p.y - spec.at.y).atan2(p.x - spec.at.x);
-        let r = shape.contour(spec.radius, theta) * CARVE_MARGIN;
+        let base_c = shape.contour(spec.radius, theta);
+        let r = base_c * CARVE_MARGIN;
+        let waterline_r = base_c * waterline_reach_f;
+        let edge_n = if erode_lake {
+            bank_erosion_fbm(p, (spec.radius * 0.28).clamp(3.0, 8.5))
+        } else {
+            0.0
+        };
         if d >= r {
-            return water_y + spec.water_offset;
+            if !erode_lake {
+                return water_y + spec.water_offset;
+            }
+            // Eroded micro-gullies & slumped bench steps along lakeside bluffs.
+            let radial = (p - spec.at).normalize_or_zero();
+            let tangent = Vec2::new(-radial.y, radial.x);
+            let rill = bank_erosion_rill(p, tangent, (spec.radius * 0.22).clamp(2.8, 6.0));
+            return water_y + spec.water_offset + edge_n * 0.22 - rill * 0.28;
         }
         let t = d / r;
-        (water_y + spec.water_offset) - spec.depth * (1.0 - t * t).max(0.0).powf(1.5)
+        let mut floor_y =
+            (water_y + spec.water_offset) - spec.depth * (1.0 - t * t).max(0.0).powf(1.5);
+        if erode_lake {
+            // Subtle shoaling/scour near perimeter while keeping deep center intact
+            // (`t < 0.35` stays 0) and submerged floor safely under `water_y`.
+            let cove_fade = smoothstep01(((t - 0.35) / 0.55).clamp(0.0, 1.0));
+            let bed_mod = edge_n * spec.depth * 0.14 * cove_fade;
+            floor_y += bed_mod;
+            if d < waterline_r * 0.96 {
+                floor_y = floor_y.min(water_y - 0.08);
+            }
+        }
+        floor_y
     };
 
     // Shore band, per rim ray. The contour used to be a hard 0/1 mask, so a
@@ -1031,14 +606,26 @@ pub fn carve_lake(grid: &mut BrushGrid, spec: &LakeSpec, index: usize) -> Option
             return if d < contour * reach { 1.0 } else { 0.0 };
         }
         let r = contour * CARVE_MARGIN;
-        if d < r {
+        let band = shore_at(theta);
+        let d_eff = if erode_lake && d > contour * waterline_reach_f {
+            let dry_fade = smoothstep01(((d - contour * waterline_reach_f) / 1.5).clamp(0.0, 1.0));
+            let outer_fade = 1.0 - smoothstep01(((d - r) / band.max(1e-4)).clamp(0.0, 1.0));
+            let scallop = bank_erosion_fbm(p, (spec.radius * 0.25).clamp(2.8, 7.0))
+                * band.min(3.5)
+                * 0.26
+                * dry_fade
+                * outer_fade;
+            (d + scallop).max(contour * waterline_reach_f)
+        } else {
+            d
+        };
+        if d_eff < r {
             return 1.0;
         }
-        let band = shore_at(theta);
-        if d >= r + band {
+        if d_eff >= r + band {
             return 0.0;
         }
-        let t = (d - r) / band.max(1e-4);
+        let t = (d_eff - r) / band.max(1e-4);
         1.0 - style.progress(t)
     };
     let mut target = bowl;
@@ -1411,6 +998,8 @@ pub fn carve_river_with_falls(
     // VOXEL (gorge/overhang) ficam SEM rampa: o sólido natural fica de pé e
     // a parede é cortada por mods (`voxel/riverbank.rs`).
     let style = spec.bank;
+    let erode = !style.is_voxel();
+    let curvatures = station_curvatures(&stations);
     let feathers: Vec<f32> = if style.is_voxel() {
         vec![0.0; stations.len()]
     } else {
@@ -1429,41 +1018,92 @@ pub fn carve_river_with_falls(
     let extent = half + bank + feather_max + texel * 2.0;
     let owner = format!("river:{index}");
 
-    // Bank + channel profile at a point: the pass-2 design surface. The bank
-    // band rises to `surf + bank_height` (capped against the axis height so
-    // deep valleys stay cascades), the channel bowls under the surface.
-    // Profundidade e meia-largura vêm das estações (pools/cascatas).
+    let reaches: Vec<f32> = depths
+        .iter()
+        .map(|&d| waterline_reach(d, spec.water_offset).clamp(0.4, 1.0))
+        .collect();
+
+    // Computes organic scalloped lateral distance past `half_local`, staying
+    // >= half_local so the underwater seam never splits open.
+    let warped_bank_dist = |p: Vec2, d: f32, half_local: f32| -> f32 {
+        if !erode || d <= half_local {
+            return d;
+        }
+        let fade_in = smoothstep01(((d - half_local) / 1.4).clamp(0.0, 1.0));
+        let fade_out =
+            1.0 - smoothstep01(((d - half_local - bank * 0.85) / (bank + 1.5)).clamp(0.0, 1.0));
+        let scallop = bank_erosion_fbm(p, (half_local * 1.15).clamp(4.0, 11.0))
+            * bank.min(4.0)
+            * 0.24
+            * fade_in
+            * fade_out;
+        (d + scallop).max(half_local + 1e-3)
+    };
+
+    // Bank + channel profile at a point: the pass-2 design surface.
     let channel_profile = {
         let stations = &stations;
         let surface = &surface;
         let axis = &axis;
         let depths = &depths;
         let halfs = &halfs;
+        let curvatures = &curvatures;
         move |p: Vec2| -> f32 {
             let hit = nearest_on_path(stations, p).expect("stations >= 2");
             let d = hit.point.distance(p);
-            // Interpolated along the path: reading `surface[seg]` directly
-            // steps by a whole station at every segment boundary, and the
-            // lower-only pass then cuts that step into a vertical fin.
             let surf = station_lerp(surface, &hit);
             let axis_h = station_lerp(axis, &hit);
             let depth = station_lerp(depths, &hit);
             let half_local = station_lerp(halfs, &hit).max(texel * 0.5);
+            let outer = if erode {
+                river_outer_bias(stations, curvatures, &hit, p)
+            } else {
+                0.0
+            };
             if d <= half_local {
                 let t = d / half_local;
-                surf - depth.max(MIN_CHANNEL_DEPTH) * (1.0 - t * t).max(0.0).powf(1.5)
+                let bed_exp = if erode {
+                    (1.5 - 0.35 * outer).clamp(1.12, 1.92)
+                } else {
+                    1.5
+                };
+                let edge_mod = if erode {
+                    1.0 + 0.22 * outer * smoothstep01(t)
+                        + 0.08 * bank_erosion_fbm(p, 5.5) * (1.0 - t * t)
+                } else {
+                    1.0
+                };
+                let eff_depth = (depth * edge_mod).max(MIN_CHANNEL_DEPTH);
+                surf - eff_depth * (1.0 - t * t).max(0.0).powf(bed_exp)
             } else {
-                let band = ((d - half_local) / bank.max(1e-4)).clamp(0.0, 1.0);
-                let raised = surf + bank_height * smoothstep01(1.0 - band);
+                let d_eff = warped_bank_dist(p, d, half_local);
+                let band_span = if erode {
+                    bank * (1.0 - 0.25 * outer.max(0.0) + 0.35 * (-outer).max(0.0))
+                } else {
+                    bank
+                };
+                let band = ((d_eff - half_local) / band_span.max(1e-4)).clamp(0.0, 1.0);
+                let asym_height = if erode {
+                    bank_height * (1.0 + 0.24 * outer.max(0.0) - 0.42 * (-outer).max(0.0))
+                } else {
+                    bank_height
+                };
+                let mut raised = surf + asym_height * smoothstep01(1.0 - band);
+                if erode {
+                    let seg = hit.segment.min(stations.len().saturating_sub(2));
+                    let flow_dir = (stations[seg + 1] - stations[seg]).normalize_or_zero();
+                    let micro_n = bank_erosion_fbm(p, (bank * 0.95).clamp(2.5, 6.5));
+                    let rill = bank_erosion_rill(p, flow_dir, (bank * 0.65).clamp(2.0, 4.5));
+                    let relief_fade =
+                        smoothstep01((band / 0.22).clamp(0.0, 1.0)) * (1.0 - band * 0.35);
+                    raised += relief_fade * (micro_n * 0.24 * bank_height - rill * 0.30 * bank_height);
+                }
                 raised.min(axis_h + MAX_BANK_RAISE)
             }
         }
     };
 
     // Pass 1 — banks (raise): fills the near bank band up to the profile.
-    // Estilos voxel saltam: a margem mantém o terreno natural (o mod é que
-    // corta a parede) — levantar bancos aqui punha terra SOLTA onde a
-    // parede tem de ser rocha.
     if !style.is_voxel() {
         grid.begin_stroke(&format!("{owner}:banks"));
         let mut bank_weight = |p: Vec2| {
@@ -1474,10 +1114,11 @@ pub fn carve_river_with_falls(
             if d <= half_local || d > half_local + bank + feather {
                 return 0.0;
             }
-            let band = ((d - half_local) / bank.max(1e-4)).clamp(0.0, 1.0);
+            let d_eff = warped_bank_dist(p, d, half_local);
+            let band = ((d_eff - half_local) / bank.max(1e-4)).clamp(0.0, 1.0);
             let mut w = smoothstep01(1.0 - band);
-            if d > half_local + bank {
-                w *= 1.0 - smoothstep01((d - half_local - bank) / feather);
+            if d_eff > half_local + bank {
+                w *= 1.0 - smoothstep01((d_eff - half_local - bank) / feather.max(1e-4));
             }
             w
         };
@@ -1504,8 +1145,12 @@ pub fn carve_river_with_falls(
         if d > half_local + bank + feather {
             return 0.0;
         }
-        if d > half_local + bank {
-            let t = (d - half_local - bank) / feather.max(1e-4);
+        let d_eff = warped_bank_dist(p, d, half_local);
+        if d_eff > half_local + bank + feather {
+            return 0.0;
+        }
+        if d_eff > half_local + bank {
+            let t = (d_eff - half_local - bank) / feather.max(1e-4);
             return 1.0 - style.progress(t);
         }
         1.0
@@ -1540,10 +1185,7 @@ pub fn carve_river_with_falls(
     // a lâmina cortava a margem; os poços e o caldeirão abrem na mesma
     // proporção. `depths` fica no registry para consumidores e testes
     // partilharem a métrica.
-    let reaches: Vec<f32> = depths
-        .iter()
-        .map(|&d| waterline_reach(d, spec.water_offset).clamp(0.4, 1.0))
-        .collect();
+    // (Computed above so channel/bank helpers can share it cleanly.)
     // Casco O(1) das queries (`WaterBody::hull`): distância máxima das
     // estações ao centroide + a maior meia-largura EFETIVA.
     let body_at = centroid(&stations);
@@ -1945,6 +1587,377 @@ pub fn river_water_mesh(spec: &RiverSpec, body: &WaterBody) -> ChunkMeshData {
         }
     }
     mesh
+}
+
+/// High-density water mesh carrying downstream flow velocity `(vx, vz)` in `uv_b`.
+#[derive(Debug, Clone, Default)]
+pub struct WaterMeshData {
+    pub mesh: ChunkMeshData,
+    /// Downstream surface velocity `(vx, vz)` in m/s (`(0, 0)` on lakes).
+    pub uv_b: Vec<[f32; 2]>,
+}
+
+/// Builds a high-density tessellated lake mesh (~0.45 m radial rings and ~0.55 m
+/// perimeter spacing) so Gerstner swells, Kelvin wakes, and circular wave rings
+/// deform geometrically without diamond faceting.
+pub fn lake_water_mesh_dense(spec: &LakeSpec, water_y: f32, grid: &BrushGrid) -> WaterMeshData {
+    let shape = LakeShape::from_authoring(spec.at, &spec.shape);
+    let reach = lake_mirror_reach(spec.depth, spec.water_offset);
+    if reach <= 0.0 {
+        return WaterMeshData::default();
+    }
+    let outer_r = (spec.radius * reach).max(0.5);
+    let ring_count = (outer_r / 0.45).round().clamp(16.0, 96.0) as usize;
+    let seg_count =
+        ((std::f32::consts::TAU * outer_r) / 0.55).round().clamp(72.0, 256.0) as usize;
+
+    let mut data = WaterMeshData::default();
+    let island_mask = |p: Vec2| -> f32 {
+        let mut a = 1.0f32;
+        for island in &spec.islands {
+            let d = p.distance(island.at);
+            let t = ((d - island.radius * 0.75) / (island.radius * 0.25 + 0.8)).clamp(0.0, 1.0);
+            a *= smoothstep01(t);
+        }
+        a
+    };
+    let push = |out: &mut WaterMeshData, p: Vec2, mask: f32| {
+        let depth = (water_y - grid.sample(p.x, p.y)).clamp(0.02, 40.0);
+        out.mesh.positions.push([p.x, water_y, p.y]);
+        out.mesh.normals.push([0.0, 1.0, 0.0]);
+        out.mesh.uvs.push([spec.opacity, depth]);
+        out.mesh
+            .colors
+            .push([spec.color[0], spec.color[1], spec.color[2], mask]);
+        out.uv_b.push([0.0, 0.0]);
+    };
+
+    push(&mut data, spec.at, island_mask(spec.at));
+    // Geometric outer skirt only feathers the outermost ~1.8 m band so true
+    // per-pixel `prepass_depth` defines the shoreline inside the water mirror.
+    let edge_band = (1.8 / outer_r).clamp(0.05, WATER_EDGE_FADE);
+    for ring in 0..ring_count {
+        let radial = (ring + 1) as f32 / ring_count as f32;
+        let skirt =
+            1.0 - smoothstep01(((radial - (1.0 - edge_band)) / edge_band).clamp(0.0, 1.0));
+        for i in 0..seg_count {
+            let theta = i as f32 / seg_count as f32 * std::f32::consts::TAU;
+            let r = shape.contour(spec.radius, theta) * reach * radial;
+            let p = spec.at + Vec2::new(theta.cos(), theta.sin()) * r;
+            push(&mut data, p, skirt * island_mask(p));
+        }
+    }
+
+    let seg = seg_count as u32;
+    let inner0 = 1u32;
+    for i in 0..seg {
+        let a = inner0 + i;
+        let b = inner0 + (i + 1) % seg;
+        data.mesh.indices.extend_from_slice(&[0, b, a]);
+    }
+    for ring in 0..(ring_count as u32 - 1) {
+        let a0 = inner0 + ring * seg;
+        let b0 = inner0 + (ring + 1) * seg;
+        for i in 0..seg {
+            let a = a0 + i;
+            let b = a0 + (i + 1) % seg;
+            let c = b0 + i;
+            let d = b0 + (i + 1) % seg;
+            data.mesh.indices.extend_from_slice(&[a, b, c, b, d, c]);
+        }
+    }
+    data
+}
+
+/// Builds a high-density tessellated river ribbon (~0.60 m longitudinal step, 15
+/// cross-channel vertices with bank-sheared velocity in `uv_b`) plus curved
+/// parabolic waterfall sheets across cascades.
+pub fn river_water_mesh_dense(spec: &RiverSpec, body: &WaterBody) -> WaterMeshData {
+    let mut data = WaterMeshData::default();
+    let n = body.stations.len();
+    if n < 2 {
+        return data;
+    }
+    const CROSS_VERTS: usize = 19;
+    let murk = spec.opacity;
+    let mask_at = |v: f32| -> f32 {
+        let u = (v - 0.5).abs() * 2.0;
+        1.0 - smoothstep01(((u - 0.86) / 0.14).clamp(0.0, 1.0))
+    };
+
+    let cascade_at = |seg: usize| -> Option<&CascadeInfo> {
+        body.cascades.iter().find(|c| seg >= c.lip && seg < c.base)
+    };
+
+    // Emit contiguous non-cascade river reaches resampled at ~0.60 m longitudinal step.
+    let mut reach_start: Option<usize> = None;
+    for i in 0..=n {
+        let is_seg_cascade = i + 1 < n && cascade_at(i).is_some();
+        let continue_reach = i < n && !is_seg_cascade;
+        if continue_reach {
+            if reach_start.is_none() {
+                reach_start = Some(i);
+            }
+            continue;
+        }
+        // If `i` entered a cascade at `i`, the upstream reach ends AT station `i` (the lip).
+        let end_station = if i < n && is_seg_cascade { i } else { n - 1 };
+        if let Some(start) = reach_start.take() {
+            if end_station > start {
+                emit_dense_river_reach(
+                    &mut data,
+                    spec,
+                    body,
+                    start..=end_station,
+                    CROSS_VERTS,
+                    murk,
+                    mask_at,
+                );
+            }
+        }
+        // Wait until after the cascade ends to start the next reach at `c.base`.
+        if i + 1 < n && is_seg_cascade {
+            reach_start = None;
+        }
+    }
+
+    // Emit one smooth curved parabolic sheet per cascade `[c.lip .. c.base]`.
+    for c in &body.cascades {
+        if c.lip >= n || c.base >= n || c.base <= c.lip {
+            continue;
+        }
+        emit_curved_waterfall_sheet(&mut data, spec, body, c, CROSS_VERTS);
+    }
+
+    data
+}
+
+fn catmull_rom_vec2(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    0.5 * ((2.0 * p1)
+        + (-p0 + p2) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+}
+
+fn emit_dense_river_reach(
+    data: &mut WaterMeshData,
+    spec: &RiverSpec,
+    body: &WaterBody,
+    range: std::ops::RangeInclusive<usize>,
+    cross_verts: usize,
+    murk: f32,
+    mask_at: impl Fn(f32) -> f32,
+) {
+    let s0 = *range.start();
+    let s1 = *range.end();
+    if s1 <= s0 {
+        return;
+    }
+    struct Sample {
+        pos: Vec2,
+        y: f32,
+        half: f32,
+        depth: f32,
+        slope: f32,
+    }
+    let mut samples: Vec<Sample> = Vec::new();
+    for i in s0..s1 {
+        let a = body.stations[i];
+        let b = body.stations[i + 1];
+        let p0 = body.stations[i.saturating_sub(1).max(s0)];
+        let p3 = body.stations[(i + 2).min(s1)];
+        let seg_len = a.distance(b).max(0.05);
+        let substeps = ((seg_len / 0.60).ceil() as usize).clamp(1, 72);
+        let ya = body.surface_y.get(i).copied().unwrap_or(body.water_y);
+        let yb = body.surface_y.get(i + 1).copied().unwrap_or(body.water_y);
+        let slope = ((ya - yb) / seg_len).max(0.0);
+        let ha = body.half_width_at(i);
+        let hb = body.half_width_at(i + 1);
+        let da = body.depth_at(i, spec.depth);
+        let db = body.depth_at(i + 1, spec.depth);
+        let k_end = if i + 1 == s1 { substeps + 1 } else { substeps };
+        for k in 0..k_end {
+            let t = k as f32 / substeps as f32;
+            let lin = a.lerp(b, t);
+            let spline = catmull_rom_vec2(p0, a, b, p3, t);
+            // Gentle 35% spline blend rounds kinks while staying safely inside the carved bed.
+            let pos = lin.lerp(spline, 0.35);
+            samples.push(Sample {
+                pos,
+                y: ya + (yb - ya) * t,
+                half: ha + (hb - ha) * t,
+                depth: da + (db - da) * t,
+                slope,
+            });
+        }
+    }
+
+    let base_vertex = data.mesh.positions.len() as u32;
+    let m = samples.len();
+    for (idx, s) in samples.iter().enumerate() {
+        let prev = samples[idx.saturating_sub(1)].pos;
+        let next = samples[(idx + 1).min(m - 1)].pos;
+        let dir = (next - prev).normalize_or_zero();
+        let perp = Vec2::new(-dir.y, dir.x);
+        let speed = (1.15 + s.slope * 14.0).clamp(0.9, 3.8);
+        for c in 0..cross_verts {
+            let v = c as f32 / (cross_verts - 1) as f32;
+            let lateral = v * 2.0 - 1.0;
+            let p = s.pos + perp * (s.half * lateral);
+            let edge_profile = (1.0 - lateral * lateral).clamp(0.0, 1.0);
+            let bank_profile = 0.45 + 0.55 * edge_profile;
+            // Taper baked depth toward the bank margins so shoreline vertex locking
+            // matches actual bathymetry instead of keeping centerline channel depth.
+            let channel_depth = (s.depth * edge_profile * edge_profile).max(0.02);
+            data.mesh.positions.push([p.x, s.y, p.y]);
+            data.mesh.normals.push([0.0, 1.0, 0.0]);
+            data.mesh.uvs.push([murk, channel_depth]);
+            data.mesh
+                .colors
+                .push([spec.color[0], spec.color[1], spec.color[2], mask_at(v)]);
+            data.uv_b
+                .push([dir.x * speed * bank_profile, dir.y * speed * bank_profile]);
+        }
+    }
+
+    let per = cross_verts as u32;
+    for idx in 0..(m as u32 - 1) {
+        let row = base_vertex + idx * per;
+        for c in 0..(per - 1) {
+            let a = row + c;
+            let b = a + 1;
+            let c_idx = a + per;
+            let d = c_idx + 1;
+            data.mesh
+                .indices
+                .extend_from_slice(&[a, b, c_idx, b, d, c_idx]);
+        }
+    }
+}
+
+fn emit_curved_waterfall_sheet(
+    data: &mut WaterMeshData,
+    spec: &RiverSpec,
+    body: &WaterBody,
+    c: &CascadeInfo,
+    cross_verts: usize,
+) {
+    let st0 = body.stations[c.lip];
+    let st1 = body.stations[c.base];
+    let fallback_dir = body
+        .stations
+        .get(c.lip + 1)
+        .map(|s| (*s - st0).normalize_or_zero())
+        .filter(|d| d.length_squared() > 1e-4)
+        .unwrap_or(Vec2::X);
+    let raw_span = st1 - st0;
+    let span_len = raw_span.length();
+    let dir = if span_len > 1e-3 {
+        raw_span / span_len
+    } else {
+        fallback_dir
+    };
+    let perp = Vec2::new(-dir.y, dir.x);
+
+    let top_y = c.top_y;
+    let bot_y = c.bot_y;
+    let drop = (top_y - bot_y).max(0.25);
+    let drop_rows = ((drop / 0.55).ceil() as usize).clamp(8, 28);
+
+    let lip_half = body.half_width_at(c.lip);
+    let base_half = body.half_width_at(c.base);
+    let curtain_flare = if c.waterfall { WATERFALL_CURTAIN } else { 1.08 };
+    let face_depth = body.depth_at(c.base, spec.depth);
+    let lean = if c.wall {
+        1.2
+    } else {
+        (span_len * 0.35).min(1.4)
+    };
+
+    let arc_pos = |t: f32| -> (Vec2, f32, f32) {
+        // Ballistic advance: jets forward off the brow before gravity bends it down.
+        let adv = 1.0 - (1.0 - t).powf(1.45);
+        let bow = 4.0 * t * (1.0 - t) * lean * 0.35;
+        let center = st0 + dir * (span_len * adv + bow);
+        let y = top_y - drop * (0.08 * t + 0.92 * t * t);
+        let half = (lip_half + (base_half - lip_half) * t)
+            * (1.0 + (curtain_flare - 1.0) * smoothstep01(t));
+        (center, y, half)
+    };
+
+    let base_vertex = data.mesh.positions.len() as u32;
+    for r in 0..=drop_rows {
+        let t = r as f32 / drop_rows as f32;
+        let t_prev = (t - 0.02).max(0.0);
+        let t_next = (t + 0.02).min(1.0);
+        let (p_prev, y_prev, _) = arc_pos(t_prev);
+        let (p_next, y_next, _) = arc_pos(t_next);
+        let (center, y, half) = arc_pos(t);
+
+        let tang = bevy::math::Vec3::new(
+            p_next.x - p_prev.x,
+            y_next - y_prev,
+            p_next.y - p_prev.y,
+        )
+        .normalize_or_zero();
+        let across = bevy::math::Vec3::new(perp.x, 0.0, perp.y);
+        // Outward face normal (pointing downstream & slightly upward over the brow).
+        let normal = across
+            .cross(tang)
+            .normalize_or(bevy::math::Vec3::new(dir.x, 0.25, dir.y).normalize());
+        let flow_speed = 4.2 + 3.2 * t;
+        for col in 0..cross_verts {
+            let v = col as f32 / (cross_verts - 1) as f32;
+            let lateral = v * 2.0 - 1.0;
+            let p = center + perp * (half * lateral);
+            data.mesh.positions.push([p.x, y, p.y]);
+            data.mesh.normals.push([normal.x, normal.y, normal.z]);
+            data.mesh.uvs.push([spec.opacity, face_depth]);
+            data.mesh
+                .colors
+                .push([spec.color[0], spec.color[1], spec.color[2], 1.0]);
+            data.uv_b.push([dir.x * flow_speed, dir.y * flow_speed]);
+        }
+    }
+
+    let per = cross_verts as u32;
+    for r in 0..drop_rows as u32 {
+        let row = base_vertex + r * per;
+        for col in 0..(per - 1) {
+            let a = row + col;
+            let b = a + 1;
+            let c_idx = a + per;
+            let d = c_idx + 1;
+            // Winding matching outward downstream normal `across × tang`
+            data.mesh
+                .indices
+                .extend_from_slice(&[a, b, c_idx, b, d, c_idx]);
+        }
+    }
+}
+
+// ── Contrato `WaterSource` da crate `bevy_ext_water` ────────────────────────
+//
+// O solver/FX/flutuação genéricos da crate consomem o terreno por este
+// trait. O impl vive AQUI (e não na ponte do host, como no monólito) por
+// causa da regra de orphan: o trait e o tipo são de crates externas — só
+// esta crate pode ligá-los. Os plugins especializados
+// (`water_fx::WaterFxPlugin`, `water_waves::WaterWavePlugin`,
+// `water_buoyancy::WaterBuoyancyPlugin`) exigem-no.
+impl bevy_ext_water::WaterSource for crate::runtime::TerrainRuntime {
+    fn bodies(&self) -> &[bevy_ext_water::WaterBody] {
+        &self.water
+    }
+
+    fn bed_y(&self, x: f32, z: f32) -> Option<f32> {
+        self.in_field(x, z).then(|| self.sample(x, z))
+    }
+
+    fn signature(&self) -> u64 {
+        bevy_ext_water::waves::bodies_signature(&self.water)
+    }
 }
 
 #[cfg(test)]
@@ -2382,8 +2395,7 @@ mod tests {
             );
             assert_eq!(
                 river.surface_y_at(side).is_some(),
-                distance_to_path(&river.stations, side)
-                    <= river.half_width_lerp(&nearest_on_path(&river.stations, side).expect("hit")),
+                river.distance_to_waterline(side) <= 0.0,
                 "surface_y_at diverge do teste fino em {side:?}"
             );
         }
@@ -3482,6 +3494,151 @@ mod tests {
             (h - (sines + fbm_term)).abs() < 1e-5,
             "CPU mirror = shader: {h} vs {} (o peso do FBM divergiu)",
             sines + fbm_term
+        );
+    }
+
+    /// O espelho do DESLOCAMENTO visível (`gerstner_swell().y`) é a cota que
+    /// um flutuador sente: limitado a ±0,12·0,78, linear em `wave_amp` antes
+    /// do clamp, morto na praia (`depth <= 0.38`) e diferente do espelho das
+    /// normais (outra família de senos) — a confusão entre os dois punha o
+    /// barco a navegar numa onda que a malha não desenha.
+    #[test]
+    fn test_surface_height_mirrors_vertex_swell_not_normal_detail() {
+        let (wind, strength, amp) = ([0.7, 0.25], 1.5f32, 1.0f32);
+        let p = Vec2::new(13.3, -7.1);
+        let t = 2.7;
+
+        let deep = surface_height_at(p, t, wind, strength, amp, 3.0);
+        assert!(deep.abs() <= 0.12 * 0.78 + 1e-5, "swell limitado: {deep}");
+        assert_eq!(
+            surface_height_at(p, t, wind, strength, 0.0, 3.0),
+            0.0,
+            "sem amplitude o espelho é plano"
+        );
+        assert_eq!(
+            surface_height_at(p, t, wind, strength, amp, 0.30),
+            0.0,
+            "seco/raso (abaixo de 0.38 m) não tem onda"
+        );
+        assert_eq!(
+            surface_height_at(p, t, wind, strength, amp, 0.38),
+            0.0,
+            "a rampa começa exatamente em 0.38 m"
+        );
+        let shallow = surface_height_at(p, t, wind, strength, amp, 0.8);
+        assert!(
+            shallow.abs() < deep.abs(),
+            "a rampa de praia atenua: {shallow} vs {deep}"
+        );
+
+        // Linear em amplitude enquanto o clamp não morde.
+        let a = surface_height_at(p, t, wind, strength, 0.02, 3.0);
+        let b = surface_height_at(p, t, wind, strength, 0.04, 3.0);
+        assert!((b - a * 2.0).abs() < 1e-6, "linear em amp: {a} / {b}");
+
+        // Determinístico e distinto do espelho das normais.
+        assert_eq!(deep, surface_height_at(p, t, wind, strength, amp, 3.0));
+        let normal_mirror = wave_height_at(p, t, wind, strength, amp);
+        assert!(
+            (deep - normal_mirror).abs() > 1e-4,
+            "o deslocamento visível não é o detalhe das normais: {deep} vs {normal_mirror}"
+        );
+    }
+
+    #[test]
+    fn test_dense_lake_and_river_meshes_and_domain_sample() {
+        let mut grid = test_grid();
+        let lake_spec = LakeSpec {
+            at: Vec2::new(48.0, 48.0),
+            radius: 14.0,
+            depth: 2.5,
+            water_offset: 0.4,
+            ..Default::default()
+        };
+        let lake_body = carve_lake(&mut grid, &lake_spec, 0).expect("lake carved");
+        let dense_lake = lake_water_mesh_dense(&lake_spec, lake_body.water_y, &grid);
+        assert_eq!(dense_lake.mesh.positions.len(), dense_lake.uv_b.len());
+        assert!(
+            dense_lake.mesh.positions.len() > 2000,
+            "expected high-density lake tessellation, got {} verts",
+            dense_lake.mesh.positions.len()
+        );
+        assert!(dense_lake.uv_b.iter().all(|&uv| uv == [0.0, 0.0]));
+
+        let lake_sample = lake_body
+            .sample_domain(
+                Vec2::new(48.0, 48.0),
+                Some(grid.sample(48.0, 48.0)),
+                lake_spec.depth,
+            )
+            .expect("center inside lake");
+        assert!(lake_sample.depth > 1.5);
+        assert_eq!(lake_sample.flow, Vec2::ZERO);
+
+        let river_spec = RiverSpec {
+            path: vec![
+                Vec2::new(16.0, 20.0),
+                Vec2::new(48.0, 20.0),
+                Vec2::new(80.0, 26.0),
+            ],
+            width: 8.0,
+            depth: 1.4,
+            ..Default::default()
+        };
+        let mut rgrid = test_grid();
+        let river_body = carve_river(&mut rgrid, &river_spec, 1, &[]).expect("river carved");
+        let dense_river = river_water_mesh_dense(&river_spec, &river_body);
+        assert_eq!(dense_river.mesh.positions.len(), dense_river.uv_b.len());
+        assert!(
+            dense_river.mesh.positions.len()
+                > river_water_mesh(&river_spec, &river_body).positions.len() * 4,
+            "expected dense river mesh to far exceed coarse station ribbon"
+        );
+        assert!(
+            dense_river.uv_b.iter().any(|uv| uv[0].hypot(uv[1]) > 0.5),
+            "river mesh uv_b should encode downstream velocity"
+        );
+        let mid = river_body.stations[river_body.stations.len() / 2];
+        let river_sample = river_body
+            .sample_domain(mid, Some(rgrid.sample(mid.x, mid.y)), river_spec.depth)
+            .expect("midstation inside river");
+        assert!(river_sample.flow.length() > 0.5);
+    }
+
+    #[test]
+    fn test_meander_carves_asymmetric_cutbank_and_point_bar() {
+        let mut grid = flat_grid();
+        let spec = RiverSpec {
+            path: vec![
+                Vec2::new(8.0, 20.0),
+                Vec2::new(48.0, 48.0),
+                Vec2::new(88.0, 20.0),
+            ],
+            width: 8.0,
+            depth: 2.0,
+            water_offset: 0.4,
+            bank_width: 4.0,
+            bank_height: 1.0,
+            ..river_spec()
+        };
+        let body = carve_river(&mut grid, &spec, 0, &[]).expect("bend river");
+        let apex = body.stations[body.stations.len() / 2];
+        let hit = nearest_on_path(&body.stations, apex).expect("hit");
+        let curv = station_curvatures(&body.stations);
+        // Apex turns right in XZ (`d1=(+,+)` -> `d2=(+,-)`, cross < 0), so
+        // outer bend is +Z and inner bend is -Z relative to apex.
+        let outer_bank_pt = apex + Vec2::new(0.0, 5.2);
+        let inner_bar_pt = apex + Vec2::new(0.0, -5.2);
+        assert!(river_outer_bias(&body.stations, &curv, &hit, outer_bank_pt) > 0.2);
+        assert!(river_outer_bias(&body.stations, &curv, &hit, inner_bar_pt) < -0.2);
+        let outer_bed_pt = apex + Vec2::new(0.0, 2.2);
+        let inner_bed_pt = apex + Vec2::new(0.0, -2.2);
+        assert!(
+            grid.sample(outer_bed_pt.x, outer_bed_pt.y)
+                < grid.sample(inner_bed_pt.x, inner_bed_pt.y),
+            "outer thalweg must cut deeper than inner point bar: outer={} vs inner={}",
+            grid.sample(outer_bed_pt.x, outer_bed_pt.y),
+            grid.sample(inner_bed_pt.x, inner_bed_pt.y)
         );
     }
 }

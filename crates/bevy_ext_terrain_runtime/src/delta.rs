@@ -591,13 +591,18 @@ mod tests {
     /// GUARDA DE WIRE — os `TypePath` históricos estão congelados na 0.x: o
     /// `.bsn`, os saves e o BRP dependem deles (docs/PACKAGES.md). Mover
     /// qualquer um é release breaking separada.
+    ///
+    /// `WaterBody`/`WaterKind`/`CascadeInfo`/`LakeShape` moveram-se para a
+    /// crate `bevy_ext_water` (22c2a31, o monólito é o autoritativo) e lá
+    /// ficam SEM freeze — não são componentes `.bsn` nem entram em saves
+    /// (só a entrada do registry em runtime, serializada por valor).
     #[test]
     fn test_reflected_types_keep_the_frozen_type_paths() {
+        use bevy_ext_water::body::WaterBody;
         use crate::host::SceneEntity;
         use crate::plugin::TerrainChunk;
         use crate::runtime::PendingTerrain;
         use crate::voxel::VoxelChunk;
-        use crate::water::WaterBody;
         assert_eq!(
             <TerrainEdit as bevy::reflect::TypePath>::type_path(),
             "viber::terrain::delta::TerrainEdit"
@@ -616,7 +621,7 @@ mod tests {
         );
         assert_eq!(
             <WaterBody as bevy::reflect::TypePath>::type_path(),
-            "viber::terrain::water::WaterBody"
+            "bevy_ext_water::body::WaterBody"
         );
         assert_eq!(
             <SceneEntity as bevy::reflect::TypePath>::type_path(),

@@ -362,8 +362,8 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     };
     let shader_entities = &main_world.as_ref().unwrap_or(&world).entities;
     let sky_config = sky::SkyConfig::from_world(shader_entities).with_env_override();
-    let water_config = terrain::water_material::water_surface_config_from_world(shader_entities);
-    let layers_config = terrain::layer_material::TerrainChunkConfig::from_world(shader_entities);
+    let water_config = crate::terrain_host::water_surface_config_from_world(shader_entities);
+    let layers_config = crate::terrain_host::terrain_chunk_config_from_world(shader_entities);
     let shaders_dir = asset_root.join("shaders");
     let _ = std::fs::create_dir_all(&shaders_dir);
     for (name, contents) in [
@@ -747,6 +747,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // na GPU) — ambiente/reflexos que seguem a hora do dia. `VIBER_NO_IBL=1`.
     app.add_plugins(crate::ibl::SkyIblPlugin);
     app.add_plugins(terrain::TerrainPlugin);
+    // Ponte IR→terreno antes do plugin: o bootstrap extraído lê o
+    // `PendingWorld` do spawn através dela (`terrain_host::collect_from_spawn`).
+    crate::terrain_host::install_terrain_collect(&mut app);
     app.add_plugins(terrain::runtime::TerrainFeaturesPlugin);
     // Escritor único de samplers/mipmaps das texturas carregadas (o registro
     // `WorldTiledTextures` é consumido aqui; escrever o sampler noutro
