@@ -7,9 +7,7 @@
 //! mantém-se.
 
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::{
-    Collider, GravityScale, ImpulseJoint, RigidBody, SphericalJointBuilder, Velocity,
-};
+use avian3d::prelude::{Collider, GravityScale, LinearVelocity, RigidBody, SphericalJoint};
 
 // O contrato de animação vive congelado no `bevy_ext_core`; `Corpse` e os
 // helpers de IK são deste crate.
@@ -34,6 +32,8 @@ pub struct RagdollDeath;
 pub struct RagdollActive {
     pub until: f32,
     pub bodies: Vec<Entity>,
+    /// Juntas esféricas (entidades próprias no Avian), paralelas à cadeia.
+    pub joints: Vec<Entity>,
     /// Osso conduzido por cada corpo, paralelo a `bodies`.
     pub bones: Vec<Entity>,
 }
@@ -148,9 +148,11 @@ pub fn start_ragdolls(
                 .spawn((
                     RagdollBodyOf(entity),
                     RigidBody::Dynamic,
-                    Collider::capsule_y(0.18, 0.12),
+                    // Cápsula Y do Avian: (raio, altura TOTAL da parte
+                    // cilíndrica) = o `capsule_y(0.18, 0.12)` do Rapier.
+                    Collider::capsule(0.12, 0.36),
                     GravityScale(1.0),
-                    Velocity::default(),
+                    LinearVelocity::default(),
                     Transform::from_translation(*pos),
                     // O `drive_ragdolls` corre no MESMO frame, dentro da
                     // cadeia, antes de qualquer propagação: sem semear o
@@ -165,6 +167,7 @@ pub fn start_ragdolls(
             bones.push(*bone);
             kind_body.push((kind, body));
         }
+        let mut joints = Vec::new();
         for (kind, _, _) in &by_kind {
             let Some((_, parent_kind)) = chain_spec().iter().find(|(k, _)| k == kind) else {
                 continue;
@@ -189,16 +192,22 @@ pub fn start_ragdolls(
                 .map(|(_, _, p)| *p)
                 .unwrap_or(Vec3::ZERO);
             let anchor = (child_pos - parent_pos) * 0.5;
-            commands.entity(*child_body).insert(ImpulseJoint::new(
-                *parent_body,
-                SphericalJointBuilder::new()
-                    .local_anchor1(anchor)
-                    .local_anchor2(-anchor),
-            ));
+            // No Avian a junta é uma ENTIDADE própria entre os dois corpos;
+            // a mesma marca de orfandade para o reap a recolher com os corpos.
+            let joint = commands
+                .spawn((
+                    RagdollBodyOf(entity),
+                    SphericalJoint::new(*parent_body, *child_body)
+                        .with_local_anchor1(anchor)
+                        .with_local_anchor2(-anchor),
+                ))
+                .id();
+            joints.push(joint);
         }
         commands.entity(entity).insert(RagdollActive {
             until: time.elapsed_secs() + RAGDOLL_SECS,
             bodies,
+            joints,
             bones,
         });
     }
@@ -242,6 +251,9 @@ pub fn drive_ragdolls(
             for body in &active.bodies {
                 commands.entity(*body).despawn();
             }
+            for joint in &active.joints {
+                commands.entity(*joint).despawn();
+            }
             commands.entity(entity).remove::<RagdollActive>();
             // O fade do cadáver continua; o rig fica na última pose.
             let _ = animator;
@@ -282,16 +294,17 @@ pub fn drive_ragdolls(
     }
 }
 
-/// Corpo de ragdoll ligado ao cadáver que o originou. Se o cadáver for
-/// despawnado antes dos 2,5 s (corpse lifetime 1,4 s, troca de cena), o
+/// Corpo (ou junta) de ragdoll ligado ao cadáver que o originou. Se o cadáver
+/// for despawnado antes dos 2,5 s (corpse lifetime 1,4 s, troca de cena), o
 /// `RagdollActive` desaparecia com ele e os corpos ficavam para sempre no
-/// mundo da física.
+/// mundo da física. No Avian as juntas são entidades próprias — levam a
+/// mesma marca para o reap não as deixar órfãs.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
 #[type_path = "viber::ragdoll"]
 pub struct RagdollBodyOf(pub Entity);
 
-/// Recolhe corpos cujo dono já não tem ragdoll ativo.
+/// Recolhe corpos e juntas cujo dono já não tem ragdoll ativo.
 pub fn reap_orphan_ragdoll_bodies(
     mut commands: Commands,
     bodies: Query<(Entity, &RagdollBodyOf)>,
