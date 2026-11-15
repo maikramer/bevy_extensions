@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 use bevy_ext_core::{SfxClip, SfxEvent};
+use mlua::Function;
 
 /// Comando enfileirado por um script (`viber.*`) e aplicado pós-frame.
 #[derive(Debug, Clone)]
@@ -75,6 +76,78 @@ pub enum ScriptCommand {
     SetPosition {
         entity: Entity,
         pos: Vec3,
+    },
+    // ── F4 (percepção/props) ────────────────────────────────────────────
+    /// Vira a entidade para olhar um ponto (yaw only) — `viber.face_towards`
+    /// / `viber.face_player` (alvo = posição do herói).
+    FaceTowards { entity: Entity, target: Vec3 },
+    /// Destrutível com queda (`break-style: fall`) — tomba na direção
+    /// herói→entidade e despawna no fim (`viber.topple`).
+    Topple { entity: Entity },
+    /// Reclama uma ação da UI (`viber.own_action("buy")`) — o handler
+    /// nativo correspondente cala e a ação chega a Lua via `viber.events()`.
+    OwnUiAction(String),
+    /// Remove uma entidade (`viber.entity_despawn` / `viber.despawn_self`).
+    Despawn(Entity),
+    /// Reclama um sistema nativo (`viber.own_system("dialogue")`) — o
+    /// handler nativo correspondente cala e a lógica passa a ser do script.
+    OwnSystem(String),
+    /// Devolve um sistema nativo ao handler (`viber.release_system`) — o
+    /// inverso de [`Self::OwnSystem`].
+    ReleaseSystem(String),
+    /// Esconde/mostra uma entidade e a subárvore (`viber.set_visible`) — a
+    /// `Visibility` do Bevy propaga aos filhos com Inherited.
+    SetVisible { entity: Entity, visible: bool },
+    /// Escala uniforme da entidade (`viber.set_scale`, 0.05..20).
+    SetScale { entity: Entity, scale: f32 },
+    /// Pose LOCAL da entidade (`viber.set_pose`). O yaw é
+    /// `Quat::from_rotation_y`; a escala fica. Com `own_system("locomotion")`
+    /// o herói deixa de andar a pé.
+    SetPose { entity: Entity, pos: Vec3, yaw: f32 },
+    /// Burst de partículas (`viber.burst`) — preset validado contra a
+    /// biblioteca publicada (`ScriptHostState::particle_presets`; `sparks`
+    /// é o preset de impacto do melee, fora da biblioteca).
+    Burst {
+        preset: String,
+        pos: Vec3,
+        count: usize,
+    },
+    /// Decal de impacto (`viber.decal`): quad projectado com fade.
+    Decal {
+        url: String,
+        position: Vec3,
+        normal: Vec3,
+        size: f32,
+        life: f32,
+        color: [f32; 3],
+    },
+    /// Instancia um `<Prototype>` do mundo (`viber.spawn_prototype`) — o
+    /// spawn REAL é pós-frame na integração, com callback `(bits)`.
+    SpawnPrototype {
+        name: String,
+        pos: Vec3,
+        /// Sem cota explícita: assenta o Y na superfície renderizada.
+        seat: bool,
+        on_spawned: Option<Function>,
+        caller_path: Option<String>,
+    },
+    /// Acende o flash de impacto na entidade (`viber.hit_flash`) — leitura
+    /// visual do golpe, sem dano nem regra de combate.
+    HitFlash { entity: Entity, secs: f32 },
+    /// Marca a entidade como cadáver (`viber.corpse`): o jogo decide a
+    /// morte; a engine só deixa de a animar e, com ragdoll, começa o ragdoll.
+    Corpse { entity: Entity },
+    /// Anexa um GLB a um osso (`viber.attach`) ou remove o slot
+    /// (`url = None`, `viber.detach`). Genérico: a engine não sabe o que é
+    /// uma arma; só encontra o osso e pendura o prop.
+    Attach {
+        owner: Option<Entity>,
+        slot: String,
+        url: Option<String>,
+        bone: String,
+        pos: Vec3,
+        rot: Vec3,
+        scale: f32,
     },
 }
 

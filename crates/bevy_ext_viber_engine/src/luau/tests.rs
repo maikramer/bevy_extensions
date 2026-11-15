@@ -1013,6 +1013,7 @@ fn test_entity_vitals_and_find() {
 
 #[test]
 fn test_game_state_and_load_module() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     // Módulo em disco carregado por DOIS scripts: mesma tabela (cache) —
     // e o estado de jogo world-scoped liga os dois.
     let dir = std::env::temp_dir().join(format!("viber-luau-test-{}", std::process::id()));
@@ -1061,6 +1062,12 @@ fn test_game_state_and_load_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// O store de `viber.game()` é do PROCESSO (exit4/F3) — os testes que o
+/// tocam tomam este lock: correr em paralelo apagava o estado uns dos
+/// outros (`reset_game_state_for_tests` de um teste corria a meio de
+/// outro).
+static GAME_STORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Spec mínima de caixa para os testes de spawn de prototypes.
 fn simple_box_spec() -> crate::recipes::EntitySpec {
     crate::recipes::EntitySpec {
@@ -1085,6 +1092,7 @@ fn simple_box_spec() -> crate::recipes::EntitySpec {
 
 #[test]
 fn test_spawn_prototype_queues_known_request() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let host = host_with(
         "function on_update(dt)\n\
                viber.spawn_prototype('crystal', 5, -3)\n\
@@ -1193,6 +1201,7 @@ fn test_viber_terrain_edits_reach_the_queue() {
 
 #[test]
 fn test_apply_script_spawns_creates_and_calls_back() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let host = host_with(
         "local g = viber.game()\n\
              function on_update(dt)\n\
@@ -1248,6 +1257,7 @@ fn test_apply_script_spawns_creates_and_calls_back() {
 
 #[test]
 fn test_own_action_claims_ui_action() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let host = host_with(
         "viber.own_action('buy')\nviber.own_action('sell')\nfunction on_update(dt) end",
         "own.lua",
@@ -1322,6 +1332,7 @@ fn test_event_queue_cap_drops_new_events() {
 
 #[test]
 fn test_game_kv_roundtrip_ignores_complex_values() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let host = LuaScriptHost::new(PathBuf::from("scripts")).expect("host");
     host.lua
         .load(
@@ -1359,6 +1370,7 @@ fn test_game_kv_roundtrip_ignores_complex_values() {
 /// podem sobreviver a carregar um save anterior.
 #[test]
 fn test_game_kv_load_replaces_stale_state() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let host = LuaScriptHost::new(PathBuf::from("scripts")).expect("host");
     host.lua
         .load("viber.game().stale = 1\nviber.game().keep = 'old'")
@@ -2018,6 +2030,7 @@ fn test_sandbox_blocks_require_and_shared_stdlib_writes() {
 
 #[test]
 fn test_load_module_without_return_runs_once() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let dir = std::env::temp_dir().join(format!("viber-luau-once-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -2046,6 +2059,7 @@ fn test_load_module_without_return_runs_once() {
 
 #[test]
 fn test_timers_die_with_their_owner() {
+    let _game_lock = GAME_STORE_TEST_LOCK.lock().expect("lock");
     let host = host_with(
         "function on_update(dt)\n\
                if not armed then armed = true viber.every(0.1, function() end) end\n\

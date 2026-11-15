@@ -641,12 +641,17 @@ mod tests {
         Arc::new(RwLock::new(GameStore::default()))
     }
 
+    /// O store de `viber.game()` é do PROCESSO — os testes que o tocam tomam
+    /// este lock (correr em paralelo apagava estado uns dos outros).
+    static PROCESS_STORE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn fresh_store() -> Arc<RwLock<GameStore>> {
         Arc::new(RwLock::new(GameStore::default()))
     }
 
     #[test]
     fn json_round_trip_só_primitivos() {
+        let _lock = PROCESS_STORE_TEST_LOCK.lock().expect("lock");
         let store = store();
         let other = fresh_store();
         {
@@ -678,6 +683,7 @@ mod tests {
 
     #[test]
     fn restore_substitui_e_bumpa_a_geração() {
+        let _lock = PROCESS_STORE_TEST_LOCK.lock().expect("lock");
         let store = store();
         {
             let mut s = store.write().expect("store");
