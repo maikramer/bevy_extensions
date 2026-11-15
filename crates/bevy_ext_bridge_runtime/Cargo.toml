@@ -1,0 +1,24 @@
+[package]
+name = "bevy_ext_bridge_runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "In-game Bevy plugin exposing profiler, input and debug BRP methods"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "profiler", "debug", "brp"]
+categories = ["development-tools::debugging", "game-development"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_remote",
+    "bevy_render",
+    "bevy_image",
+    "bevy_log",
+] }
+serde.workspace = true
+serde_json.workspace = true
+bevy_ext_bridge_protocol.workspace = true
