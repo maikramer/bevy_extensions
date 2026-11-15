@@ -10,9 +10,10 @@
 //! - O código corre numa env persistente (REPL: globals sobrevivem entre
 //!   chamadas), isolada dos scripts de jogo; para devolver um valor usa-se
 //!   `return` no fim do chunk.
-//! - O [`crate::luau::ScriptCtx`] é semeado com o player como "self": a API
-//!   `viber.*` dos scripts (log, quest_*, toast, teleport_player, …) funciona
-//!   na REPL sem código extra.
+//! - O código corre na instância REPL dedicada do `bevy_ext_luau`
+//!   (`repl::repl()` — a tabela `viber` instalada sobre os globals/store
+//!   ESTÁTICOS do jogo): `viber.state()`, `viber.log`, `viber.toast`, …
+//!   funcionam na REPL sem código extra e leem o estado REAL do jogo.
 //! - Sem guard de instruções (Luau/mlua não expõe hooks): um `while true do
 //!   end` na REPL congela o frame — igual ao que um script de página faz ao
 //!   Chrome. Ferramenta de debug, risco aceite.
@@ -34,7 +35,6 @@ use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
 use super::{BrpResult, invalid, parse_params};
-use crate::luau::LuaScriptHost;
 use crate::player::Player;
 use crate::recipes::spawn::OrbitCamera;
 use crate::vitals::Health;
@@ -2082,85 +2082,42 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
         code: String,
     }
     let params: Params = parse_params(params.0)?;
-    if world.get_resource::<LuaScriptHost>().is_none() {
-        return Err(invalid(
-            "runtime Luau inativo — `viber run` adiciona sempre o LuauScriptPlugin; \
-             a testar contra outra App?"
-                .into(),
-        ));
-    }
 
     let view = build_view(world);
-    let elapsed = world.resource::<Time>().elapsed_secs_f64();
     let mut warnings: Vec<String> = Vec::new();
-    // `viber.ground_below` na REPL: handle de leitura do terreno, lido
-    // ANTES do empréstimo mutável do host. As estradas/água (`viber.road`,
-    // `on_road`, `in_water`) vêm do MESMO recurso: sem elas o `ctx.surfaces`
-    // ficava no da última cena/on_update (ou `None`, com o Luau a responder
-    // "sem estradas" num mundo que as tem).
-    let terrain = world.get_resource::<crate::terrain::runtime::TerrainRuntime>();
-    let terrain_reader = terrain.map(|rt| rt.reader());
-    let surfaces = terrain.map(|rt| {
-        std::sync::Arc::new(crate::luau::SurfaceRegistries {
-            roads: rt.roads.clone(),
-            water: rt.water.clone(),
-        })
-    });
-
     let (ok, result, error, ops) = {
-        let host = world.resource_mut::<LuaScriptHost>();
-        // Self = player: a API `viber.*` dos scripts funciona na REPL (log,
-        // quest_*, toast, heal_player, teleport_player…). dt = 1.0 para que
-        // move_towards/move_by sejam 1:1 em metros por chamada.
-        if let Some(mut ctx) = host.lua.app_data_mut::<crate::luau::ScriptCtx>() {
-            ctx.entity = view.player.as_ref().map(|p| p.entity);
-            ctx.origin = view.player.as_ref().map(|p| p.position).unwrap_or_default();
-            ctx.player = view.player.as_ref().map(|p| p.position);
-            ctx.dt = 1.0;
-            ctx.elapsed = elapsed;
-            ctx.terrain = terrain_reader;
-            // Sem script a correr: NÃO herdar o `path`/props do último
-            // `on_update`. Sem isto um `viber.events()` na REPL drenava (e
-            // apagava) a fila de eventos de um script de jogo, e `viber.prop`
-            // lia os props de OUTRA entidade.
-            ctx.path = None;
-            ctx.self_name = None;
-            ctx.self_props = None;
-            ctx.sender = None;
-            // O alcance de interação é POR entidade: na REPL não há entidade
-            // de script, e o valor herdado do último `on_update` dava um
-            // `viber.interacted` com o alcance de outra entidade.
-            ctx.interaction_range = None;
-            ctx.surfaces = surfaces;
-        }
-        host.lua.set_app_data(view);
-        host.lua.set_app_data(DebugOps::default());
-        if let Err(e) = ensure_debug_api(&host.lua) {
+        // A instância REPL dedicada do `bevy_ext_luau` (recurso desta app,
+        // criado à pressa na 1.ª chamada): a tabela `viber` completa sobre os
+        // globals/store ESTÁTICOS (o jogo publica o estado do frame —
+        // `viber.state()`/`player_position`/… leem o estado REAL), os
+        // instaladores registados (`viber.profiler`, `viber.vael`) e globals
+        // persistentes entre chamadas. Nada de `World`: as escritas passam
+        // pelas DebugOps, aplicadas logo abaixo (mesmo frame).
+        let lua = bevy_ext_luau::repl::repl_or_init(world);
+        lua.set_app_data(view);
+        lua.set_app_data(DebugOps::default());
+        if let Err(e) = ensure_debug_api(&lua) {
             return Err(invalid(format!("falha a instalar viber.debug: {e}")));
         }
 
-        let env: Table = match host.lua.named_registry_value("viber_debug_env") {
+        let env: Table = match lua.named_registry_value("viber_debug_env") {
             Ok(env) => env,
             Err(_) => {
-                let env = host
-                    .lua
+                let env = lua
                     .create_table()
                     .and_then(|env| {
-                        let mt = host.lua.create_table()?;
-                        mt.set("__index", host.lua.globals())?;
+                        let mt = lua.create_table()?;
+                        mt.set("__index", lua.globals())?;
                         env.set_metatable(Some(mt))?;
                         Ok(env)
                     })
                     .map_err(|e| invalid(format!("falha a criar env da REPL: {e}")))?;
-                let _ = host
-                    .lua
-                    .set_named_registry_value("viber_debug_env", env.clone());
+                let _ = lua.set_named_registry_value("viber_debug_env", env.clone());
                 env
             }
         };
 
-        let run = host
-            .lua
+        let run = lua
             .load(&params.code)
             .set_name("=bridge")
             .set_environment(env)
@@ -2171,24 +2128,20 @@ pub fn eval(params: In<Option<Json>>, world: &mut World) -> BrpResult {
             Err(e) => (false, None, Some(e.to_string())),
         };
         // Ops enfileiradas (mesmo com erro — os efeitos antes do throw ficam).
-        let ops = host
-            .lua
+        let ops = lua
             .app_data_mut::<DebugOps>()
             .map(|mut ops| std::mem::take(&mut ops.0))
             .unwrap_or_default();
-        // Fora do `viber.lua` não há quem drene a fila: um script de jogo que
-        // chamasse `viber.debug.toast`/`set_clock` em `on_update` enfileirava
-        // ops que ninguém aplicava (e que a REPL seguinte descartava) — a Vec
-        // crescia sem fim. As leituras já falham com "sem snapshot"; as
-        // escritas passam a falhar com a mesma causa em vez do no-op mudo.
-        host.lua.remove_app_data::<DebugOps>();
-        // Limpa o snapshot: uma closure de SCRIPT DE JOGO que chamasse
-        // viber.debug veria dados podres da última REPL — melhor falhar.
-        // REMOVER (e não substituir por `DebugView::default()`): com um
-        // snapshot VAZIO presente, `app_data_ref` tinha Some e as leituras
-        // devolviam dados ocos (lista de entidades vazia, player nil) em vez
+        // Fora do `viber.lua` não há quem drene a fila: as escritas falham
+        // com "sem snapshot" em vez do no-op mudo.
+        lua.remove_app_data::<DebugOps>();
+        // Limpa o snapshot: uma chamada futura sem `viber.lua` (nunca acontece
+        // hoje — o método é o único a correr código aqui) não veria dados
+        // podres da última REPL. REMOVER (e não substituir por
+        // `DebugView::default()`): com um snapshot VAZIO presente,
+        // `app_data_ref` tinha Some e as leituras devolviam dados ocos em vez
         // do erro "sem snapshot — só dentro de viber.lua".
-        host.lua.remove_app_data::<DebugView>();
+        lua.remove_app_data::<DebugView>();
         (ok, result, error, ops)
     };
 

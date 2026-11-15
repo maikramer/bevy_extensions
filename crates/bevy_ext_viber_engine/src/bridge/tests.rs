@@ -403,7 +403,10 @@ const LUA2_TEST_PORT: u16 = 35704;
 const LUA3_TEST_PORT: u16 = 35705;
 const LUA4_TEST_PORT: u16 = 35706;
 
-/// App headless com runtime Luau + bridge: base para os testes `viber.lua`.
+/// App headless com bridge: base para os testes `viber.lua`. Sem plugin de
+/// scripts — o `viber.lua` corre na REPL dedicada do `bevy_ext_luau`
+/// (`repl::repl()`, que se instala sozinha na 1.ª chamada; as globals
+/// `viber.*` e a env persistente não precisam de nenhum plugin no app).
 fn lua_app(port: u16) -> App {
     lua_app_with(port, |_| {})
 }
@@ -418,7 +421,6 @@ fn lua_app(port: u16) -> App {
 fn lua_app_with(port: u16, setup: impl FnOnce(&mut App)) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
-        .add_plugins(crate::luau::LuauScriptPlugin::default())
         .add_plugins(BridgePlugin { port });
     // Assets para os testes de introspeção (sem AssetPlugin na app mínima).
     app.init_resource::<bevy::asset::Assets<bevy::mesh::Mesh>>();
@@ -1986,14 +1988,18 @@ fn test_debug_snapshot_is_removed_after_eval() {
     );
     assert_eq!(r["ok"], serde_json::json!(true), "{r}");
 
-    // Caminho do SCRIPT DE JOGO: chunk fora do handler da REPL.
-    let host = app.world().resource::<crate::luau::LuaScriptHost>();
-    let error = host
-        .lua
+    // Depois do eval, o snapshot tem de ter saído: uma closure qualquer que
+    // leia `viber.debug` falha com "sem snapshot" em vez de dados ocos. Na
+    // REPL dedicada isso garante-se removendo o app data no fim do eval —
+    // um segundo eval SEM build de view não existiria (o handler constrói
+    // sempre), por isso simulamos o consumo directo da closure de script:
+    // o `viber.debug.entities` sem app data morre com o erro contratado.
+    let lua = app.world().resource::<bevy_ext_luau::repl::Repl>().lua().clone();
+    let error = lua
         .load("return #viber.debug.entities()")
         .set_name("=game-script")
         .eval::<mlua::Value>()
-        .expect_err("fora da REPL viber.debug devia falhar")
+        .expect_err("fora do eval viber.debug devia falhar")
         .to_string();
     assert!(error.contains("sem snapshot"), "{error}");
 }
