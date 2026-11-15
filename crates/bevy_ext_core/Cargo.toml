@@ -21,7 +21,10 @@ categories = ["game-development"]
 # ECS/reflect/math + a camada de animação (contrato `CharacterAnimator`/
 # `FrozenAnimation`: `AnimationNodeIndex`/`AnimationGraphHandle` do glTF).
 # `std` traz o `bevy_input` (teclado/gamepad do contrato `input_map`).
-bevy = { workspace = true, features = ["std", "bevy_animation"] }
+# `bevy_camera`: o contrato `camera::is_window_camera` lê `Camera`/
+# `RenderTarget` — antes só compilava com a unificação de features dos
+# consumers com UI (o check standalone do crate falhava).
+bevy = { workspace = true, features = ["std", "bevy_animation", "bevy_camera"] }
 # `A11y`/`Action`/`Binding`/`ActionMap`/`ActionState` viajam nos saves e
 # opções (serialize/deserialize).
 serde = { workspace = true }

@@ -28,156 +28,16 @@ pub use bevy_ext_core::locale::Locale;
 
 // ── luau (contratos do host de scripting) ────────────────────────────────
 
-/// Alvo de interação registado por script (`viber.set_interaction`) — o
-/// prompt "[tecla] label" aparece quando o player está perto. A UI publica o
-/// mais próximo em alcance (`ui::collect::collect_ui_prompt`).
-///
-/// // TODO(viber-exit): mover para o crate de luau quando for extraído;
-/// // `TypePath` histórico `viber::luau::components` congelado.
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component)]
-#[type_path = "viber::luau::components"]
-pub struct ScriptInteraction {
-    pub label: String,
-    pub key: KeyCode,
-    /// Distância máxima player↔alvo (m).
-    pub range: f32,
-}
-
-/// Fila de entrada dos eventos engine→Lua (producers → `luau_update`).
-///
-/// O `UiAction` desta UI entra aqui e o host de scripting faz fan-out para
-/// as filas por-path (`viber.events()`). Os produtores usam `Option<ResMut>`:
-/// apps mínimas de teste sem o recurso continuam a compilar e a correr.
-///
-/// // TODO(viber-exit): mover para o crate de luau (ao lado do `to_table`,
-/// // que fica do lado Lua); `TypePath` histórico congelado.
-#[derive(Debug, Default, Resource, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::luau::events"]
-pub struct ScriptEventQueue(pub Vec<ScriptGameEvent>);
-
-impl ScriptEventQueue {
-    /// Atalho para produtores.
-    pub fn push(&mut self, event: ScriptGameEvent) {
-        self.0.push(event);
-    }
-}
-
-/// Evento engine→Lua: estado do jogo que mudou FORA dos scripts (kill, dano
-/// ao herói, level-up, cliques de UI…). Pull model: os produtores empurram
-/// para [`ScriptEventQueue`]; o host faz fan-out e o script drena com
-/// `viber.events()` → array `{type=..., ...}`.
-///
-/// // TODO(viber-exit): mover para o crate de luau; o `ScriptGameEvent::kind`
-/// // (o `type` em Lua) acompanha a variante.
-#[derive(Debug, Clone, Reflect)]
-#[type_path = "viber::luau::events"]
-pub enum ScriptGameEvent {
-    /// Criatura morreu. `name` = nome da entidade; `entity` = bits.
-    Kill { name: String, entity: i64 },
-    /// Um projétil tocou um corpo. O jogo aplica o dano.
-    Hit {
-        entity: i64,
-        amount: f32,
-        faction: String,
-        x: f32,
-        y: f32,
-        z: f32,
-    },
-    /// O herói morreu (a pousar no ponto de respawn).
-    PlayerDied,
-    /// Algo entrou no vault.
-    Collect { item: String, amount: u32 },
-    /// Quest entregue com sucesso (recompensas já aplicadas).
-    QuestDone { id: String },
-    /// Subida de nível (deteção nos vitais).
-    LevelUp { level: u32 },
-    /// Ação da UI declarativa (`viber.ui.action("buy", "potion")`) — encaminhada
-    /// a TODOS os scripts subscritos; os handlers nativos também correm, salvo
-    /// as ações reclamadas por `viber.ui.own_action`.
-    UiAction { name: String, arg: String },
-    /// Uma cinemática acabou (`skipped` = o jogador saltou-a).
-    CinematicEnd { id: String, skipped: bool },
-    /// A cena acabou de carregar; `entry` = a entrada de chegada (vazio = nenhuma).
-    SceneLoaded { scene: String, entry: String },
-    /// A cena `scene` vai ser descarregada.
-    SceneUnloading { scene: String },
-}
-
-impl ScriptGameEvent {
-    /// `type` do evento em Lua.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Kill { .. } => "kill",
-            Self::Hit { .. } => "hit",
-            Self::PlayerDied => "player_died",
-            Self::Collect { .. } => "collect",
-            Self::QuestDone { .. } => "quest_done",
-            Self::LevelUp { .. } => "level_up",
-            Self::UiAction { .. } => "ui_action",
-            Self::CinematicEnd { .. } => "cinematic_end",
-            Self::SceneLoaded { .. } => "scene_loaded",
-            Self::SceneUnloading { .. } => "scene_unloading",
-        }
-    }
-
-    /// Converte o evento para a tabela que `viber.events()` devolve ao
-    /// script — o corpo é o MESMO do gémeo `bevy_ext_engine::luau` (de onde
-    /// este tipo foi copiado); o fan-out do monólito chama-o por evento.
-    pub fn to_table(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Table> {
-        let t = lua.create_table()?;
-        t.raw_set("type", self.kind())?;
-        match self {
-            Self::Kill { name, entity } => {
-                t.raw_set("name", name.clone())?;
-                t.raw_set("entity", *entity)?;
-            }
-            Self::Hit {
-                entity,
-                amount,
-                faction,
-                x,
-                y,
-                z,
-            } => {
-                t.raw_set("entity", *entity)?;
-                t.raw_set("amount", *amount)?;
-                t.raw_set("faction", faction.clone())?;
-                t.raw_set("x", *x)?;
-                t.raw_set("y", *y)?;
-                t.raw_set("z", *z)?;
-            }
-            Self::PlayerDied => {}
-            Self::Collect { item, amount } => {
-                t.raw_set("item", item.clone())?;
-                t.raw_set("amount", *amount)?;
-            }
-            Self::QuestDone { id } => {
-                t.raw_set("id", id.clone())?;
-            }
-            Self::LevelUp { level } => {
-                t.raw_set("level", *level)?;
-            }
-            Self::UiAction { name, arg } => {
-                t.raw_set("name", name.clone())?;
-                t.raw_set("arg", arg.clone())?;
-            }
-            Self::CinematicEnd { id, skipped } => {
-                t.raw_set("id", id.clone())?;
-                t.raw_set("skipped", *skipped)?;
-            }
-            Self::SceneLoaded { scene, entry } => {
-                t.raw_set("scene", scene.clone())?;
-                t.raw_set("entry", entry.clone())?;
-            }
-            Self::SceneUnloading { scene } => {
-                t.raw_set("scene", scene.clone())?;
-            }
-        }
-        Ok(t)
-    }
-}
+// Os CONTRATOS dos eventos e da interação vivem agora no `bevy_ext_core`
+// (exit4/F2, 2026-11-15 — os TODO(viber-exit) "mover para o crate de luau"
+// fecham aqui): a UI empurra `UiAction` para A MESMA fila que o host de
+// scripting drena, e o `collect` lê O MESMO componente que `set_interaction`
+// escreve — com a definição na base do grafo, nem a UI dep o crate de luau
+// nem o luau dep a UI para os nomear. Os TypePaths históricos
+// (`viber::luau::events`/`viber::luau::components`) ficam congelados no
+// core; o `to_table` (o lado Lua) acompanha o host — hoje o monólito, no
+// `bevy_ext_luau` o port da F2.
+pub use bevy_ext_core::scripting::{ScriptEventQueue, ScriptGameEvent, ScriptInteraction};
 
 /// O handle Luau que a UI usa para instalar a tabela `viber.ui`.
 ///

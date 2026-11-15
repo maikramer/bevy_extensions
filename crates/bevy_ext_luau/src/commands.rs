@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 
 use bevy::prelude::*;
 use bevy_ext_core::{SfxClip, SfxEvent};
+use mlua::Function;
 
 /// Comando enfileirado por um script (`viber.*`) e aplicado pós-frame.
 #[derive(Debug, Clone)]
@@ -69,6 +70,128 @@ pub enum ScriptCommand {
         scene: String,
         entry: Option<String>,
     },
+    /// Teleporte da entidade para (x, y, z) (`viber.set_position`) — o
+    /// consumidor faz o snap no terreno ao aplicar (a mesma regra do
+    /// `MoveTowards` do monólito).
+    SetPosition {
+        entity: Entity,
+        pos: Vec3,
+    },
+    // ── F4 (percepção/props) ────────────────────────────────────────────
+    /// Vira a entidade para olhar um ponto (yaw only) — `viber.face_towards`
+    /// / `viber.face_player` (alvo = posição do herói).
+    FaceTowards { entity: Entity, target: Vec3 },
+    /// Destrutível com queda (`break-style: fall`) — tomba na direção
+    /// herói→entidade e despawna no fim (`viber.topple`).
+    Topple { entity: Entity },
+    /// Reclama uma ação da UI (`viber.own_action("buy")`) — o handler
+    /// nativo correspondente cala e a ação chega a Lua via `viber.events()`.
+    OwnUiAction(String),
+    /// Remove uma entidade (`viber.entity_despawn` / `viber.despawn_self`).
+    Despawn(Entity),
+    /// Reclama um sistema nativo (`viber.own_system("dialogue")`) — o
+    /// handler nativo correspondente cala e a lógica passa a ser do script.
+    OwnSystem(String),
+    /// Devolve um sistema nativo ao handler (`viber.release_system`) — o
+    /// inverso de [`Self::OwnSystem`].
+    ReleaseSystem(String),
+    /// Esconde/mostra uma entidade e a subárvore (`viber.set_visible`) — a
+    /// `Visibility` do Bevy propaga aos filhos com Inherited.
+    SetVisible { entity: Entity, visible: bool },
+    /// Escala uniforme da entidade (`viber.set_scale`, 0.05..20).
+    SetScale { entity: Entity, scale: f32 },
+    /// Pose LOCAL da entidade (`viber.set_pose`). O yaw é
+    /// `Quat::from_rotation_y`; a escala fica. Com `own_system("locomotion")`
+    /// o herói deixa de andar a pé.
+    SetPose { entity: Entity, pos: Vec3, yaw: f32 },
+    /// Burst de partículas (`viber.burst`) — preset validado contra a
+    /// biblioteca publicada (`ScriptHostState::particle_presets`; `sparks`
+    /// é o preset de impacto do melee, fora da biblioteca).
+    Burst {
+        preset: String,
+        pos: Vec3,
+        count: usize,
+    },
+    /// Decal de impacto (`viber.decal`): quad projectado com fade.
+    Decal {
+        url: String,
+        position: Vec3,
+        normal: Vec3,
+        size: f32,
+        life: f32,
+        color: [f32; 3],
+    },
+    /// Instancia um `<Prototype>` do mundo (`viber.spawn_prototype`) — o
+    /// spawn REAL é pós-frame na integração, com callback `(bits)`.
+    SpawnPrototype {
+        name: String,
+        pos: Vec3,
+        /// Sem cota explícita: assenta o Y na superfície renderizada.
+        seat: bool,
+        on_spawned: Option<Function>,
+        caller_path: Option<String>,
+    },
+    /// Acende o flash de impacto na entidade (`viber.hit_flash`) — leitura
+    /// visual do golpe, sem dano nem regra de combate.
+    HitFlash { entity: Entity, secs: f32 },
+    /// Marca a entidade como cadáver (`viber.corpse`): o jogo decide a
+    /// morte; a engine só deixa de a animar e, com ragdoll, começa o ragdoll.
+    Corpse { entity: Entity },
+    /// Anexa um GLB a um osso (`viber.attach`) ou remove o slot
+    /// (`url = None`, `viber.detach`). Genérico: a engine não sabe o que é
+    /// uma arma; só encontra o osso e pendura o prop.
+    Attach {
+        owner: Option<Entity>,
+        slot: String,
+        url: Option<String>,
+        bone: String,
+        pos: Vec3,
+        rot: Vec3,
+        scale: f32,
+    },
+    // ── F5 (efeitos/áudio) ──────────────────────────────────────────────
+    /// Loop de SFX (`viber.sound_loop`). `clip` é nome do registry ou caminho
+    /// relativo ao `sfx_dir` (`vehicles/engine_rev.ogg`).
+    SoundLoop {
+        id: String,
+        clip: String,
+        pitch: f64,
+        volume: f32,
+        position: Option<Vec3>,
+        /// `true` = bus de ambiente (`<AudioMixer ambience>`); `false` = SFX.
+        ambience: bool,
+        /// Entidade cujo script pediu o loop (o loop morre com ela). `None`
+        /// em chamadas fora de `on_update` (tick/REPL).
+        owner: Option<Entity>,
+    },
+    /// Pára um loop (`viber.sound_stop`).
+    SoundStop(String),
+    /// Força a layer de BGM (`viber.music.layer`). `None` devolve o automático.
+    MusicLayer(Option<String>),
+    /// Liga/desliga a música de combate (`viber.music.combat`). `boss` promove
+    /// para a layer `boss`; `active=false` corta já (sem esperar o hold).
+    MusicCombat { active: bool, boss: bool },
+    /// Duck temporário de um bus (`viber.audio.duck`): `gain` linear durante
+    /// `secs` segundos. Expira sozinho.
+    AudioDuck { bus: String, gain: f32, secs: f32 },
+    /// Reverb dos buses de SFX/voz (`viber.audio.reverb`).
+    AudioReverb { preset: String, wet: Option<f32> },
+    /// Pulso de pós-processo (`viber.punch`): saturação de stops + bloom.
+    Punch { stops: f32, bloom: f32 },
+    /// Solavanco direcional da câmara (`viber.kick`).
+    CameraKick(Vec3),
+    /// `viber.lantern(intensity)` — acende/reforça a lanterna do viajante
+    /// (a tocha equipada ilumina mesmo de dia; 0 = só a automática nocturna).
+    SetLantern(f32),
+    /// `viber.bone_offset(bone, rx, ry, rz)` — rotação ADITIVA num osso do
+    /// herói, aplicada por cima de qualquer animação (idle/walk/run).
+    /// `Quat::IDENTITY` remove a entrada.
+    SetBoneOffset { bone: String, rotation: Quat },
+    /// Câmara de jogo conduzida por script (`viber.camera_free`). `false`
+    /// devolve a pose ao rig de terceira pessoa no frame seguinte.
+    CameraFree(bool),
+    /// Pose do modo livre (`viber.camera_pose`): olho + ponto olhado.
+    CameraPose { pos: Vec3, look: Vec3 },
 }
 
 /// Alcance BASE autorado de interação (o default do `set_interaction`),
@@ -86,6 +209,22 @@ pub struct ScriptCommandMessage(pub ScriptCommand);
 pub fn entity_from_id(bits: i64) -> mlua::Result<Entity> {
     Entity::try_from_bits(bits as u64)
         .ok_or_else(|| mlua::Error::runtime(format!("id de entidade inválido: {bits}")))
+}
+
+/// Bus de áudio aceite por `viber.audio.duck` — os MESMOS nomes do
+/// `AudioBus::parse` do monólito (o comando leva a string; o consumidor
+/// revalida contra o seu mixer).
+pub fn is_valid_audio_bus(bus: &str) -> bool {
+    matches!(
+        bus,
+        "master" | "music" | "sfx" | "voice" | "ambience" | "ambient"
+    )
+}
+
+/// Preset de reverb aceite por `viber.audio.reverb` (o mesmo conjunto do
+/// `ReverbPreset::parse`).
+pub fn is_valid_reverb_preset(preset: &str) -> bool {
+    matches!(preset, "off" | "room" | "hall" | "cave")
 }
 
 /// Cor `#rgb`/`#rrggbb` (ou `0x…`) → componentes sRGB em `0..=1`. Mesma

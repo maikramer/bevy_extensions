@@ -265,6 +265,13 @@ impl LuaScriptHost {
                 .expect("ScriptCtx app data seeded in LuaScriptHost::new");
             ctx.scripts_dir = Some(host.scripts_dir.clone());
         }
+        // O `viber.load`/`load_json` do grupo `game` (agora no
+        // `bevy_ext_luau`) lê o app data POR VM (paralelo-safe nos testes) e
+        // o static do processo como omissão — semear os dois.
+        host
+            .lua
+            .set_app_data(bevy_ext_luau::game::ScriptsDir(Some(host.scripts_dir.clone())));
+        bevy_ext_luau::game::set_scripts_dir(Some(host.scripts_dir.clone()));
         Ok(host)
     }
 

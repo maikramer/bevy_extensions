@@ -2349,7 +2349,10 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     terrain::install(lua, &api)?;
     timers::install(lua, &api)?;
     entity::install(lua, &api)?;
-    game::install(lua, &api)?;
+    // O grupo `game` é um só (exit4/F3): o store do processo partilha-se
+    // com o host BMS (o mesmo `Arc` — o save e o REPL escrevem o mesmo
+    // estado).
+    game::install(lua, &api, bevy_ext_luau::game::game_store())?;
     props::install(lua, &api)?;
     nlu::install(lua, &api)?;
     decision::install(lua, &api)?;
@@ -2368,9 +2371,5 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     seq.raw_set("next", 1i64)?;
     lua.set_named_registry_value("viber_timer_seq", seq)?;
     lua.set_named_registry_value("viber_timer_cancelled", lua.create_table()?)?;
-    // Estado de JOGO world-scoped (`viber.game()`) e cache de módulos
-    // (`viber.load`) — ambos sobrevivem ao hot-reload.
-    lua.set_named_registry_value("viber_game", lua.create_table()?)?;
-    lua.set_named_registry_value("viber_modules", lua.create_table()?)?;
     Ok(())
 }
