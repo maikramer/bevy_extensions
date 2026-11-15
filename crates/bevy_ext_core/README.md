@@ -20,8 +20,6 @@ use bevy_ext_core::{MenusOpen, PlayerBody, UiSet};
 - `ScriptToast` — toast message shared by runtime and save layers.
 - `AudioMixerSettings` — master/music/sfx/voice/ambience bus volumes.
 - `UiSet` — the declarative UI schedule order.
-- `TerrainQuery` / `NavQuery` — traits for services that must not depend on
-  the terrain/navigation crates.
 - `rng::Rng` — SplitMix64, the deterministic RNG behind "same seed, same
   world".
 - `script_kind` — script path → creature kind and kill XP.

@@ -1,8 +1,8 @@
 //! Contrato de chão para o integrador de locomoção.
 //!
 //! O serviço de IA não conhece o terreno: amostra o chão por este contrato —
-//! o mesmo padrão de [`bevy_ext_core::TerrainQuery`]/`NavQuery` (serviços
-//! que não podem depender do crate de terreno). Quem monta a App embrulha a
+//! o padrão dos serviços que não podem depender do crate de terreno. Quem
+//! monta a App embrulha a
 //! sua fonte de alturas num [`Ground`]; sem o recurso o integrador deixa o
 //! Y como está e não clampeia ao disco do mundo — o comportamento headless
 //! dos testes.

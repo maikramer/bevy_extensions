@@ -136,19 +136,6 @@ pub enum UiSet {
     StyleLate,
 }
 
-/// Height query used by services that must not depend on the terrain crate.
-pub trait TerrainQuery: Send + Sync + 'static {
-    /// Terrain height at `(x, z)`, or `None` outside the field / over water.
-    fn height_at(&self, x: f32, z: f32) -> Option<f32>;
-}
-
-/// Path query used by services that must not depend on the navigation crate.
-pub trait NavQuery: Send + Sync + 'static {
-    /// A world-space path from `from` to `to`, or `None` when there is no
-    /// navmesh / no path.
-    fn path(&self, from: Vec3, to: Vec3) -> Option<Vec<Vec3>>;
-}
-
 /// Sonda acima dos pés ao perguntar `surface_below` pelo chão.
 pub const GROUND_PROBE: f32 = 0.05;
 
