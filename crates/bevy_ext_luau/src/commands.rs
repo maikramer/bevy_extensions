@@ -402,8 +402,10 @@ pub(crate) fn drain_queue(
 
 /// Sistema: drena a fila partilhada dos scripts. Corre no Update (os
 /// scripts correm antes, em PreUpdate/BMS). O lock de escrita é curtíssimo:
-/// só move a fila para fora.
-pub(crate) fn drain_commands(
+/// só move a fila para fora. `pub`: a ponte do monólito
+/// (`bevy_ext_viber_engine::luau::bms_bridge`) aplica as mensagens DEPOIS
+/// deste dreno (`.after`).
+pub fn drain_commands(
     mut sfx: Option<MessageWriter<SfxEvent>>,
     mut out: Option<MessageWriter<ScriptCommandMessage>>,
 ) {

@@ -139,6 +139,23 @@ pub struct ScriptHostState {
     /// Duração de cada clip do herói (`viber.clip_duration`), nomes
     /// normalizados → segundos.
     pub clip_durations: std::collections::HashMap<String, f32>,
+    /// Grupos por entidade (`viber.group`/`in_group`): bits → nomes.
+    /// exit5/ponte (2026-11-15).
+    pub groups: std::collections::HashMap<i64, Vec<String>>,
+    /// Id da cinemática em curso (`viber.cinematic_playing()`); `None` fora.
+    pub cinematic: Option<String>,
+    /// Acessibilidade publicada (`viber.a11y`): escala de legendas, shake,
+    /// hit-stop e hold de interação (o jogo desenha; a engine aplica).
+    pub a11y: (f32, bool, bool, bool),
+    /// Papel de rede (`viber.net_role`): "off" | "host" | "join".
+    pub net_role: Option<String>,
+    /// Idioma ativo (`viber.locale.get()`).
+    pub locale_lang: Option<String>,
+    /// Tabela do locale ativo para `viber.localize` (chaves `@nome`).
+    pub locale_table: Option<std::collections::HashMap<String, String>>,
+    /// Metadados dos 4 slots (`viber.save_slots`), pares (chave, JSON) por
+    /// slot — o mesmo conjunto de chaves que o monólito escreve na tabela.
+    pub save_slots: Option<Vec<Vec<(String, serde_json::Value)>>>,
 }
 
 /// Snapshot de input do frame (`viber.input.*`): teclado e rato nos três
@@ -309,7 +326,9 @@ fn init_context(
 
 /// Publica o estado do frame: os campos do `ScriptHostState` e o
 /// `MenusOpen` do jogo (falta do recurso = menus fechados, apps mínimas).
-fn publish_globals(
+/// `pub`: a ponte do monólito (`bevy_ext_viber_engine::luau::bms_bridge`)
+/// ordena o publisher do estado ANTES deste sistema (`.before`).
+pub fn publish_globals(
     state: Res<ScriptHostState>,
     menus: Option<Res<bevy_ext_core::MenusOpen>>,
 ) {
@@ -335,6 +354,16 @@ fn publish_globals(
         globals.surfaces = state.surfaces.clone();
         globals.camera = state.camera;
         globals.clip_durations.clone_from(&state.clip_durations);
+        // exit5/ponte: o resto do estado do frame (grupos, cinemática,
+        // acessibilidade, rede, locale, slots de save) publicados pela
+        // integração no mesmo recurso.
+        globals.groups.clone_from(&state.groups);
+        globals.cinematic.clone_from(&state.cinematic);
+        globals.a11y = state.a11y;
+        globals.net_role.clone_from(&state.net_role);
+        globals.locale_lang.clone_from(&state.locale_lang);
+        globals.locale_table.clone_from(&state.locale_table);
+        globals.save_slots.clone_from(&state.save_slots);
     }
     // A pasta de scripts do frame publica-se no static do `game` (a fonte
     // do `viber.load`/`load_json` de todas as VMs). Só `Some` escreve — o
