@@ -29,7 +29,8 @@
 //!
 //! # Módulos próprios (saíram do monólito nesta onda)
 //!
-//! `camera` (matemática pura + defaults do plugin), `interact` (foco de
+//! `attachment` (a primitiva de anexar props a ossos; extraída na
+//! exit3/wave-b), `camera` (matemática pura + defaults do plugin), `interact` (foco de
 //! interação), `meshopt` (shim do `bevy_ext_gltf`), `particles` (runtime de
 //! `<ParticleSystem>`), `animation` (o pedido `AnimatedScene` que o spawn
 //! insere), `hud` (a construção do HUD na troca de cena). O `cinematic`
@@ -42,6 +43,7 @@
 //! este crate e o jogo.
 
 pub mod animation;
+pub mod attachment;
 pub mod camera;
 pub mod hud;
 pub mod interact;
