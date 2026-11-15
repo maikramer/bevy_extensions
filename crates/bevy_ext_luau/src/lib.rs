@@ -56,15 +56,27 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::*;
 use bevy_ext_core::ScriptToast;
-use bevy_mod_scripting::bindings::InteropError;
 use bevy_mod_scripting::core::BMSScriptingInfrastructurePlugin;
-use bevy_mod_scripting::lua::LuaContext;
 use bevy_mod_scripting::prelude::*;
 use mlua::{IntoLua, Lua, MultiValue};
 
 pub use commands::{ScriptCommand, ScriptCommandMessage};
 pub use game::{GameValue, apply_game_patches, game_snapshot, publish_game_patch};
 pub use surfaces::{RoadSample, SurfaceQueries, SurfaceQueriesHandle};
+
+// Re-exportos BMS para a ponte do monólito (`viber::luau::bms_bridge`): o
+// monólito NÃO depende do `bevy_mod_scripting` directamente — este crate é a
+// fronteira. A ponte espelha `LuaScriptRef` → [`ScriptComponent`] (attach
+// BMS) e despacha `on_update` com [`event_handler`].
+pub use bevy_mod_scripting::asset::ScriptAsset;
+pub use bevy_mod_scripting::bindings::InteropError;
+pub use bevy_mod_scripting::core::context::ContextInitializer;
+pub use bevy_mod_scripting::core::event::{CallbackLabel, IntoCallbackLabel};
+pub use bevy_mod_scripting::lua::LuaContext;
+pub use bevy_mod_scripting::script::ScriptAttachment;
+pub use bevy_mod_scripting::prelude::{
+    LuaScriptingPlugin, ScriptCallbackMessage, ScriptComponent, ScriptValue, event_handler,
+};
 
 /// Criatura hostil viva neste frame (`viber.hostiles`) — portado do
 /// `HostileSnap` do monólito.
@@ -83,6 +95,11 @@ pub struct HostileSnap {
 /// estáticos. As funções de percepção usam-na para se excluírem a si.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScriptEntity(pub Option<Entity>);
+
+/// Alcance do fallback de `viber.interacted` para entidades fora do foco
+/// (ainda sem `set_interaction` neste frame): o MESMO default do monólito
+/// (`interact::default_range` = base escalada).
+pub const DEFAULT_INTERACT_RANGE_M: f32 = 1.75;
 
 /// Estado do frame visível para os scripts. O jogo preenche-o; as funções
 /// Lua leem-no sem acesso directo ao ECS.
@@ -156,6 +173,13 @@ pub struct ScriptHostState {
     /// Metadados dos 4 slots (`viber.save_slots`), pares (chave, JSON) por
     /// slot — o mesmo conjunto de chaves que o monólito escreve na tabela.
     pub save_slots: Option<Vec<Vec<(String, serde_json::Value)>>>,
+    /// Vencedor da interação POR TECLA neste frame (`KeyCode` → bits) —
+    /// `viber.interacted` só aceita a entidade focada (uma tecla, um alvo).
+    /// Publicado pela ponte a partir do `InteractionFocus` do monólito.
+    pub interaction_focus: std::collections::HashMap<KeyCode, i64>,
+    /// Um `UiInput` está focado (barra de fala): as teclas são TEXTO —
+    /// `viber.interacted`/`viber.input.*` devolvem vazio (gate do Viber).
+    pub ui_typing: bool,
 }
 
 /// Snapshot de input do frame (`viber.input.*`): teclado e rato nos três
@@ -231,6 +255,11 @@ pub struct ScriptGlobals {
     save_slots: Option<Vec<Vec<(String, serde_json::Value)>>>,
     /// Grupos por entidade (`viber.group`/`in_group`): bits → nomes.
     groups: std::collections::HashMap<i64, Vec<String>>,
+    /// Vencedor da interação por tecla (`KeyCode` → bits da entidade) —
+    /// espelho do `interaction_focus` do [`ScriptHostState`].
+    interaction_focus: std::collections::HashMap<KeyCode, i64>,
+    /// Um `UiInput` está focado: teclas são texto (gate de `interacted`).
+    ui_typing: bool,
     input: InputSnapshot,
     /// Comandos `viber.*` enfileirados nesta frame; [`drain_commands`]
     /// move-os para as mensagens no Update.
@@ -246,7 +275,23 @@ fn globals() -> Arc<RwLock<ScriptGlobals>> {
 }
 
 /// Host do Vael. Requer `AssetPlugin` (o BMS carrega scripts como assets).
-pub struct VaelScriptingPlugin;
+///
+/// `extra_initializers`: inicializadores do JOGO (`viber.vael` — os
+/// closures Rust do cofre/XP/quests) — correm por contexto DEPOIS do
+/// `install_viber_api` e ANTES do `viber.ui`, a cada contexto criado (um
+/// por entidade: os contextos BMS nascem com o attach, não há UMA VM
+/// partilhada para instalar uma vez).
+pub struct VaelScriptingPlugin {
+    pub extra_initializers: Vec<ContextInitializer<LuaScriptingPlugin>>,
+}
+
+impl Default for VaelScriptingPlugin {
+    fn default() -> Self {
+        Self {
+            extra_initializers: Vec::new(),
+        }
+    }
+}
 
 /// F2 (exit4): o estado da UI declarativa capturado no build do plugin —
 /// o `ContextInitializer` do BMS é um FN POINTER (não captura), portanto o
@@ -257,6 +302,21 @@ pub struct VaelScriptingPlugin;
 #[cfg(feature = "ui")]
 static UI_SCRIPT_STATE: OnceLock<bevy_ext_ui::ui::script::UiScriptState> = OnceLock::new();
 
+/// Snapshot do `UiScriptState` para o static dos contextos — `Startup`, a
+/// correr depois de todos os plugin builds (o `UiPlugin` pode ter sido
+/// adicionado depois do `VaelScriptingPlugin`).
+#[cfg(feature = "ui")]
+fn snapshot_ui_script_state(world: &mut World) {
+    if UI_SCRIPT_STATE.get().is_some() {
+        return;
+    }
+    if let Some(state) = world.get_resource::<bevy_ext_ui::ui::script::UiScriptState>() {
+        let _ = UI_SCRIPT_STATE.set(state.clone());
+    } else {
+        log::warn!("[lua] sem UiScriptState no Startup — `viber.ui` não existe nos contextos (falta o plugin de UI)");
+    }
+}
+
 impl Plugin for VaelScriptingPlugin {
     fn build(&self, app: &mut App) {
         #[cfg(feature = "ui")]
@@ -266,15 +326,28 @@ impl Plugin for VaelScriptingPlugin {
         {
             let _ = UI_SCRIPT_STATE.set(state.clone());
         } else {
-            log::warn!("[lua] feature `ui` ligada sem UiScriptState no mundo —                 adicione o VaelScriptingPlugin DEPOIS do plugin de UI; HUD scripts não correm");
+            // O `UiPlugin` pode vir DEPOIS deste plugin na App (o Vael adiciona-o
+            // mais à frente): o snapshot adia-se para o `Startup`, que corre depois
+            // de TODOS os builds e antes de qualquer contexto nascer.
+            log::debug!("[lua] feature `ui`: UiScriptState ainda não existe no build — snapshot adiado para o Startup");
+            app.add_systems(Startup, snapshot_ui_script_state);
         }
         app.init_resource::<ScriptHostState>()
             // O BMS precisa da infraestrutura de contextos; o plugin Lua é
-            // configurado com o inicializador da tabela `viber`.
+            // configurado com o inicializador da tabela `viber` + os extras
+            // do JOGO (`viber.vael`) e o seed de identidade pré-callback (o
+            // `viber.after`/`every` lê o path e o relógio ANTES de qualquer
+            // `on_update`, como o `luau_update` semeava o ctx do monólito).
             .add_plugins(BMSScriptingInfrastructurePlugin::default())
-            .add_plugins(
-                LuaScriptingPlugin::default().add_context_initializer(init_context),
-            )
+            .add_plugins({
+                let mut plugin = LuaScriptingPlugin::default()
+                    .add_context_initializer(init_context)
+                    .add_context_pre_handling_initializer(seed_pre_handling);
+                for initializer in &self.extra_initializers {
+                    plugin = plugin.add_context_initializer(*initializer);
+                }
+                plugin
+            })
             // Mensagem dos comandos sem consumidor no core (feedback de
             // câmara/animação); o adaptador do Vael regista o leitor.
             .add_message::<commands::ScriptCommandMessage>()
@@ -283,13 +356,32 @@ impl Plugin for VaelScriptingPlugin {
                 (
                     timers::tick_timers,
                     publish_globals,
-                    publish_input,
+                    publish_input.after(publish_globals),
                     game::apply_game_patches,
                     events::fan_out_events,
                 ),
             )
             .add_systems(Update, (drain_toasts, commands::drain_commands));
     }
+}
+
+/// Seed pré-callback (`ContextPreHandlingInitializer`): corre antes de TODO
+/// handler no contexto (o `on_update` despachado pela ponte, sinais
+/// entregues como callbacks BMS, …) — semeia path + relógio nos registos de
+/// timers (`timers::seed_script_identity`), o mesmo seed que o `tick_timers`
+/// usa nas callbacks de timer e que o `luau_update` mantinha no `ScriptCtx`.
+fn seed_pre_handling(
+    attachment: &ScriptAttachment,
+    context: &mut LuaContext,
+) -> Result<(), InteropError> {
+    let path = match attachment {
+        ScriptAttachment::EntityScript(_, script) | ScriptAttachment::StaticScript(script) => {
+            script.path().map(|path| path.to_string()).unwrap_or_default()
+        }
+    };
+    let elapsed = globals().read().map(|g| g.time).unwrap_or(0.0);
+    timers::seed_script_identity(&**context, &path, elapsed);
+    Ok(())
 }
 
 fn init_context(
@@ -321,8 +413,48 @@ fn init_context(
         bevy_ext_ui::ui::script::install_ui_api(&**context, state)
             .map_err(InteropError::external)?;
     }
+    // Instaladores extra registados por plugins DE FORA do crate (profiler da
+    // engine, superfícies do jogo) — a lista lê-se VIVA aqui (um plugin
+    // adicionado depois do `VaelScriptingPlugin` entra a tempo: os contextos
+    // só nascem com entidades, depois de todos os builds).
+    let extras = extra_initializers()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    for init in extras {
+        init(attachment, context)?;
+    }
     Ok(())
 }
+
+/// Registo GLOBAL de instaladores de contexto ([`ContextInitializer`], fn
+/// pointers) que o [`VaelScriptingPlugin`] corre por contexto novo, depois do
+/// `install_viber_api`. Plugins fora deste crate (profiler da engine, glue do
+/// jogo) registam nele no build — em vez do host antigo, que instalava na VM
+/// partilhada única (`ResMut<LuaScriptHost>`).
+pub fn add_context_installer(initializer: ContextInitializer<LuaScriptingPlugin>) {
+    match EXTRA_INITIALIZERS.lock() {
+        Ok(mut list) => list.push(initializer),
+        Err(poisoned) => poisoned.into_inner().push(initializer),
+    }
+}
+
+/// Snapshot do registo (ordem de registo; dedup por ponteiro — um plugin
+/// cujo build corre duas vezes não instala duas vezes por contexto).
+fn extra_initializers() -> Vec<ContextInitializer<LuaScriptingPlugin>> {
+    let list = EXTRA_INITIALIZERS.lock();
+    let Ok(list) = list else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    list.iter()
+        .copied()
+        .filter(|init| seen.insert(*init as usize))
+        .collect()
+}
+
+static EXTRA_INITIALIZERS: std::sync::Mutex<Vec<ContextInitializer<LuaScriptingPlugin>>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Publica o estado do frame: os campos do `ScriptHostState` e o
 /// `MenusOpen` do jogo (falta do recurso = menus fechados, apps mínimas).
@@ -364,6 +496,10 @@ pub fn publish_globals(
         globals.locale_lang.clone_from(&state.locale_lang);
         globals.locale_table.clone_from(&state.locale_table);
         globals.save_slots.clone_from(&state.save_slots);
+        globals
+            .interaction_focus
+            .clone_from(&state.interaction_focus);
+        globals.ui_typing = state.ui_typing;
     }
     // A pasta de scripts do frame publica-se no static do `game` (a fonte
     // do `viber.load`/`load_json` de todas as VMs). Só `Some` escreve — o
@@ -376,21 +512,30 @@ pub fn publish_globals(
 
 /// Publica o snapshot de input do frame para `viber.input.*`. Com `Option`
 /// as apps sem `InputPlugin` (headless/REPL) publicam um snapshot vazio em
-/// vez de ficarem com o frame anterior congelado.
+/// vez de ficarem com o frame anterior congelado. Com um `UiInput` focado
+/// (`ui_typing`, publicado antes pelo `publish_globals`) as teclas são
+/// TEXTO: o snapshot sai vazio — o mesmo gate que o monólito aplicava em
+/// `viber.input.*`.
 fn publish_input(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
 ) {
     let mut input = InputSnapshot::default();
-    if let Some(keys) = keys {
-        input.keys_pressed = keys.get_just_pressed().copied().collect();
-        input.keys_down = keys.get_pressed().copied().collect();
-        input.keys_released = keys.get_just_released().copied().collect();
-    }
-    if let Some(mouse) = mouse {
-        input.mouse_pressed = mouse.get_just_pressed().copied().collect();
-        input.mouse_down = mouse.get_pressed().copied().collect();
-        input.mouse_released = mouse.get_just_released().copied().collect();
+    let typing = globals()
+        .read()
+        .map(|globals| globals.ui_typing)
+        .unwrap_or(false);
+    if !typing {
+        if let Some(keys) = keys {
+            input.keys_pressed = keys.get_just_pressed().copied().collect();
+            input.keys_down = keys.get_pressed().copied().collect();
+            input.keys_released = keys.get_just_released().copied().collect();
+        }
+        if let Some(mouse) = mouse {
+            input.mouse_pressed = mouse.get_just_pressed().copied().collect();
+            input.mouse_down = mouse.get_pressed().copied().collect();
+            input.mouse_released = mouse.get_just_released().copied().collect();
+        }
     }
     if let Ok(mut globals) = globals().write() {
         globals.input = input;
@@ -1451,19 +1596,39 @@ fn install_viber_api_with(
         })?,
     )?;
 
-    // viber.interacted(key) -> bool — a tecla foi pressionada NESTE frame.
-    // PENDENTE na integração: o teste de foco (`InteractionFocus`, a
-    // entidade alvo mais próxima vence) e o gate de `ui_typing` do Viber.
+    // viber.interacted(key) -> bool — a tecla foi pressionada NESTE frame E
+    // ESTA entidade é o alvo mais próximo dessa tecla (o foco publicado pela
+    // integração: uma tecla, um alvo — dois NPC sobrepostos reagiam ambos ao
+    // mesmo [E]). Sem foco publicado (entidade que ainda não registou
+    // `set_interaction`), cai no teste de alcance de sempre, como no
+    // monólito; com um `UiInput` focado as teclas são texto e nada dispara.
     let interacted_globals = globals.clone();
     viber.set(
         "interacted",
-        lua.create_function(move |_, key: String| {
+        lua.create_function(move |lua, key: String| {
             let code = keys::key_code_from_str(&key)
                 .ok_or_else(|| mlua::Error::runtime(format!("tecla desconhecida '{key}'")))?;
-            Ok(interacted_globals
-                .read()
-                .map(|globals| globals.input.keys_pressed.contains(&code))
-                .unwrap_or(false))
+            let globals = interacted_globals.read();
+            let Ok(globals) = globals else {
+                return Ok(false);
+            };
+            if globals.ui_typing || !globals.input.keys_pressed.contains(&code) {
+                return Ok(false);
+            }
+            let Some(entity) = script_entity_opt(lua) else {
+                return Ok(false);
+            };
+            let bits = entity.to_bits() as i64;
+            match globals.interaction_focus.get(&code) {
+                Some(winner) => Ok(*winner == bits),
+                None => Ok(globals
+                    .player
+                    .zip(globals.positions.get(&bits))
+                    .map(|(player, origin)| {
+                        player.distance(*origin) <= DEFAULT_INTERACT_RANGE_M
+                    })
+                    .unwrap_or(false)),
+            }
         })?,
     )?;
 

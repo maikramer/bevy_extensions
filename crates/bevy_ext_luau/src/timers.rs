@@ -38,14 +38,13 @@ pub fn install(lua: &Lua, api: &Table) -> mlua::Result<()> {
                     "viber.after/every: segundos têm de ser finitos e >= 0",
                 ));
             }
-            let path: Option<String> = lua
-                .named_registry_value("viber_script_path")
-                .unwrap_or(None);
-            let Some(path) = path else {
-                return Err(mlua::Error::runtime(
+            let path = lua
+                .app_data_ref::<crate::events::ScriptPath>()
+                .map(|p| p.0.clone())
+                .filter(|p| !p.is_empty())
+                .ok_or_else(|| mlua::Error::runtime(
                     "viber.after/every fora de um script (sem path)",
-                ));
-            };
+                ))?;
             // O dono é a entidade do attach; fora de `on_update` (REPL) o
             // timer era aceite e descartado no 1.º tick, em silêncio — o
             // monólito devolve erro e aqui é igual.
@@ -56,9 +55,7 @@ pub fn install(lua: &Lua, api: &Table) -> mlua::Result<()> {
             let Some(owner) = owner else {
                 return Err(mlua::Error::runtime("viber.after fora de on_update"));
             };
-            let elapsed: f64 = lua
-                .named_registry_value("viber_script_elapsed")
-                .unwrap_or(0.0);
+            let elapsed = crate::globals().read().map(|g| g.time).unwrap_or(0.0);
             let timers: Table = lua.named_registry_value("viber_timers")?;
             let seq: Table = lua.named_registry_value("viber_timer_seq")?;
             let id: i64 = seq.raw_get("next")?;

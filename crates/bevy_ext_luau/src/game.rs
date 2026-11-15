@@ -290,6 +290,12 @@ pub fn apply_patch(
     _lua: &Lua,
     patch: &std::collections::BTreeMap<String, serde_json::Value>,
 ) {
+    apply_patch_json(patch);
+}
+
+/// Compat SEM VM: o mesmo [`apply_patch`] para quem não tem handle mlua
+/// (o jogo em modo BMS — os caminhos Rust do estado nunca tocam em Lua).
+pub fn apply_patch_json(patch: &std::collections::BTreeMap<String, serde_json::Value>) {
     let map: BTreeMap<String, GameValue> = patch
         .iter()
         .filter_map(|(key, value)| {

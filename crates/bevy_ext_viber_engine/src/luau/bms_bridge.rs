@@ -26,6 +26,11 @@ use bevy::animation::transition::AnimationTransitions;
 use bevy::animation::AnimationPlayer;
 use bevy::prelude::*;
 
+use bevy_ext_luau::{
+    CallbackLabel, IntoCallbackLabel, LuaScriptingPlugin, ScriptAsset, ScriptCallbackMessage,
+    ScriptComponent, ScriptValue, event_handler,
+};
+
 use crate::player::Player;
 use crate::vitals::Health;
 
@@ -732,13 +737,33 @@ pub(crate) fn apply_script_command(world: &mut World, command: ScriptCommand) {
                 };
             }
         }
-        ScriptCommand::SetBoneOffset { bone, rotation } => {
-            if let Some(mut offsets) = world.get_resource_mut::<crate::ik::PlayerBoneOffsets>() {
-                if rotation == Quat::IDENTITY {
+        ScriptCommand::SetBoneOffset {
+            entity,
+            bone,
+            rotation,
+        } => {
+            // Sem entidade (ponte BMS do editor): o herói, como sempre.
+            let target = entity.or_else(|| {
+                let mut query =
+                    world.query_filtered::<Entity, With<crate::player::Player>>();
+                query.iter(world).next()
+            });
+            let Some(target) = target else {
+                return;
+            };
+            let Ok(mut target) = world.get_entity_mut(target) else {
+                return;
+            };
+            if rotation == Quat::IDENTITY {
+                if let Some(mut offsets) = target.get_mut::<crate::ik::BoneOffsets>() {
                     offsets.clear(&bone);
-                } else {
-                    offsets.set(&bone, rotation);
                 }
+            } else if let Some(mut offsets) = target.get_mut::<crate::ik::BoneOffsets>() {
+                offsets.set(&bone, rotation);
+            } else {
+                let mut offsets = crate::ik::BoneOffsets::default();
+                offsets.set(&bone, rotation);
+                target.insert(offsets);
             }
         }
         ScriptCommand::Corpse { entity } => {
@@ -1238,16 +1263,66 @@ pub struct BmsBridgePlugin;
 
 impl bevy::app::Plugin for BmsBridgePlugin {
     fn build(&self, app: &mut bevy::app::App) {
+        // O host BMS não corre o build do `LuauScriptPlugin`: os recursos e
+        // mensagens que o JOGO e os braços de aplicação consomem registam-se
+        // aqui (o mesmo bloco do plugin antigo, sem a VM).
+        app.init_resource::<Time>()
+            .init_resource::<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>()
+            .init_resource::<crate::interact::InteractionFocus>()
+            .init_resource::<crate::luau::ScriptEventQueue>()
+            .init_resource::<crate::ui::UiPrompt>()
+            .init_resource::<crate::attachment::AttachmentRequests>()
+            .init_resource::<crate::attachment::AttachmentSlots>()
+            .init_resource::<crate::luau::ScriptSystemOwners>()
+            .init_resource::<crate::recipes::spawn::PendingScriptSpawns>()
+            .init_resource::<crate::luau::contacts::ContactBook>()
+            .add_message::<ScriptToast>()
+            .add_message::<crate::luau::ScriptSay>()
+            .add_message::<crate::ambient::SfxEvent>()
+            .add_message::<crate::feedback::AttackAlert>()
+            .add_message::<crate::feedback::DamageNumberEvent>();
+        app.add_systems(
+            bevy::app::PreUpdate,
+            // O foco por tecla recalcula-se ANTES do publisher: o
+            // `interaction_focus` publicado aos scripts é o DESTE frame.
+            crate::interact::focus_interactions.before(publish_host_state),
+        );
         app.init_resource::<ScriptWarnState>()
             .init_resource::<BmsCommandCursor>()
+            .init_resource::<ScriptMirrorState>()
+            .init_resource::<BmsScriptExports>()
             .add_systems(
                 bevy::app::PreUpdate,
-                publish_host_state
-                    // ANTES do publisher do BMS: o `publish_globals` copia
-                    // o recurso para os globals dos contextos; o tick de
-                    // timers lê o relógio publicado.
-                    .before(bevy_ext_luau::publish_globals)
-                    .before(bevy_ext_luau::timers::tick_timers),
+                (
+                    // PASSO 1 da integração: espelhar `LuaScriptRef` →
+                    // `ScriptComponent` (attach BMS). Sem isto nenhum
+                    // contexto nasce — os scripts do jogo não correm.
+                    mirror_script_components,
+                    // Esquema `--@export` dos scripts já carregados (o
+                    // `viber.prop`/`viber.props` lê-no do estado publicado).
+                    parse_script_exports.before(publish_host_state),
+                    publish_host_state
+                        // ANTES do publisher do BMS: o `publish_globals` copia
+                        // o recurso para os globals dos contextos; o tick de
+                        // timers lê o relógio publicado.
+                        .before(bevy_ext_luau::publish_globals)
+                        .before(bevy_ext_luau::timers::tick_timers),
+                ),
+            )
+            .add_systems(
+                bevy::app::Update,
+                // PASSO 3 da integração: despacho `on_update(dt)` — o
+                // handler do BMS procura a GLOBAL `on_update` em cada
+                // contexto. Antes do dreno: os comandos enfileirados pelos
+                // scripts no frame corrente são drenados e aplicados no
+                // mesmo frame (`apply_bms_commands` corre depois do dreno).
+                (
+                    send_on_update,
+                    event_handler::<OnScriptUpdate, LuaScriptingPlugin>,
+                )
+                    .chain()
+                    .in_set(VaelScripts)
+                    .before(bevy_ext_luau::commands::drain_commands),
             )
             .add_systems(
                 bevy::app::Update,
@@ -1258,10 +1333,135 @@ impl bevy::app::Plugin for BmsBridgePlugin {
     }
 }
 
+// ═══ INTEGRAÇÃO DO HOST (espelho + despacho `on_update`) ═══════════════
+
+/// Label da callback de frame do BMS: o handler do BMS procura a GLOBAL
+/// `on_update` em cada contexto (o mesmo contrato do `luau_update` do
+/// monólito — os scripts não mudam).
+pub struct OnScriptUpdate;
+
+/// Âncora de ordenação para o jogo: os sistemas que lêem o que os scripts
+/// escreveram NO frame (store `viber.game()`, mensagens de comando) correm
+/// DEPOIS deste set (`send_on_update` + handler `on_update`), e os que
+/// aplicam comandos, depois do dreno (`apply_bms_commands`).
+#[derive(bevy::ecs::schedule::SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+pub struct VaelScripts;
+
+impl IntoCallbackLabel for OnScriptUpdate {
+    fn into_callback_label() -> CallbackLabel {
+        "on_update".into()
+    }
+}
+
+/// Path de asset de um `LuaScriptRef` (`scripts/<path>` relativo ao
+/// mundo): o `world_dir` é a PRIMEIRA asset root do jogo
+/// (`config::asset_roots`), portanto o prefixo `scripts/` resolve no
+/// `AssetServer` sem source extra.
+fn script_asset_path(lref: &str) -> String {
+    if lref.starts_with("scripts/") {
+        lref.to_string()
+    } else {
+        format!("scripts/{lref}")
+    }
+}
+
+/// Mapa mantido por [`mirror_script_components`]: entidade → (handle do
+/// `ScriptAsset`, path do asset). Alimenta a entrega de sinais BMS (o
+/// `EmitSignal`/`CallGroup` precisa do handle para mirar o contexto) e o
+/// parse de exports.
+#[derive(Resource, Default)]
+pub struct ScriptMirrorState {
+    pub by_entity: HashMap<Entity, (Handle<ScriptAsset>, String)>,
+}
+
+/// Esquema `--@export` por path, extraído dos assets de script já
+/// carregados ([`parse_script_exports`]). Em modo BMS substitui o
+/// `ScriptCtx::exports` do host antigo como fonte do `viber.prop`.
+#[derive(Resource, Default)]
+pub struct BmsScriptExports {
+    map: HashMap<String, std::sync::Arc<bevy_ext_luau::exports::ScriptExports>>,
+    parsed: HashSet<AssetId<ScriptAsset>>,
+}
+
+impl BmsScriptExports {
+    /// Snapshot para o `ScriptHostState.exports` (o publisher copia).
+    pub fn snapshot(&self) -> HashMap<String, std::sync::Arc<bevy_ext_luau::exports::ScriptExports>> {
+        self.map.clone()
+    }
+}
+
+/// PASSO 1 da integração: espelha `LuaScriptRef` → `ScriptComponent` com
+/// `ScriptAttachment::EntityScript(entity, handle)`. Os hooks do
+/// `ScriptComponent` emitem os `ScriptLifecycleMessage` que o pipeline do
+/// BMS consome (cria/destrói contextos); a remoção do `LuaScriptRef`
+/// (streaming unload, topple) remove o espelho e desliga o contexto.
+#[allow(clippy::type_complexity)]
+fn mirror_script_components(
+    mut commands: Commands,
+    server: Res<AssetServer>,
+    added: Query<(Entity, &LuaScriptRef), Added<LuaScriptRef>>,
+    mut removed: RemovedComponents<LuaScriptRef>,
+    mut mirror: ResMut<ScriptMirrorState>,
+) {
+    for (entity, lref) in &added {
+        let path = script_asset_path(&lref.path);
+        let handle: Handle<ScriptAsset> = server.load(&path);
+        commands
+            .entity(entity)
+            .try_insert(ScriptComponent(vec![handle.clone()]));
+        mirror.by_entity.insert(entity, (handle, path));
+    }
+    for entity in removed.read() {
+        if mirror.by_entity.remove(&entity).is_some() {
+            // Só entidades que NÓS espelhamos: um `ScriptComponent` de
+            // outra via (editor/Jackdaw) não é nosso para remover.
+            commands.entity(entity).try_remove::<ScriptComponent>();
+        }
+    }
+}
+
+/// Parse do esquema `--@export` dos scripts cujos assets JÁ chegaram (o
+/// load é assíncrono; tentar antes é leitura falhada). Corre uma vez por
+/// (asset, path): o conteúdo de um asset com hot-reload muda sob o MESMO
+/// id — aí o schema novo só entra com o re-attach do script.
+fn parse_script_exports(
+    scripts: Res<Assets<ScriptAsset>>,
+    mirror: Res<ScriptMirrorState>,
+    mut exports: ResMut<BmsScriptExports>,
+) {
+    if mirror.by_entity.is_empty() {
+        return;
+    }
+    for (handle, path) in mirror.by_entity.values() {
+        let Some(asset) = scripts.get(handle) else {
+            continue;
+        };
+        if !exports.parsed.insert(handle.id()) {
+            continue;
+        }
+        let source = String::from_utf8_lossy(&asset.content);
+        exports
+            .map
+            .insert(path.clone(), std::sync::Arc::new(bevy_ext_luau::exports::parse_exports(&source)));
+    }
+}
+
+/// Despacho `on_update(dt)` para TODOS os contextos residentes: uma
+/// `ScriptCallbackMessage` com label `on_update` e o delta do frame. O
+/// [`event_handler`] do BMS (o sistema a seguir, ordenado) lê a fila e
+/// corre o handler — a global `on_update` de cada script.
+fn send_on_update(time: Res<Time>, mut writer: MessageWriter<ScriptCallbackMessage>) {
+    let dt = time.delta_secs_f64();
+    writer.write(ScriptCallbackMessage::new_for_all_scripts(
+        OnScriptUpdate::into_callback_label(),
+        vec![ScriptValue::Float(dt)],
+    ));
+}
+
 /// Sistema EXCLUSIVO: lê as `ScriptCommandMessage` escritas pelo
 /// `drain_commands` do BMS, converte cada variante para o `ScriptCommand`
 /// do monólito e aplica com [`apply_script_command`].
-fn apply_bms_commands(world: &mut World) {
+pub fn apply_bms_commands(world: &mut World) {
     // Lê e avança um cursor LOCAL (o recurso fica com o avançado — os
     // borrows do World são por fases).
     let (pending, cursor) = {
@@ -1385,7 +1585,11 @@ fn convert_bms_command(
         Bms::CameraKick(impulse) => Some(ScriptCommand::CameraKick(impulse)),
         Bms::SetLantern(intensity) => Some(ScriptCommand::SetLantern(intensity)),
         Bms::SetBoneOffset { bone, rotation } => {
-            Some(ScriptCommand::SetBoneOffset { bone, rotation })
+            Some(ScriptCommand::SetBoneOffset {
+                entity: None, // o editor fala com o herói
+                bone,
+                rotation,
+            })
         }
         Bms::CameraFree(active) => Some(ScriptCommand::CameraFree(active)),
         Bms::CameraPose { pos, look } => Some(ScriptCommand::CameraPose { pos, look }),
@@ -1747,28 +1951,46 @@ fn deliver_group(
     }
 }
 
-/// Membros de um alvo (`nome` ou `@grupo`) segundo os snapshots do ctx do
-/// host do monólito (o mesmo material que o loop de sinais usava).
+/// Membros de um alvo (`nome` ou `@grupo`) segundo os snapshots — o ctx do
+/// host do monólito quando existe; em modo BMS o `ScriptHostState`
+/// publicado (as MESMAS extrações de nomes/grupos do `luau_update`).
 fn host_members(world: &World, target: &bevy_ext_luau::exports::ConnTarget) -> Vec<i64> {
-    let Some(host) = world.get_resource::<LuaScriptHost>() else {
-        return Vec::new();
-    };
-    let Some(ctx) = host.lua.app_data_ref::<ScriptCtx>() else {
+    if let Some(host) = world.get_resource::<LuaScriptHost>()
+        && let Some(ctx) = host.lua.app_data_ref::<ScriptCtx>()
+    {
+        return match target {
+            bevy_ext_luau::exports::ConnTarget::Name(name) => {
+                ctx.named_entities.get(name).cloned().unwrap_or_default()
+            }
+            bevy_ext_luau::exports::ConnTarget::Group(group) => {
+                ctx.groups.get(group).cloned().unwrap_or_default()
+            }
+        };
+    }
+    let Some(state) = world.get_resource::<bevy_ext_luau::ScriptHostState>() else {
         return Vec::new();
     };
     match target {
-        bevy_ext_luau::exports::ConnTarget::Name(name) => {
-            ctx.named_entities.get(name).cloned().unwrap_or_default()
-        }
+        bevy_ext_luau::exports::ConnTarget::Name(name) => state
+            .named_entities
+            .get(name)
+            .cloned()
+            .unwrap_or_default(),
         bevy_ext_luau::exports::ConnTarget::Group(group) => {
-            ctx.groups.get(group).cloned().unwrap_or_default()
+            state.groups.iter().filter_map(|(bits, groups)| {
+                groups
+                    .contains(group)
+                    .then_some(*bits)
+            }).collect()
         }
     }
 }
 
 /// Corre `method(args…)` no contexto do alvo — 1:1 com a entrega do loop
 /// de sinais do `luau_update` (semente de contexto, aviso de método
-/// ausente, erro pcall-style por path).
+/// ausente, erro pcall-style por path). Sem o host do monólito (modo BMS)
+/// o método vai como callback BMS (`ScriptCallbackMessage` com o método
+/// como label — o handler procura a GLOBAL `method` no contexto do alvo).
 fn run_on_target(
     world: &mut World,
     target: Entity,
@@ -1805,6 +2027,7 @@ fn run_on_target(
     // Argumentos JSON → valores Lua (o `viber.emit` BMS empacota em JSON).
     let packed = {
         let Some(host) = world.get_resource::<LuaScriptHost>() else {
+            deliver_bms_callback(world, target, method, args);
             return;
         };
         mlua::MultiValue::from_vec(
@@ -1827,6 +2050,64 @@ fn run_on_target(
                 host.warn_once(&path, &error);
             }
         }
+    }
+}
+
+/// Entrega BMS de um método de sinal: `ScriptCallbackMessage` mirando o
+/// contexto `EntityScript` do alvo. O handler do BMS procura a GLOBAL
+/// `method` — o mesmo contrato do `run_method` do host antigo (a função
+/// global de topo do script é o método do sinal).
+fn deliver_bms_callback(
+    world: &mut World,
+    target: Entity,
+    method: &str,
+    args: &[serde_json::Value],
+) {
+    let Some(handle) = world
+        .get_resource::<ScriptMirrorState>()
+        .and_then(|mirror| mirror.by_entity.get(&target))
+        .map(|(handle, _)| handle.clone())
+    else {
+        warn_once(
+            world,
+            &format!("bms:signal-nomirror:{target}:{method}"),
+            &format!("[luau] {method}: o alvo {target} não está espelhado no BMS — ignorado"),
+        );
+        return;
+    };
+    let values = args.iter().map(json_to_script_value).collect();
+    world.write_message(ScriptCallbackMessage::new_for_script_entity(
+        // CallbackLabel filtra caracteres inválidos; um método com nome
+        // estranho cai em "" e o handler ignora (não há global "").
+        CallbackLabel::new_lossy(method),
+        values,
+        handle,
+        target,
+    ));
+}
+
+/// JSON → `ScriptValue` para os args de sinais (os mesmos valores que o
+/// `json_to_lua` do `game` produziria, na variante BMS).
+fn json_to_script_value(value: &serde_json::Value) -> ScriptValue {
+    match value {
+        serde_json::Value::Null => ScriptValue::Unit,
+        serde_json::Value::Bool(b) => ScriptValue::Bool(*b),
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .map(ScriptValue::Float)
+            .unwrap_or(ScriptValue::Unit),
+        serde_json::Value::String(s) => ScriptValue::String(s.clone().into()),
+        serde_json::Value::Array(items) => ScriptValue::List(
+            items
+                .iter()
+                .map(json_to_script_value)
+                .collect::<std::collections::VecDeque<_>>(),
+        ),
+        serde_json::Value::Object(map) => ScriptValue::Map(
+            map.iter()
+                .map(|(key, value)| (key.clone(), json_to_script_value(value)))
+                .collect(),
+        ),
     }
 }
 
@@ -1951,6 +2232,11 @@ struct PublishStateResources<'w> {
     locale: Option<bevy::ecs::system::Res<'w, crate::locale::Locale>>,
     save_key: Option<bevy::ecs::system::Res<'w, crate::save::WorldSaveKey>>,
     save_dir: Option<bevy::ecs::system::Res<'w, crate::save::SaveDir>>,
+    // Modo BMS: foco de interação, gate de escrita de UI e o esquema
+    // `--@export` extraído dos assets de script.
+    focus: Option<bevy::ecs::system::Res<'w, crate::interact::InteractionFocus>>,
+    typing: Option<bevy::ecs::system::Res<'w, crate::ui::widgets::UiFocusedInput>>,
+    bms_exports: Option<bevy::ecs::system::Res<'w, BmsScriptExports>>,
 }
 
 /// Preenche o [`bevy_ext_luau::ScriptHostState`] a partir do World — as
@@ -2015,14 +2301,39 @@ fn publish_host_state(
     // static do `game` — só `Some` escreve (apps mínimas não limpa).
     state.scripts_dir = res.host.as_ref().map(|host| host.scripts_dir.clone());
 
-    // Esquema `--@export` por path — vive no ctx do host (o mesmo mapa que
-    // o `LuaScriptHost::load_script` mantém; os Arcs são partilhados).
+    // Esquema `--@export` por path — no host antigo vive no ctx (o mesmo
+    // mapa que o `LuaScriptHost::load_script` mantém); em modo BMS o
+    // [`parse_script_exports`] extrai-o dos assets e o publisher copia-o.
     state.exports = res
         .host
         .as_ref()
         .and_then(|host| host.lua.app_data_ref::<ScriptCtx>())
         .map(|ctx| ctx.exports.clone())
+        .filter(|exports| !exports.is_empty())
+        .unwrap_or_else(|| {
+            res.bms_exports
+                .as_deref()
+                .map(BmsScriptExports::snapshot)
+                .unwrap_or_default()
+        });
+
+    // Foco de interação por tecla (o `viber.interacted` do BMS só aceita o
+    // vencedor) e o gate de `UiInput` focado (teclas são texto).
+    state.interaction_focus = res
+        .focus
+        .as_deref()
+        .map(|focus| {
+            focus
+                .snapshot()
+                .into_iter()
+                .map(|(key, entity)| (key, entity.to_bits() as i64))
+                .collect()
+        })
         .unwrap_or_default();
+    state.ui_typing = res
+        .typing
+        .as_deref()
+        .is_some_and(|focused| focused.0.is_some());
 
     // Snapshot de nomes/posições — INCREMENTAL como no `luau_update`
     // (reconstruir 79k nomes por frame custava ~18 ms no simple-rpg) e

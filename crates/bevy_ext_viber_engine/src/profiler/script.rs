@@ -30,7 +30,12 @@ const PUBLISH_INTERVAL: f32 = 0.25;
 
 /// Recurso partilhado entre as closures Lua e os sistemas da engine.
 /// Mesma forma do `UiScriptState`: clonável, locks sem contenção.
-#[derive(Clone, Default, Resource, Reflect)]
+///
+/// Os Arcs são CLONES dos globais ([`shared_view`]/[`shared_queue`]): em modo
+/// BMS as closures vivem em contextos por entidade criados pelo regist
+/// `bevy_ext_luau::add_context_installer` e o recurso tem de partilhar os
+/// MESMOS Arcs com elas (era a VM única do host antigo que os unia).
+#[derive(Clone, Resource, Reflect)]
 #[reflect(Resource)]
 pub struct ProfilerScriptState {
     /// Último snapshot publicado (`None` = modal fechado, nada a mostrar).
@@ -38,8 +43,33 @@ pub struct ProfilerScriptState {
     pub view: Arc<Mutex<Option<Value>>>,
     /// Comandos enfileirados por `viber.profiler_cmd` (aplicados pós-frame).
     pub queue: Arc<Mutex<Vec<String>>>,
-    /// True depois de `viber.profiler` existir no host.
+    /// True depois de `viber.profiler` existir no host antigo (BMS instala
+    /// por contexto, sem flag).
     pub installed: bool,
+}
+
+impl Default for ProfilerScriptState {
+    fn default() -> Self {
+        Self {
+            view: Arc::clone(&shared_view()),
+            queue: Arc::clone(&shared_queue()),
+            installed: false,
+        }
+    }
+}
+
+/// Snapshot partilhado view/queue — o ponto de encontro das closures dos
+/// contextos BMS com os sistemas da engine.
+fn shared_view() -> Arc<Mutex<Option<Value>>> {
+    static SHARED: std::sync::LazyLock<Arc<Mutex<Option<Value>>>> =
+        std::sync::LazyLock::new(|| Arc::new(Mutex::new(None)));
+    Arc::clone(&SHARED)
+}
+
+fn shared_queue() -> Arc<Mutex<Vec<String>>> {
+    static SHARED: std::sync::LazyLock<Arc<Mutex<Vec<String>>>> =
+        std::sync::LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+    Arc::clone(&SHARED)
 }
 
 /// Instala `viber.profiler`/`viber.profiler_cmd` no host Luau (uma vez).
@@ -64,13 +94,13 @@ pub fn install_profiler_script_api(
     }
 }
 
-fn install_profiler_api(lua: &mlua::Lua, state: &ProfilerScriptState) -> mlua::Result<()> {
+fn install_profiler_api(lua: &mlua::Lua, _state: &ProfilerScriptState) -> mlua::Result<()> {
     let viber: mlua::Table = lua.globals().get("viber")?;
 
     // viber.profiler() -> table | nil — snapshot publicado pela engine
     // (nil com o modal fechado: o driver nem acorda o GC).
     {
-        let view = state.view.clone();
+        let view = Arc::clone(&shared_view());
         viber.set(
             "profiler",
             lua.create_function(move |lua, ()| {
@@ -86,7 +116,7 @@ fn install_profiler_api(lua: &mlua::Lua, state: &ProfilerScriptState) -> mlua::R
     // viber.profiler_cmd(cmd) — enfileira ação ("freeze", "export", "reset",
     // "tab:<nome>", "radius:<±N>", "extra:<id>"); aplicada pós-frame.
     {
-        let queue = state.queue.clone();
+        let queue = Arc::clone(&shared_queue());
         viber.set(
             "profiler_cmd",
             lua.create_function(move |_, cmd: String| {
@@ -99,6 +129,18 @@ fn install_profiler_api(lua: &mlua::Lua, state: &ProfilerScriptState) -> mlua::R
     }
 
     Ok(())
+}
+
+/// Instalador de contexto BMS: `viber.profiler`/`viber.profiler_cmd` em CADA
+/// contexto novo (o registo `bevy_ext_luau::add_context_installer` corre-o;
+/// o host antigo tinha a instalação única via `ResMut<LuaScriptHost>`).
+/// Assinatura [`bevy_ext_luau::ContextInitializer`] (fn pointer).
+pub fn install_context_api(
+    _attachment: &bevy_ext_luau::ScriptAttachment,
+    context: &mut bevy_ext_luau::LuaContext,
+) -> Result<(), bevy_ext_luau::InteropError> {
+    let state = ProfilerScriptState::default();
+    install_profiler_api(&**context, &state).map_err(bevy_ext_luau::InteropError::external)
 }
 
 /// Publica o snapshot para as closures: leve com o modal fechado (nada),
