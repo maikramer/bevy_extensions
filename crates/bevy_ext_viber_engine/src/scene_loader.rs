@@ -911,6 +911,9 @@ pub fn reset_scene_resources(world: &mut World) {
     world.remove_resource::<crate::terrain::runtime::TerrainSplat>();
     world.remove_resource::<crate::terrain::runtime::TerrainRuntime>();
     world.remove_resource::<PendingTerrain>();
+    // O gémeo do runtime extraído (fase D) — sem isto um bootstrap numa cena
+    // seguinte lia o terreno da cena anterior.
+    world.remove_resource::<bevy_ext_terrain_runtime::runtime::PendingTerrain>();
     world.remove_resource::<crate::recipes::spawn::PendingWorld>();
     world.remove_resource::<crate::worldsys::WorldBorderConfig>();
     world.remove_resource::<crate::worldsys::InteriorSceneConfig>();

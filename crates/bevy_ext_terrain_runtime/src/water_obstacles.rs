@@ -1,4 +1,4 @@
-//! Obstáculos de corrente do terreno: conversão de colliders Rapier e sólidos
+//! Obstáculos de corrente do terreno: conversão de colliders avian (trimesh/compound) e sólidos
 //! voxel para os primitivos 2D da crate `bevy_ext_water`.
 //!
 //! A matemática (SDF, deflexão do fluxo, halo/esteira) vive na crate — esta

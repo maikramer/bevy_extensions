@@ -741,6 +741,9 @@ pub(crate) fn headless_app(
         bevy::asset::AssetPlugin::default(),
         bevy::transform::TransformPlugin,
     ));
+    // A ponte IR→terreno (o bootstrap extraído lê o `PendingWorld` através
+    // dela — `terrain_host::collect_from_spawn`).
+    crate::terrain_host::install_terrain_collect(&mut app);
     crate::meshopt::register_asset_source(&mut app, asset_roots);
     // Asset stores que o arranque panica se não existirem: meshes, imagem,
     // materiais standard + os 3 custom do run (sky/water/terrain-chunk) e

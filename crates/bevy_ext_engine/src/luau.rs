@@ -162,18 +162,10 @@ impl ScriptEventQueue {
 /// A component marking an entity as owned by a Luau script (`scripts/<path>`
 /// relative to the world directory).
 ///
-/// WIRED-BY-ORCHESTRATOR: inserted by the spawn step; o runtime do monólito
-/// observa-a (`on_add` / update / `on_remove`) e os consumidores extraídos
-/// (folhagem, cinemáticas) usam-na como filtro.
-#[derive(Debug, Clone, Component, Reflect)]
-#[reflect(Component)]
-// Caminho congelado da whitelist do espelho Luau (`viber::luau::components::…`
-// em `luau/ecs.rs` do monólito); o default do Rust mudaria ao sair daí.
-#[type_path = "viber::luau::components"]
-pub struct LuaScriptRef {
-    /// Script path relative to `world_dir/scripts/` (e.g. `"doors/gate.lua"`).
-    pub path: String,
-}
+/// Movido ao `bevy_ext_core` (exit4/G1 — os sentidos do `bevy_ext_ai` usam-no
+/// como filtro "scripted"); O MESMO tipo, o caminho de reflexão
+/// `viber::luau::components::LuaScriptRef` fica congelado no core.
+pub use bevy_ext_core::LuaScriptRef;
 
 // ── registry de SFX (`viber.sound`) ─────────────────────────────────────
 

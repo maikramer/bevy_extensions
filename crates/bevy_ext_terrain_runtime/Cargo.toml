@@ -38,6 +38,10 @@ bevy_ext_gltf.workspace = true
 # `parry-f32` é obrigatório para `Collider`/`TrimeshFlags` (o `3d` sozinho
 # não traz o parry; compilado como dependência a unificação escondia-o).
 avian3d = { version = "0.8", default-features = false, features = ["3d", "parry-f32"] }
+# Água: corpos/espelho CPU (`body`/`mirror`), solver iWave (`waves`), material
+# de dois passes (`material`), FX/bóia/obstáculos — extraída do monólito
+# (22c2a31); esta crate publica os corpos e implementa `WaterSource`.
+bevy_ext_water = { version = "0.1.0", path = "../bevy_ext_water" }
 anyhow.workspace = true
 # Decode `.ahgt` (half-f16) e cache de splat em disco.
 half = "2"

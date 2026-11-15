@@ -539,6 +539,22 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+fn cliff_face_fracture(p: Vec3) -> f32 {
+    let dip = (p.x * 0.045 - p.z * 0.038).sin() * 1.4 + (p.x * 0.02 + p.z * 0.05).cos() * 0.9;
+    let strata = ((p.y + dip) * 1.15).sin();
+    let u1 = p.x * 0.62 - p.z * 0.78;
+    let v1 = p.x * 0.78 + p.z * 0.62;
+    let joint = (u1 * 0.48 + (p.y * 0.19).sin() * 0.8).sin() * (v1 * 0.37).cos();
+    let micro = (u1 * 1.35 + p.y * 0.75).sin() * (v1 * 1.15 - p.y * 0.55).cos();
+    strata * 0.45 + joint * 0.35 + micro * 0.20
+}
+
+fn talus_scree_relief(p: Vec3) -> f32 {
+    let lobe = (p.x * 0.34 + p.z * 0.29).sin() * (p.x * 0.21 - p.z * 0.41).cos();
+    let rubble = (p.x * 0.77 + p.z * 0.63).sin() * 0.40;
+    (lobe + rubble) * 0.42
+}
+
 /// The air wedge on the low side of one crest segment.
 ///
 /// Subtracting it turns whatever ramp the terrain had into the authored face.
@@ -568,14 +584,18 @@ impl VoxelMod for CliffFaceMod {
         let drop = (top - bot).max(1e-3);
         let v = ((top - p.y) / drop).clamp(0.0, 1.0);
         let steps = (w / TERRACE_TREAD).round().clamp(2.0, 8.0);
-        let off = w * profile_offset(
-            v,
-            self.profile,
-            steps,
-            self.arc,
-            self.seed,
-            self.column.as_ref(),
-        );
+        let face_taper = smoothstep(0.0, 0.12, v) * (1.0 - smoothstep(0.86, 1.0, v));
+        let fracture = cliff_face_fracture(p) * (w * 0.045).clamp(0.14, 0.42) * face_taper;
+        let off = w
+            * profile_offset(
+                v,
+                self.profile,
+                steps,
+                self.arc,
+                self.seed,
+                self.column.as_ref(),
+            )
+            + fracture;
 
         // Intersection of half-spaces: inside the wedge when every term is
         // negative. Beyond the face, above the toe, below the crest, within
@@ -672,9 +692,10 @@ impl VoxelMod for TalusMod {
         let crest = lerp(self.crest.0, self.crest.1, f.h);
         let toe = lerp(self.toe.0, self.toe.1, f.h);
         // Cone profile: full height at the wall, dying into the ground at the
-        // end of the run.
+        // end of the run, broken up by deterministic talus rubble lobes.
         let t = ((f.d - start) / run).clamp(0.0, 1.0);
-        let surface = lerp(crest, toe, t * t);
+        let taper = (t * (1.0 - t) * 4.0).clamp(0.0, 1.0);
+        let surface = lerp(crest, toe, t * t) + talus_scree_relief(p) * taper;
         [
             p.y - surface,
             start - f.d,

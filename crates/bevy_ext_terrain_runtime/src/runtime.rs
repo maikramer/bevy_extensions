@@ -40,8 +40,8 @@ use super::splat::{
     flat_height_image, flat_normal_image, flat_rough_image, solid_white_image,
 };
 use super::voxel::{Span, VoxelField};
-use super::water::{WaterBody, lake_water_mesh, river_water_mesh};
-use super::water_material::{WaterExtension, WaterMaterial};
+use super::water::{WaterBody, WaterMeshData, lake_water_mesh_dense, river_water_mesh_dense};
+use super::water_material::{WaterExtension, WaterMaterial, WaterUniforms};
 use crate::profiling::{Group, timed};
 use bevy_ext_gltf::textures::WorldTiledTextures;
 
@@ -479,7 +479,7 @@ fn splat_cache_key(
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    "viber-splat-v4".hash(&mut hasher);
+    "viber-splat-v7".hash(&mut hasher);
     grid.raw().hash(&mut hasher);
     grid.world_size().to_bits().hash(&mut hasher);
     grid.max_height().to_bits().hash(&mut hasher);
@@ -740,6 +740,21 @@ impl TerrainRuntime {
             .filter(|w| w.contains(p))
             .filter_map(|w| w.surface_y_at(p))
             .fold(None::<f32>, |acc, y| Some(acc.map_or(y, |max| max.max(y))))
+    }
+
+    /// Hydrodynamic domain sample `(surface_y, depth, flow, plunge)` at `(x, z)`.
+    pub fn water_domain_at(&self, x: f32, z: f32) -> Option<super::water::WaterDomainSample> {
+        let p = Vec2::new(x, z);
+        let bed_y = self.in_field(x, z).then(|| self.sample(x, z));
+        let mut best: Option<super::water::WaterDomainSample> = None;
+        for body in &self.water {
+            if let Some(sample) = body.sample_domain(p, bed_y, 1.5) {
+                if best.is_none_or(|b| sample.surface_y > b.surface_y) {
+                    best = Some(sample);
+                }
+            }
+        }
+        best
     }
 
     /// Point is on a road ribbon (`isPointOnRoad`).
@@ -1416,6 +1431,30 @@ pub fn bootstrap(world: &mut World) {
         );
         acc
     };
+    // `<RockFeatures>` resolve ANTES da máscara final e do splat: o scatter lê
+    // o `cliff_mask` de penhascos naturais/autorais para fugir de escarpas, e
+    // depois cavernas e arcos (autorais + semeados) entram na `cliff_mask` para
+    // o splat (adros/cascalho) e o shader triplanar das paredes 3D.
+    if !pending.features.caves.is_empty() || !seeded.caves.is_empty() {
+        let all_caves: Vec<_> = pending
+            .features
+            .caves
+            .iter()
+            .chain(&seeded.caves)
+            .cloned()
+            .collect();
+        cliff_mask.add_authored_caves(&all_caves);
+    }
+    if !pending.features.arches.is_empty() || !seeded.arches.is_empty() {
+        let all_arches: Vec<_> = pending
+            .features
+            .arches
+            .iter()
+            .chain(&seeded.arches)
+            .cloned()
+            .collect();
+        cliff_mask.add_authored_arches(&all_arches, &grid);
+    }
 
     let mut voxel_mods: Vec<Box<dyn super::voxel::VoxelMod>> = Vec::new();
     for (i, band) in cliff_bands.iter().enumerate() {
@@ -1502,6 +1541,7 @@ pub fn bootstrap(world: &mut World) {
         world,
         &mut meshes,
         &mut water_materials,
+        &mut images,
         &grid,
         &voxel,
         root,
@@ -2155,6 +2195,7 @@ fn spawn_water(
     world: &mut World,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<WaterMaterial>,
+    images: &mut Assets<Image>,
     grid: &BrushGrid,
     voxel: &VoxelField,
     parent: Entity,
@@ -2164,23 +2205,54 @@ fn spawn_water(
     if result.water.is_empty() {
         return;
     }
-    // A cor/alpha do corpo (e o fade de margem) chegam pelas VERTEX COLORS;
-    // o shader da extensão (`shaders/water.wgsl`) acrescenta ondas, fresnel e
-    // glint por cima deste PBR base. `reflectance 0.8` = F0 ~0.03, o F0 da
-    // água sem o excesso de espelho: com 1.0 o reflexo do céu pálido lavava
-    // o corpo ("leite") — 0.8 + rugosidade maior no shader deixam a cor
-    // dominar e o céu entrar só ao rasante.
-    let water_material = materials.add(WaterMaterial {
+    let (wave_tex, domain_tex, obstacle_tex) = world
+        .get_resource::<super::water_waves::WaterWaveWorld>()
+        .map(|w| (w.wave_tex.clone(), w.domain_tex.clone(), w.obstacle_tex.clone()))
+        .unwrap_or_else(|| {
+            let h = images.add(super::water_waves::make_wave_rgba16f_image(1, 1, false));
+            (h.clone(), h.clone(), h)
+        });
+    // Renderização em dois passes de transparência ordenada por `depth_bias`:
+    //   1. `AlphaMode::Multiply` (`depth_bias = 0.0`): absorção Beer–Lambert +
+    //      cáusticas solares refratadas no leito, sobre a cena opaca já desenhada.
+    //   2. `AlphaMode::Add` (`depth_bias = 0.05`): espalhamento subsuperficial
+    //      volumétrico, SSS de cristas, espuma celular e reflexo PBR/Fresnel.
+    let absorb_material = materials.add(WaterMaterial {
         base: StandardMaterial {
             base_color: Color::WHITE,
             metallic: 0.0,
-            perceptual_roughness: 0.08,
+            perceptual_roughness: 0.12,
             reflectance: 0.30,
-            alpha_mode: bevy::material::AlphaMode::Blend,
+            alpha_mode: bevy::material::AlphaMode::Multiply,
+            depth_bias: 0.0,
+            cull_mode: None,
+            unlit: true,
+            ..StandardMaterial::default()
+        },
+        extension: WaterExtension {
+            params: WaterUniforms::absorb_default(),
+            wave_tex: wave_tex.clone(),
+            domain_tex: domain_tex.clone(),
+            obstacle_tex: obstacle_tex.clone(),
+        },
+    });
+    let surface_material = materials.add(WaterMaterial {
+        base: StandardMaterial {
+            base_color: Color::WHITE,
+            metallic: 0.0,
+            perceptual_roughness: 0.06,
+            reflectance: 0.50,
+            alpha_mode: bevy::material::AlphaMode::Add,
+            depth_bias: 0.05,
             cull_mode: None,
             ..StandardMaterial::default()
         },
-        extension: WaterExtension {},
+        extension: WaterExtension {
+            params: WaterUniforms::surface_default(),
+            wave_tex,
+            domain_tex,
+            obstacle_tex,
+        },
     });
     // Espuma ambiente: emissores ao longo da linha de água (um a cada
     // FOAM_SPACING m, cap por corpo) — a borda deixa de ser uma linha
@@ -2203,28 +2275,36 @@ fn spawn_water(
     // e desalinharia todos os seguintes (espelho de água do vizinho,
     // rio próprio nunca renderizado).
     for (body, &(is_lake, spec_i)) in result.water.iter().zip(&result.water_specs) {
-        let (name, mesh) = if is_lake {
+        let (name, data): (&str, WaterMeshData) = if is_lake {
             let lake = &features.lakes[spec_i];
-            ("lake", lake_water_mesh(lake, body.water_y, grid))
+            ("lake", lake_water_mesh_dense(lake, body.water_y, grid))
         } else {
             let river = &features.rivers[spec_i];
-            ("river", river_water_mesh(river, body))
+            ("river", river_water_mesh_dense(river, body))
         };
-        if mesh.indices.is_empty() {
+        if data.mesh.indices.is_empty() || data.mesh.positions.is_empty() {
             continue;
         }
-        let handle = meshes.add(to_bevy_mesh(&mesh));
-        world
-            .spawn((
-                Name::new(format!("{name} {spec_i}")),
+        let aabb = padded_water_aabb(&data.mesh.positions);
+        let handle = meshes.add(to_water_bevy_mesh(&data));
+        for (entity_name, mat) in [
+            (format!("{name} {spec_i} absorb"), absorb_material.clone()),
+            (format!("{name} {spec_i}"), surface_material.clone()),
+        ] {
+            let mut entity = world.spawn((
+                Name::new(entity_name),
                 Transform::default(),
                 Visibility::Inherited,
                 // Água transparente a projetar sombra pintava um anel escuro
                 // na margem (o "contorno" que a lia como plataforma sólida).
                 NotShadowCaster,
                 ChildOf(parent),
-            ))
-            .insert((Mesh3d(handle), MeshMaterial3d(water_material.clone())));
+            ));
+            entity.insert((Mesh3d(handle.clone()), MeshMaterial3d(mat)));
+            if let Some(aabb) = aabb {
+                entity.insert(aabb);
+            }
+        }
 
         // ── Espuma da margem ─────────────────────────────────────────
         let foam_positions: Vec<(Vec2, f32)> = if is_lake {
@@ -2600,6 +2680,29 @@ pub(crate) fn to_bevy_mesh(data: &super::mesh::ChunkMeshData) -> Mesh {
     }
     mesh.insert_indices(Indices::U32(data.indices.clone()));
     mesh
+}
+
+pub(crate) fn to_water_bevy_mesh(data: &WaterMeshData) -> Mesh {
+    let mut mesh = to_bevy_mesh(&data.mesh);
+    if !data.uv_b.is_empty() && data.uv_b.len() == data.mesh.positions.len() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, data.uv_b.clone());
+    }
+    mesh
+}
+
+fn padded_water_aabb(positions: &[[f32; 3]]) -> Option<bevy::camera::primitives::Aabb> {
+    let first = *positions.first()?;
+    let mut min = Vec3::from(first);
+    let mut max = min;
+    for &p in positions.iter().skip(1) {
+        let v = Vec3::from(p);
+        min = min.min(v);
+        max = max.max(v);
+    }
+    // Folga horizontal/vertical para deslocamento Gerstner e ondas interativas
+    // sem culling prematuro nas bordas do ecrã.
+    let pad = Vec3::new(0.6, 1.5, 0.6);
+    Some(bevy::camera::primitives::Aabb::from_min_max(min - pad, max + pad))
 }
 
 /// Loads a PNG heightmap (8-bit grayscale is upscaled to the full 16-bit

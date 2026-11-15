@@ -59,8 +59,11 @@ pub mod spec;
 pub mod splat;
 pub mod voxel;
 pub mod water;
+pub mod water_buoyancy;
 pub mod water_fx;
 pub mod water_material;
+pub mod water_obstacles;
+pub mod water_waves;
 
 pub use brush::{BrushGrid, BrushMode};
 pub use cliffs::{CliffMask, CliffProfile, CliffSide, CliffSpec, sharpen_terrain};
@@ -85,6 +88,11 @@ pub use voxel::{
     Bounds3, BoxMod, CapsuleMod, ChunkClass, ModIndex, ModOp, Span, VoxelChunkParams, VoxelField,
     VoxelMod, build_voxel_mesh,
 };
-pub use water::{LakeSpec, RiverSpec, WaterBody, WaterKind};
+pub use water::{
+    CascadeInfo, LakeAuthoring, LakeSpec, RiverSpec, WaterBody, WaterKind, surface_height_at,
+    wave_height_at,
+};
+pub use water_buoyancy::{FloatSample, FloatState, FloatingBody, WaterBuoyancyPlugin};
 pub use water_fx::WaterFxPlugin;
 pub use water_material::{WaterExtension, WaterMaterial, WaterSurfaceConfig};
+pub use water_waves::{WaterKinematics, WaterWavePlugin, WaterWaveWorld, WaveImpulseRequest};

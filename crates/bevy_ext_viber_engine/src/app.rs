@@ -27,6 +27,8 @@ use bevy::log::info;
 use bevy::time::{Time, Virtual};
 use bevy_kira_audio::AudioApp;
 
+use crate::ai_host;
+use crate::audio_host;
 use crate::bridge;
 use crate::profiler::{Group, timed};
 use crate::recipes::ParsedWorld;
@@ -362,8 +364,8 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     };
     let shader_entities = &main_world.as_ref().unwrap_or(&world).entities;
     let sky_config = sky::SkyConfig::from_world(shader_entities).with_env_override();
-    let water_config = terrain::water_material::water_surface_config_from_world(shader_entities);
-    let layers_config = terrain::layer_material::TerrainChunkConfig::from_world(shader_entities);
+    let water_config = crate::terrain_host::water_surface_config_from_world(shader_entities);
+    let layers_config = crate::terrain_host::terrain_chunk_config_from_world(shader_entities);
     let shaders_dir = asset_root.join("shaders");
     let _ = std::fs::create_dir_all(&shaders_dir);
     for (name, contents) in [
@@ -553,6 +555,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
         sfx: Some(sfx_reverb),
         voice: Some(voice_reverb),
     });
+    // O host dos sistemas `music::*` (exit4/G1): espelha cena/bioma/chuva no
+    // `AudioWorldState`, semeia o `AudioPaths` do config e marca o ouvido.
+    app.add_plugins(audio_host::AudioHostPlugin);
     if let Some(port) = bridge_port {
         app.add_plugins(bridge::BridgePlugin { port });
         // O ping passa a identificar o mundo servido — o `viber debug
@@ -750,6 +755,9 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     // na GPU) — ambiente/reflexos que seguem a hora do dia. `VIBER_NO_IBL=1`.
     app.add_plugins(crate::ibl::SkyIblPlugin);
     app.add_plugins(terrain::TerrainPlugin);
+    // Ponte IR→terreno antes do plugin: o bootstrap extraído lê o
+    // `PendingWorld` do spawn através dela (`terrain_host::collect_from_spawn`).
+    crate::terrain_host::install_terrain_collect(&mut app);
     app.add_plugins(terrain::runtime::TerrainFeaturesPlugin);
     // Escritor único de samplers/mipmaps das texturas carregadas (o registro
     // `WorldTiledTextures` é consumido aqui; escrever o sampler noutro
@@ -851,6 +859,10 @@ pub fn build_app_with_world(path: &Path, world: ParsedWorld, opts: AppOptions) -
     //   sentidos (`SensesPlugin`) e os vitais das criaturas sem script.
     // - `SimpleAiPlugin` acrescenta a FSM simples da engine (`enemy_ai`).
     // `Off` não regista nenhum dos dois (nem os sentidos).
+    // O host dos plugins `ai` (exit4/G1): o `Ground` do `bevy_ext_ai` passa a
+    // ser o `TerrainRuntime` da engine — o integrador de locomoção amosta o
+    // Y e clampeia à borda pela mesma fonte que o código histórico lia.
+    app.add_plugins(ai_host::AiHostPlugin);
     match ai {
         AiMode::Full => {
             app.add_plugins(crate::ai::AiPlugin);

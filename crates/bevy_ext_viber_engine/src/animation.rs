@@ -141,18 +141,11 @@ pub const TELEPORT_JUMP_M: f32 = 8.0;
 /// Playback-rate clamp so the sync never turns a walk into a slideshow or a
 /// blur.
 pub const SPEED_SCALE_RANGE: (f32, f32) = (0.55, 1.7);
-/// Default yaw rate (rad/s) of a character with no authored profile.
-///
-/// ~7 rad/s turns 180° in a quarter second: fast enough that a creature still
-/// commits to a new target immediately, slow enough that the eye reads a turn
-/// instead of a teleported orientation.
-pub const DEFAULT_TURN_RATE: f32 = 7.0;
-/// Default acceleration (m/s²) toward the desired velocity.
-///
-/// At 12 m/s² a 4 m/s chase reaches full speed in a third of a second — the
-/// ramp is what the animation's own low-pass (`SPEED_SMOOTH_TAU`) was fighting
-/// when the AI went from standing to full speed inside one frame.
-pub const DEFAULT_ACCEL: f32 = 12.0;
+// Contratos partilhados com a IA movidos ao `bevy_ext_core` (exit4/G1 — um
+// só tipo por contrato: o perfil é calibrado AQUI e lido pelo
+// `apply_ai_locomotion` do `bevy_ext_ai`); os caminhos de reflexão
+// `viber::animation::…` ficam congelados no core.
+pub use bevy_engine_core::{DEFAULT_ACCEL, DEFAULT_TURN_RATE, HitReact, LocomotionProfile};
 
 /// Nominal locomotion speeds (m/s) of a rig, used to sync clip playback rate
 /// to real motion (kills foot sliding).
@@ -262,122 +255,24 @@ impl MotionGates {
 /// near 1.0; anything outside it is a real mismatch, not a missing nominal.
 pub const CALIBRATED_SCALE_RANGE: (f32, f32) = (0.7, 1.45);
 
-/// Speed below which a commanded step counts as "not moving" for calibration.
-const CALIBRATION_FLOOR: f32 = 0.05;
-
-/// A walk nominal this close to the run nominal means we only ever saw ONE
-/// speed, so the pair is synthesised instead of measured.
-const CALIBRATION_SPREAD: f32 = 0.85;
-
-/// Nominal walk as a fraction of run, when only one speed was ever observed.
-const CALIBRATION_WALK_FRACTION: f32 = 0.45;
-
-/// Per-rig locomotion nominals — what "walking" and "running" mean for THIS
-/// character, plus how fast it may turn and accelerate.
-///
-/// Authoring is optional by design (mission premise "ease over knobs"): the
-/// component calibrates itself from the speeds the entity is actually commanded
-/// at, through [`Self::observe`]. The Luau scripts pass their speed to
-/// `viber.move_towards`, and the Rust FSM has it in `EnemyCreature::speed`, so
-/// both paths teach it the truth without a single line of authoring. An
-/// explicit `locomotion="walk: 1.1; run: 4.6"` (or `viber.set_locomotion`)
-/// latches [`Self::authored`] and stops the calibration.
-#[derive(Debug, Clone, Copy, Component, Reflect)]
-#[reflect(Component)]
-pub struct LocomotionProfile {
-    /// Nominal walking speed (m/s) of the rig's walk clip.
-    pub walk: f32,
-    /// Nominal running speed (m/s) of the rig's run clip.
-    pub run: f32,
-    /// Maximum yaw rate (rad/s). The whole reason a creature stops spinning
-    /// 180° in one frame when it picks a new wander target.
-    pub turn_rate: f32,
-    /// Acceleration (m/s²) toward the desired velocity.
-    pub accel: f32,
-    /// Nominals came from authoring, not from observation.
-    pub authored: bool,
-    /// Slowest non-zero speed ever commanded (`INFINITY` until the first one).
-    observed_min: f32,
-    /// Fastest speed ever commanded.
-    observed_max: f32,
-}
-
-impl Default for LocomotionProfile {
-    fn default() -> Self {
-        Self {
-            walk: MotionSpeeds::CREATURE.walk,
-            run: MotionSpeeds::CREATURE.run,
-            turn_rate: DEFAULT_TURN_RATE,
-            accel: DEFAULT_ACCEL,
-            authored: false,
-            observed_min: f32::INFINITY,
-            observed_max: 0.0,
-        }
-    }
-}
-
-impl LocomotionProfile {
-    /// A profile with nominals the world author (or a script) stated outright.
-    pub fn authored(walk: f32, run: f32) -> Self {
-        Self {
-            walk: walk.max(1e-3),
-            run: run.max(walk).max(1e-3),
-            authored: true,
-            ..Self::default()
-        }
-    }
-
-    /// Feeds one commanded speed into the calibration.
-    ///
-    /// Returns `true` when the nominals moved, so callers can skip change
-    /// detection noise on the component.
-    pub fn observe(&mut self, commanded: f32) -> bool {
-        if self.authored || !commanded.is_finite() || commanded <= CALIBRATION_FLOOR {
-            return false;
-        }
-        let min = self.observed_min.min(commanded);
-        let max = self.observed_max.max(commanded);
-        if min == self.observed_min && max == self.observed_max {
-            return false;
-        }
-        self.observed_min = min;
-        self.observed_max = max;
-        // Two clearly separate speeds (wander vs chase) ARE the two nominals.
-        // One speed only — a townsfolk that never runs — gives the walk
-        // nominal, and the run nominal is synthesised above it so the rig keeps
-        // a headroom instead of flipping to the run clip on its own walk.
-        self.run = if min < max * CALIBRATION_SPREAD {
-            self.walk = min;
-            max
+// Os clamps de playback de clip (`speeds()`/`gates()`) continuam aqui —
+// domínio de clip (MotionSpeeds/MotionGates), não de locomoção; ficaram
+// fora do perfil partilhado.
+pub fn profile_speeds(profile: &LocomotionProfile) -> MotionSpeeds {
+    MotionSpeeds {
+        walk: profile.walk,
+        run: profile.run,
+        scale_range: if profile.is_calibrated() {
+            CALIBRATED_SCALE_RANGE
         } else {
-            self.walk = max;
-            max / CALIBRATION_WALK_FRACTION
-        };
-        true
+            SPEED_SCALE_RANGE
+        },
     }
+}
 
-    /// True once the profile has something better than the module defaults.
-    pub fn is_calibrated(&self) -> bool {
-        self.authored || self.observed_max > 0.0
-    }
-
-    /// Nominals + clamp for [`MotionSpeeds::scale_for`].
-    pub fn speeds(&self) -> MotionSpeeds {
-        MotionSpeeds {
-            walk: self.walk,
-            run: self.run,
-            scale_range: if self.is_calibrated() {
-                CALIBRATED_SCALE_RANGE
-            } else {
-                SPEED_SCALE_RANGE
-            },
-        }
-    }
-
-    /// State thresholds that fit these nominals.
-    pub fn gates(&self) -> MotionGates {
-        MotionGates::from_speeds(self.speeds())
-    }
+/// State thresholds that fit these nominals.
+pub fn profile_gates(profile: &LocomotionProfile) -> MotionGates {
+    MotionGates::from_speeds(profile_speeds(profile))
 }
 
 
@@ -958,13 +853,9 @@ pub fn tick_animator_actions(time: Res<Time>, mut animators: Query<&mut Characte
 }
 
 // ── hit-react (flinch ao levar dano) ────────────────────────────────────
-
-/// Pedido de hit-react: inserido pelas vias de dano (golpe de melee no land,
-/// `PlayerHurt` físico no herói). Consumido por [`hit_react_system`], que o
-/// remove SEMPRE — um pedido órfão nunca re-dispara mais tarde.
-#[derive(Debug, Component, Reflect)]
-#[reflect(Component)]
-pub struct HitReact;
+// O `HitReact` é do `bevy_ext_core` (reexportado no topo do módulo): as
+// vias de dano inserem-no e os sentidos do `bevy_ext_ai` observam-no — um
+// só tipo por contrato.
 
 /// Cooldown do hit-react (s restantes, decrementado por frame).
 #[derive(Debug, Component, Reflect)]
@@ -1290,7 +1181,7 @@ pub fn drive_character_animation(
         // A rig with no profile yet falls back to the module-wide creature
         // nominals — the behaviour this driver always had.
         let (speeds, gates) = match profile {
-            Some(p) => (p.speeds(), p.gates()),
+            Some(p) => (profile_speeds(p), profile_gates(p)),
             None => (
                 MotionSpeeds::CREATURE,
                 MotionGates::from_speeds(MotionSpeeds::CREATURE),
@@ -1645,8 +1536,8 @@ mod tests {
     /// what the body travels and what the clip, at its current playback rate,
     /// says it travels. Zero is planted feet; the moonwalk was ~0.45.
     fn foot_slide(profile: &LocomotionProfile, speed: f32) -> f32 {
-        let state = next_state_with(None, speed, true, 0.0, profile.gates());
-        let scale = profile.speeds().scale_for(state, speed);
+        let state = next_state_with(None, speed, true, 0.0, profile_gates(&profile));
+        let scale = profile_speeds(&profile).scale_for(state, speed);
         let nominal = match state {
             AnimState::Run => profile.run,
             AnimState::Walk => profile.walk,
@@ -1724,11 +1615,11 @@ mod tests {
         two.observe(4.6);
         assert_eq!((two.walk, two.run), (2.2, 4.6));
         assert_eq!(
-            next_state_with(None, 4.6, true, 0.0, two.gates()),
+            next_state_with(None, 4.6, true, 0.0, profile_gates(&two)),
             AnimState::Run
         );
         assert_eq!(
-            next_state_with(None, 2.2, true, 0.0, two.gates()),
+            next_state_with(None, 2.2, true, 0.0, profile_gates(&two)),
             AnimState::Walk
         );
 
@@ -1737,7 +1628,7 @@ mod tests {
         assert_eq!(one.walk, 1.1);
         assert!(one.run > 1.1, "run nominal sits above the only speed seen");
         assert_eq!(
-            next_state_with(None, 1.1, true, 0.0, one.gates()),
+            next_state_with(None, 1.1, true, 0.0, profile_gates(&one)),
             AnimState::Walk,
             "a townsfolk walking at its own only speed stays on the walk clip"
         );
@@ -1778,7 +1669,7 @@ mod tests {
         let mut profile = LocomotionProfile::default();
         profile.observe(0.7);
         profile.observe(2.0);
-        let gates = profile.gates();
+        let gates = profile_gates(&profile);
         assert!(
             gates.run - RUN_HYSTERESIS < profile.walk,
             "a hero-sized band would drop the run gate below this rig's own \
