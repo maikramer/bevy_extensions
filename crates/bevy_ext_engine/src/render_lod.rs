@@ -429,6 +429,7 @@ fn update_mesh_lod(
         &mut MeshLod,
         &mut bevy::world_serialization::WorldAssetRoot,
         &Visibility,
+        Option<&bevy_ext_core::animation::CharacterAnimator>,
     )>,
 ) {
     // Modo editor: a distância mede-se à câmara de editor (a de jogo está
@@ -466,8 +467,15 @@ fn update_mesh_lod(
     }
     let mut swaps = 0usize;
     let mut pending = 0usize;
-    for (transform, mut lod, mut root, visibility) in &mut instances {
+    for (transform, mut lod, mut root, visibility, animator) in &mut instances {
         if *visibility == Visibility::Hidden {
+            continue;
+        }
+        // Rig preso num clip terminal (morte): trocar a cena aqui instancia
+        // um rig NOVO em pose de bind, e o `rearm_after_scene_swap` não o
+        // rearma (o clip terminal é dono do rig). O cadáver ficava de pé em
+        // pose T até ao despawn (visto 2026-11-16). Fica no tier que tinha.
+        if animator.is_some_and(|a| a.locked) {
             continue;
         }
         if budget == 0 {
