@@ -661,6 +661,9 @@ mod tests {
                 grid: std::sync::Arc::new(grid),
                 water: vec![],
                 roads: vec![],
+                // A camada de pavimento entrou depois destes fixtures; vazia é
+                // o default e não muda o que os testes de save comparam.
+                paving: Default::default(),
                 pads: vec![],
                 voxel: std::sync::Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
                 deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::DeltaGrid::default()),
@@ -764,6 +767,7 @@ mod tests {
             grid: std::sync::Arc::new(grid),
             water: vec![],
             roads: vec![],
+            paving: Default::default(),
             pads: vec![],
             voxel: std::sync::Arc::new(bevy_ext_terrain_runtime::voxel::VoxelField::default()),
             deltas: std::sync::Arc::new(bevy_ext_terrain_runtime::DeltaGrid::default()),
