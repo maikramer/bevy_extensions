@@ -174,15 +174,21 @@ pub(crate) fn fan_out_vm(
 /// do próprio script, em qualquer momento do seu on_update).
 pub(crate) fn fan_out_events(
     contexts: Option<Res<ScriptContexts<LuaScriptingPlugin>>>,
-    queue: Option<Res<ScriptEventQueue>>,
+    queue: Option<ResMut<ScriptEventQueue>>,
 ) {
-    let Some(queue) = queue else {
+    let Some(mut queue) = queue else {
         return;
     };
     if queue.0.is_empty() {
         return;
     }
-    let incoming = &queue.0;
+    // A fila é CONSUMIDA aqui (o `mem::take` do host do monólito): sem isto
+    // cada evento era re-entregue em todos os frames — o `scene_loaded`
+    // limpava o registo de hostis a cada frame depois de uma troca de cena
+    // (chefe a "despertar" em loop, criaturas sem registo) e um `kill`
+    // pagava vezes sem conta.
+    let incoming = std::mem::take(&mut queue.0);
+    let incoming = &incoming;
     let mut dropped = HashSet::new();
     let Some(contexts) = contexts else {
         return;
@@ -272,6 +278,21 @@ mod tests {
         // Sem subscrição de outro path: drenar de novo dá vazio.
         let empty: usize = lua.load("return #viber.events()").eval().expect("vazio");
         assert_eq!(empty, 0);
+    }
+
+    #[test]
+    fn fan_out_events_consome_a_fila() {
+        // Sem contextos vivos o sistema ainda consome: um evento nunca é
+        // re-entregue no frame seguinte (o `scene_loaded` repetia-se em
+        // todos os frames e limpava o registo de hostis).
+        let mut app = App::new();
+        app.insert_resource(ScriptEventQueue(vec![ScriptGameEvent::SceneLoaded {
+            scene: "main".into(),
+            entry: String::new(),
+        }]));
+        app.add_systems(Update, fan_out_events);
+        app.update();
+        assert!(app.world().resource::<ScriptEventQueue>().0.is_empty());
     }
 
     #[test]
