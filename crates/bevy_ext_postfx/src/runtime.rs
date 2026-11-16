@@ -1496,8 +1496,16 @@ pub fn grade_temperature_full(golden: f32, low_sun: f32, night: f32) -> f32 {
     // −0,24 (a noite ganhava +0,01 de stock quente por baixo) e o número do
     // teste deixava de ser o do look.
     let warm = l * GOLDEN_GRADE_WARMTH * (1.0 - n.clamp(0.0, 1.0));
-    g * GOLDEN_GRADE_TEMPERATURE + warm - n * 0.25
+    g * GOLDEN_GRADE_TEMPERATURE + warm + n * NIGHT_GRADE_TEMPERATURE
 }
+
+/// Temperatura do grading na noite plena. Era −0,25 com a exposição antiga
+/// (noite a EV ~7, lanternas pequenas no frame). Com o céu físico do
+/// `bevy_elements` e o piso de EV nocturno do jogo, a luz dominante da vila
+/// à noite é a das lanternas (laranja); o −0,25 por cima dela dava um frame
+/// inteiro verde-azulado (medido 2026-11-16 às 23:00). −0,15 mantém a noite
+/// fria sem virar o quente das chamas em ciano.
+pub const NIGHT_GRADE_TEMPERATURE: f32 = -0.15;
 
 /// Saturação pós-tonemap do grading CDL pela hora. A golden hour satura
 /// (+0.18); a noite ganha **+0.15** (2026-10-21): 1.0 deixava o azul chegar
@@ -1744,9 +1752,14 @@ fn golden_key_drive(
 /// desliga a sombra).
 pub const TORCH_POOL_NIGHT_GAIN: f32 = 64.0;
 
-/// Ganho das DEMAIS luzes quentes (janelas/braseiros/faróis, sombra off) —
-/// a luz ambiente quente da vila sobe ×8, sem competir com as poças.
-pub const WARM_FILL_NIGHT_GAIN: f32 = 8.0;
+/// Ganho das DEMAIS luzes quentes (janelas/braseiros/faróis, sombra off).
+///
+/// Era ×8. Os preenchimentos soltos da vila (`landmarks.village.night-life`:
+/// grupos só com uma `PointLight` a 1,7–2,1 m, sem modelo) são autorados a
+/// 130–165 klm e ficavam a 1,0–1,3 Mlm — mais fortes do que as tochas
+/// visíveis (~380 klm) e a iluminar o vazio (o poço da praça "a emitir",
+/// 2026-11-16). ×3 deixa o brilho de fundo da vila sem competir com o fogo.
+pub const WARM_FILL_NIGHT_GAIN: f32 = 3.0;
 
 /// Intensidade autoral de uma PointLight quente, capturada antes de o
 /// [`torch_pool_drive`] começar a compor (o espelho de `SunLightBase`).
@@ -3409,7 +3422,7 @@ mod tests {
         assert!((grade_saturation(1.0, 0.0) - 1.18).abs() < 1e-6);
         // A noite arrefece NA MESMA proporção de sempre (o azul aprovado);
         // a golden aquece agora em CIE xy (ver [`grade_temperature`]).
-        assert!((grade_temperature(0.0, 1.0) + 0.25).abs() < 1e-6);
+        assert!((grade_temperature(0.0, 1.0) - NIGHT_GRADE_TEMPERATURE).abs() < 1e-6);
         assert!((grade_temperature(1.0, 0.0) - GOLDEN_GRADE_TEMPERATURE).abs() < 1e-6);
     }
 
@@ -3733,11 +3746,11 @@ mod tests {
         let t0730 = grade_temperature_full(0.0, low_sun_split_weight(26.9), 0.0);
         assert!(t0730 >= GOLDEN_GRADE_WARMTH * 0.95, "07:30 aquece: {t0730}");
         // A noite continua a arrefecer NA MESMA proporção de sempre.
-        assert!((grade_temperature_full(0.0, 0.0, 1.0) + 0.25).abs() < 1e-6);
+        assert!((grade_temperature_full(0.0, 0.0, 1.0) - NIGHT_GRADE_TEMPERATURE).abs() < 1e-6);
         // O braço do sol baixo não pode diluir o −0,25 da noite: o
         // `low_sun_split_weight` vale 1 sob o horizonte e sem o gate a noite
         // lia −0,24.
-        assert!((grade_temperature_full(0.0, 1.0, 1.0) + 0.25).abs() < 1e-6);
+        assert!((grade_temperature_full(0.0, 1.0, 1.0) - NIGHT_GRADE_TEMPERATURE).abs() < 1e-6);
         assert!(
             (grade_temperature_full(0.0, 1.0, 0.0) - GOLDEN_GRADE_WARMTH).abs() < 1e-6,
             "de dia o braço de sol baixo continua inteiro"
