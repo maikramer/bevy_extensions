@@ -152,11 +152,16 @@ pub fn update_waypoint_arrow(
     hud_hidden: Option<Res<crate::hud::HudHidden>>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     players: Query<&GlobalTransform, With<Player>>,
-    mut roots: Query<(&mut Node, &mut Visibility, &WaypointArrowRoot)>,
+    mut roots: Query<(
+        &mut Node,
+        &mut Visibility,
+        &WaypointArrowRoot,
+        Option<&ComputedNode>,
+    )>,
     mut pointers: Query<&mut UiTransform, With<WaypointArrowPointer>>,
     mut captions: Query<&mut Text, With<WaypointArrowCaption>>,
 ) {
-    let Ok((mut node, mut visibility, root)) = roots.single_mut() else {
+    let Ok((mut node, mut visibility, root, computed)) = roots.single_mut() else {
         return;
     };
     let hidden = interior.as_deref().is_some_and(|state| state.active)
@@ -187,7 +192,17 @@ pub fn update_waypoint_arrow(
     let point = target.position + Vec3::Y * LIFT_M;
     let local = camera_gt.affine().inverse().transform_point3(point);
     let projected = camera.world_to_viewport(camera_gt, point).ok();
-    let at = place(local, projected, size, root.margin);
+    let mut at = place(local, projected, size, root.margin);
+    // A legenda ("Missão · A Que Conta os Barcos · 24 m") é mais larga do que
+    // a margem da seta: encostada à borda saía metade do ecrã. O nó é
+    // centrado no ponto (−50 %), por isso o centro fica a meia-largura da
+    // borda (medida do frame anterior; 0 no primeiro frame).
+    if let Some(computed) = computed {
+        let half_w = computed.size().x * computed.inverse_scale_factor() * 0.5 + 4.0;
+        if size.x > half_w * 2.0 {
+            at.x = at.x.clamp(half_w, size.x - half_w);
+        }
+    }
     let left = Val::Percent(at.x / size.x * 100.0);
     let top = Val::Percent(at.y / size.y * 100.0);
     if node.left != left {

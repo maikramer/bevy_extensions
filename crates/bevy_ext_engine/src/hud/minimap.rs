@@ -325,7 +325,16 @@ pub fn hud_minimap_update(
         ),
     >,
     mut baked: Local<Option<(Entity, Handle<Image>)>>,
+    terrain_nodes: Query<Entity, With<MinimapTerrain>>,
+    mut rebake: Local<bool>,
 ) {
+    // Terreno NOVO (troca de cena): o HUD é autoload e o painel sobrevive,
+    // por isso a chave por entidade não chegava — arrancar no menu e ir para
+    // `main` deixava o minimapa com o relevo do acampamento. Guardado num
+    // `Local` antes dos early-returns (o `is_added` só vale nesta corrida).
+    if runtime.as_ref().is_some_and(|runtime| runtime.is_added()) {
+        *rebake = true;
+    }
     let Some(cam) = cameras.iter().next() else {
         return;
     };
@@ -341,10 +350,18 @@ pub fn hud_minimap_update(
     // Bake one-shot por PAINEL: um `Local` só com o handle sobrevivia à troca
     // de cena, e o minimapa novo ficava sem terreno (o antigo era despawnado
     // com a raiz). A chave é a entidade do mapa.
-    let needs_bake = baked
-        .as_ref()
-        .is_none_or(|(entity, _)| *entity != map_entity);
+    let needs_bake = *rebake
+        || baked
+            .as_ref()
+            .is_none_or(|(entity, _)| *entity != map_entity);
     if needs_bake && let Some(runtime) = runtime.as_deref() {
+        *rebake = false;
+        for node in &terrain_nodes {
+            commands.entity(node).despawn();
+        }
+        if let Some((_, old)) = baked.take() {
+            images.remove(&old);
+        }
         let handle = images.add(bake_terrain_image(runtime));
         let span_px = runtime.spec.world_size * scale;
         commands.entity(map_entity).with_children(|map| {
