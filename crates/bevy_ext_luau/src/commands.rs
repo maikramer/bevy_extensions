@@ -228,8 +228,25 @@ pub enum ScriptCommand {
     /// Movimento de script (`viber.move_towards`/`move_by`): vai para
     /// `AiLocomotion` (o consumidor aplica a velocidade — snap no terreno).
     MoveTowards { entity: Entity, target: Vec3, speed: f32 },
+    /// `viber.fire_projectile(template [, x, y, z])` — projétil de um
+    /// `<ProjectileTemplate>` da boca do atirador para `target` (o peito do
+    /// herói quando `None`; o consumidor resolve).
+    FireProjectileTemplate { template: String, target: Option<Vec3>, shooter: Option<Entity> },
+    /// Velocidade planar direta (`viber.move_by(dx, dz)`, m/s).
+    MoveBy { entity: Entity, velocity: Vec2 },
     /// Velocidade base do herói (`viber.set_player_speed`, m/s).
     SetPlayerSpeed(f32),
+    /// Nominais de locomoção do rig (`viber.set_locomotion`, m/s) e a taxa
+    /// de viragem opcional (rad/s). Desliga a auto-calibração.
+    SetLocomotion {
+        entity: Entity,
+        walk: f32,
+        run: f32,
+        turn_rate: Option<f32>,
+    },
+    /// `viber.teleport_player(x, y, z [, id])` — o `id` fica fora do raio de
+    /// aterragem (um poço/torre não serve de chão a si próprio).
+    TeleportPlayer { pos: Vec3, exclude: Option<Entity> },
     /// Cinemática do mundo (`viber.cinematic(id[, anchor])`).
     PlayCinematic { id: String, anchor: Option<Entity> },
     /// Evento de sentidos (`viber.sense`): ruído audível no `SenseBus`.

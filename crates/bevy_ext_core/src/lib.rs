@@ -91,6 +91,27 @@ pub struct ScriptToast(pub String);
 /// e pelo prompt do HUD (`hud::interact::BALLOON_RANGE_M`).
 pub const BASE_RANGE_M: f32 = 3.5;
 
+/// Escala global dos alcances de interação (0,5 = metade do histórico; pedido
+/// do utilizador a 2026-09-12 para reduzir sobreposições).
+/// `VIBER_INTERACT_RANGE_SCALE=1` devolve o comportamento antigo (A/B).
+pub const INTERACT_RANGE_SCALE: f32 = 0.5;
+
+/// Escala efetiva (env `VIBER_INTERACT_RANGE_SCALE`, senão
+/// [`INTERACT_RANGE_SCALE`]).
+pub fn interact_range_scale() -> f32 {
+    std::env::var("VIBER_INTERACT_RANGE_SCALE")
+        .ok()
+        .and_then(|raw| raw.parse::<f32>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(INTERACT_RANGE_SCALE)
+}
+
+/// Alcance efetivo de um valor autorado (`set_interaction`, `destructible`,
+/// `viber.interact_range`).
+pub fn scaled_interact_range(authored: f32) -> f32 {
+    authored * interact_range_scale()
+}
+
 /// Bus volumes from `<AudioMixer master music sfx voice ambience>`.
 ///
 /// The resource always exists: a derived `Default` with zeroed fields would
@@ -863,6 +884,17 @@ pub enum EnemyState {
     Chase,
     /// Perdeu o alvo: vai ao último ponto e desiste.
     Search,
+}
+
+/// State transition with the deaggro hysteresis band: Wander → Chase inside
+/// `aggro`, Chase → Wander only past `deaggro` (> `aggro`, typically
+/// `aggro × `DEAGGRO_HYSTERESIS` do `bevy_ext_ai``); in between the state is sticky.
+pub fn enemy_next_state(dist: f32, state: EnemyState, aggro: f32, deaggro: f32) -> EnemyState {
+    match state {
+        EnemyState::Wander if dist < aggro => EnemyState::Chase,
+        EnemyState::Chase if dist > deaggro => EnemyState::Wander,
+        other => other,
+    }
 }
 
 impl EnemyState {

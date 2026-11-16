@@ -83,7 +83,7 @@ fn context(
     let exports = read
         .as_ref()
         .and_then(|g| g.exports.get(&path).cloned())
-        .unwrap_or_else(|| Arc::new(parse_exports("")));
+        .unwrap_or_else(|| exports_from_disk(lua, &path));
     let props = lua
         .app_data_ref::<crate::ScriptEntity>()
         .and_then(|e| e.0)
@@ -93,6 +93,41 @@ fn context(
         })
         .unwrap_or_default();
     Ok((exports, props, path))
+}
+
+/// Esquema lido do PRÓPRIO ficheiro quando a integração ainda não o
+/// publicou. O top-level de um contexto novo corre no frame em que o asset
+/// carrega — antes do `parse_script_exports`/`publish_globals` do frame
+/// seguinte — e um `viber.prop` aí dava "não é exportado" para um export
+/// declarado (baú, sementes, diálogos; visto 2026-11-15). Cache por path.
+fn exports_from_disk(lua: &Lua, path: &str) -> Arc<ScriptExports> {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    static CACHE: std::sync::LazyLock<RwLock<HashMap<String, Arc<ScriptExports>>>> =
+        std::sync::LazyLock::new(Default::default);
+    if let Some(hit) = CACHE.read().ok().and_then(|c| c.get(path).cloned()) {
+        return hit;
+    }
+    let rel = Path::new(path);
+    let stripped = rel.strip_prefix("scripts").unwrap_or(rel);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = crate::game::read_scripts_dir(lua) {
+        candidates.push(dir.join(stripped));
+        candidates.push(dir.join(rel));
+    }
+    candidates.push(rel.to_path_buf());
+    let source = candidates
+        .iter()
+        .find_map(|candidate| std::fs::read_to_string(candidate).ok());
+    let Some(source) = source else {
+        // Sem ficheiro (testes, VM sem pasta): esquema vazio, sem cache.
+        return Arc::new(parse_exports(""));
+    };
+    let parsed = Arc::new(parse_exports(&source));
+    if let Ok(mut cache) = CACHE.write() {
+        cache.insert(path.to_string(), parsed.clone());
+    }
+    parsed
 }
 
 /// Um `prop-*` inválido cai para o default — avisa 1× por script+prop+valor.

@@ -143,7 +143,7 @@ pub fn set_scripts_dir(dir: Option<PathBuf>) {
 }
 
 /// A pasta efectiva desta VM: app data primeiro, omissão do processo depois.
-fn read_scripts_dir(lua: &Lua) -> Option<PathBuf> {
+pub(crate) fn read_scripts_dir(lua: &Lua) -> Option<PathBuf> {
     if let Some(dir) = lua.app_data_ref::<ScriptsDir>().and_then(|d| d.0.clone()) {
         return Some(dir);
     }

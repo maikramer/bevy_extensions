@@ -57,7 +57,7 @@ pub const STOP_EPSILON: f32 = 0.02;
 // Contratos movidos ao `bevy_ext_core` (com o consumidor `bevy_ext_nav`, cuja
 // ponte lê e escreve O MESMO componente que o FSM e os scripts produzem); os
 // TypePaths `viber::ai` ficam congelados no core.
-pub use bevy_ext_core::{AiLocomotion, AiLocomotionSystems, EnemyCreature, EnemyState};
+pub use bevy_ext_core::{AiLocomotion, AiLocomotionSystems, EnemyCreature, EnemyState, enemy_next_state};
 
 /// Patrol bookkeeping for one wanderer, auto-inserted by [`enemy_ai`].
 #[derive(Debug, Clone, Component, Default, Reflect)]
@@ -85,17 +85,6 @@ pub fn enemy_seed(entity_index: u32, picks: u64) -> u64 {
 pub fn wander_target(home: Vec2, radius: f32, rng_seed: u64) -> Vec2 {
     let mut rng = Rng::new(rng_seed);
     home + rng.unit_disc() * radius
-}
-
-/// State transition with the deaggro hysteresis band: Wander → Chase inside
-/// `aggro`, Chase → Wander only past `deaggro` (> `aggro`, typically
-/// `aggro × [`DEAGGRO_HYSTERESIS`]`); in between the state is sticky.
-pub fn enemy_next_state(dist: f32, state: EnemyState, aggro: f32, deaggro: f32) -> EnemyState {
-    match state {
-        EnemyState::Wander if dist < aggro => EnemyState::Chase,
-        EnemyState::Chase if dist > deaggro => EnemyState::Wander,
-        other => other,
-    }
 }
 
 /// Clamp an XZ position to the world disc of radius `limit` (Y passes

@@ -65,7 +65,7 @@ use bevy::prelude::*;
 use bevy_ext_core::ScriptToast;
 use bevy_mod_scripting::core::BMSScriptingInfrastructurePlugin;
 use bevy_mod_scripting::prelude::*;
-use mlua::{IntoLua, Lua, MultiValue};
+use mlua::{IntoLua, Lua};
 
 pub use commands::{ScriptCommand, ScriptCommandMessage};
 pub use components::{
@@ -215,6 +215,8 @@ pub struct InputSnapshot {
     pub mouse_pressed: HashSet<MouseButton>,
     pub mouse_down: HashSet<MouseButton>,
     pub mouse_released: HashSet<MouseButton>,
+    /// Ações do mapa (rebindável) premidas NESTE frame — `viber.action(nome)`.
+    pub actions_pressed: HashSet<&'static str>,
 }
 
 #[derive(Default)]
@@ -548,6 +550,7 @@ pub fn publish_globals(
 fn publish_input(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
+    actions: Option<Res<bevy_ext_core::input_map::ActionState>>,
 ) {
     let mut input = InputSnapshot::default();
     let typing = globals()
@@ -564,6 +567,22 @@ fn publish_input(
             input.mouse_pressed = mouse.get_just_pressed().copied().collect();
             input.mouse_down = mouse.get_pressed().copied().collect();
             input.mouse_released = mouse.get_just_released().copied().collect();
+        }
+        if let Some(actions) = actions {
+            use bevy_ext_core::input_map::Action;
+            for action in [
+                Action::Jump,
+                Action::Sprint,
+                Action::Attack,
+                Action::Interact,
+                Action::Lock,
+                Action::Menu,
+                Action::Crouch,
+            ] {
+                if actions.pressed(action) {
+                    input.actions_pressed.insert(action.as_str());
+                }
+            }
         }
     }
     if let Ok(mut globals) = globals().write() {
@@ -736,18 +755,19 @@ fn install_viber_api_with(
         })?,
     )?;
 
+    // viber.player_position() -> ok, x, y, z — o contrato do host do
+    // monólito, que TODOS os scripts do jogo seguem (`local ok, px, _, pz =
+    // viber.player_position()`). Devolver só `x, y, z` deslocava os valores:
+    // `pz` saía nil e cada criatura/aldeão rebentava a cada frame
+    // (`fsm.lua:143`, `bump.lua:132`; ~4k erros/s medidos a 2026-11-15).
     let pos_globals = globals.clone();
     viber.set(
         "player_position",
-        lua.create_function(move |lua, ()| {
+        lua.create_function(move |_, ()| {
             let player = pos_globals.read().ok().and_then(|globals| globals.player);
             match player {
-                Some(p) => Ok(MultiValue::from_vec(vec![
-                    p.x.into_lua(lua)?,
-                    p.y.into_lua(lua)?,
-                    p.z.into_lua(lua)?,
-                ])),
-                None => Ok(MultiValue::new()),
+                Some(p) => Ok((true, p.x, p.y, p.z)),
+                None => Ok((false, 0.0, 0.0, 0.0)),
             }
         })?,
     )?;
@@ -851,6 +871,34 @@ fn install_viber_api_with(
                 })
                 .unwrap_or_default();
             Ok((origin.x, origin.y, origin.z))
+        })?,
+    )?;
+
+    // viber.entity_position(id?) -> ok, x, y, z — posição de mundo (snapshot
+    // do frame) de uma entidade por bits; sem id = a que corre o script.
+    // Existia no host do monólito e os scripts ainda a usam (fogueira, baú,
+    // torre de vigia): sem ela cada chamada era "attempt to call a nil value".
+    let entity_pos_globals = globals.clone();
+    viber.set(
+        "entity_position",
+        lua.create_function(move |lua, id: Option<i64>| {
+            let bits = match id {
+                Some(bits) => Some(bits),
+                None => lua
+                    .app_data_ref::<ScriptEntity>()
+                    .and_then(|e| e.0)
+                    .map(|entity| entity.to_bits() as i64),
+            };
+            let pos = bits.and_then(|bits| {
+                entity_pos_globals
+                    .read()
+                    .ok()
+                    .and_then(|g| g.positions.get(&bits).copied())
+            });
+            match pos {
+                Some(p) => Ok((true, p.x, p.y, p.z)),
+                None => Ok((false, 0.0, 0.0, 0.0)),
+            }
         })?,
     )?;
 
@@ -988,6 +1036,83 @@ fn install_viber_api_with(
                 return Ok((x, z));
             }
             Ok((fallback.x, fallback.z))
+        })?,
+    )?;
+
+    // viber.action(nome) -> bool — a ação do mapa (rebindável no save) foi
+    // premida neste frame ("jump", "sprint", "attack", "interact", "lock",
+    // "menu", "crouch"). Com um `UiInput` focado nada dispara.
+    let action_globals = globals.clone();
+    viber.set(
+        "action",
+        lua.create_function(move |_, name: String| {
+            Ok(action_globals
+                .read()
+                .is_ok_and(|g| g.input.actions_pressed.contains(name.as_str())))
+        })?,
+    )?;
+
+    // viber.next_state(cur, dist, aggro, deaggro) -> "wander"|"chase" — a
+    // máquina wander↔chase com histerese (`enemy_next_state` do
+    // `bevy_ext_ai`), exposta para os scripts das criaturas comporem.
+    // Faltava no host BMS: `lib/fsm.lua` rebentava em cada criatura, a cada
+    // frame (~190k erros num arranque, 2026-11-15) e nenhuma se mexia.
+    viber.set(
+        "next_state",
+        lua.create_function(|_, (cur, dist, aggro, deaggro): (String, f32, f32, f32)| {
+            use bevy_ext_core::{EnemyState, enemy_next_state};
+            let state = EnemyState::parse(&cur).unwrap_or(EnemyState::Wander);
+            Ok(enemy_next_state(dist, state, aggro, deaggro).as_str())
+        })?,
+    )?;
+
+    // viber.wander_target(raio) -> x, z — ponto determinístico no disco à
+    // volta do `home` (a mesma matemática da IA: semente pela entidade e
+    // pelo contador de escolhas guardado no estado do script).
+    let wander_globals = globals.clone();
+    viber.set(
+        "wander_target",
+        lua.create_function(move |lua, radius: f32| {
+            if !radius.is_finite() {
+                return Err(mlua::Error::runtime(
+                    "viber.wander_target: raio não finito (NaN/inf)",
+                ));
+            }
+            let entity = script_entity(lua)?;
+            let state: mlua::Table = lua.named_registry_value("viber_state")?;
+            let home = match state.raw_get::<mlua::Table>("home") {
+                Ok(home) => Vec2::new(home.raw_get("x")?, home.raw_get("z")?),
+                Err(_) => {
+                    let p = wander_globals
+                        .read()
+                        .ok()
+                        .and_then(|g| g.positions.get(&(entity.to_bits() as i64)).copied())
+                        .unwrap_or_default();
+                    Vec2::new(p.x, p.z)
+                }
+            };
+            let picks: u64 = state.raw_get("picks").unwrap_or(0u64);
+            state.raw_set("picks", picks + 1)?;
+            // `enemy_seed` do `bevy_ext_ai` sobre os 32 bits baixos (o índice),
+            // como no host antigo — o mesmo herói vê o mesmo passeio.
+            let seed = (entity.to_bits() as u32 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ picks.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            let target = home + bevy_ext_core::Rng::new(seed).unit_disc() * radius;
+            Ok((target.x, target.y))
+        })?,
+    )?;
+
+    // viber.interact_range(base) -> alcance EFETIVO (o autorado × a escala
+    // global de interação) — o script compara distâncias sem a duplicar.
+    viber.set(
+        "interact_range",
+        lua.create_function(|_, base: f32| {
+            if !base.is_finite() || base < 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.interact_range: base tem de ser finita e >= 0",
+                ));
+            }
+            Ok(bevy_ext_core::scaled_interact_range(base))
         })?,
     )?;
 
@@ -1862,13 +1987,62 @@ fn install_viber_api_with(
         "face_player",
         lua.create_function(move |lua, ()| {
             let entity = script_entity(lua)?;
-            let shared = faceplayer_globals.read().ok();
-            let Some(player) = shared.as_ref().and_then(|g| g.player) else {
+            // O guard de leitura tem de morrer ANTES do `push_command` (que
+            // escreve no mesmo `RwLock`): segurá-lo era um auto-deadlock — o
+            // jogo congelava no 1.º aldeão/inimigo a virar-se para o herói
+            // (2026-11-15, quando o `player_position` voltou a funcionar).
+            let player = faceplayer_globals.read().ok().and_then(|g| g.player);
+            let Some(player) = player else {
                 return Ok(());
             };
             push_command(
                 &faceplayer_globals,
                 commands::ScriptCommand::FaceTowards { entity, target: player },
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.set_locomotion(walk, run [, turn_rate]) — nominais do rig (m/s,
+    // rad/s); desliga a auto-calibração pelas velocidades comandadas.
+    let loco_globals = globals.clone();
+    viber.set(
+        "set_locomotion",
+        lua.create_function(move |lua, (walk, run, turn_rate): (f32, f32, Option<f32>)| {
+            if !(walk.is_finite() && run.is_finite()) || walk <= 0.0 || run <= 0.0 {
+                return Err(mlua::Error::runtime(
+                    "viber.set_locomotion: walk/run têm de ser finitos e > 0",
+                ));
+            }
+            if turn_rate.is_some_and(|t| !t.is_finite() || t <= 0.0) {
+                return Err(mlua::Error::runtime(
+                    "viber.set_locomotion: turn_rate tem de ser finito e > 0",
+                ));
+            }
+            let entity = script_entity(lua)?;
+            push_command(
+                &loco_globals,
+                commands::ScriptCommand::SetLocomotion { entity, walk, run, turn_rate },
+            );
+            Ok(())
+        })?,
+    )?;
+
+    // viber.teleport_player(x, y, z [, id]) — teleporta o herói; o `id`
+    // opcional não conta como chão na aterragem.
+    let teleport_globals = globals.clone();
+    viber.set(
+        "teleport_player",
+        lua.create_function(move |_, (x, y, z, exclude): (f32, f32, f32, Option<i64>)| {
+            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                return Err(mlua::Error::runtime(
+                    "viber.teleport_player: coordenadas não finitas (NaN/inf)",
+                ));
+            }
+            let exclude = exclude.map(commands::entity_from_id).transpose()?;
+            push_command(
+                &teleport_globals,
+                commands::ScriptCommand::TeleportPlayer { pos: Vec3::new(x, y, z), exclude },
             );
             Ok(())
         })?,
@@ -2367,7 +2541,46 @@ fn install_viber_api_with(
     let proj_globals = globals.clone();
     viber.set(
         "fire_projectile",
-        lua.create_function(move |lua, opts: mlua::Table| {
+        lua.create_function(move |lua, (arg, rest): (mlua::Value, mlua::Variadic<f32>)| {
+            // `(template [, x, y, z])` — o contrato dos scripts: dispara o
+            // `<ProjectileTemplate id=…>` da boca da entidade para o peito do
+            // herói (ou para o ponto). `false` sem alvo. A tabela de opções
+            // (abaixo) é a forma de baixo nível.
+            if let mlua::Value::String(template) = &arg {
+                let template = template.to_str()?.to_string();
+                let target = match rest.as_slice() {
+                    [] => None,
+                    [x, y, z] => {
+                        let t = Vec3::new(*x, *y, *z);
+                        if !t.is_finite() {
+                            return Err(mlua::Error::runtime(
+                                "viber.fire_projectile: alvo não finito (NaN/inf)",
+                            ));
+                        }
+                        Some(t)
+                    }
+                    _ => {
+                        return Err(mlua::Error::runtime(
+                            "viber.fire_projectile: alvo precisa de x, y e z",
+                        ));
+                    }
+                };
+                let has_player = proj_globals.read().is_ok_and(|g| g.player.is_some());
+                if target.is_none() && !has_player {
+                    return Ok(false);
+                }
+                push_command(&proj_globals, commands::ScriptCommand::FireProjectileTemplate {
+                    template,
+                    target,
+                    shooter: script_entity_opt(lua),
+                });
+                return Ok(true);
+            }
+            let mlua::Value::Table(opts) = arg else {
+                return Err(mlua::Error::runtime(
+                    "viber.fire_projectile(template [, x, y, z]) ou (opções)",
+                ));
+            };
             let from = Vec3::new(
                 opts.get::<f32>("x")?,
                 opts.get::<f32>("y")?,
@@ -2400,16 +2613,29 @@ fn install_viber_api_with(
                 arc,
                 shooter,
             });
-            Ok(())
+            Ok(true)
         })?,
     )?;
 
-    // viber.push_player(dir_x, dir_y, dir_z, force) — empurrão no herói.
+    // viber.push_player(dx, dz) / (x, y, z, força) — empurrão no herói.
     let push_globals = globals.clone();
     viber.set(
         "push_player",
-        lua.create_function(move |_, (x, y, z, force): (f32, f32, f32, f32)| {
-            let dir = Vec3::new(x, y, z);
+        // `(dx, dz)` — o contrato dos scripts: desloca o herói ~(dx, dz) m
+        // pelo controller; `(x, y, z, força)` — direção + força.
+        lua.create_function(move |_, args: mlua::Variadic<f32>| {
+            let (dir, force) = match args.as_slice() {
+                [dx, dz] => {
+                    let d = Vec3::new(*dx, 0.0, *dz);
+                    (d, d.length())
+                }
+                [x, y, z, force] => (Vec3::new(*x, *y, *z), *force),
+                _ => {
+                    return Err(mlua::Error::runtime(
+                        "viber.push_player(dx, dz) ou (x, y, z, força)",
+                    ));
+                }
+            };
             if !dir.is_finite() || !force.is_finite() {
                 return Err(mlua::Error::runtime("viber.push_player: valores têm de ser finitos"));
             }
@@ -2422,9 +2648,19 @@ fn install_viber_api_with(
     let knock_globals = globals.clone();
     viber.set(
         "entity_knockback",
-        lua.create_function(move |_, (id, x, y, z, force): (i64, f32, f32, f32, f32)| {
+        // `(id, dx, dz, força)` — o contrato dos scripts (planar);
+        // `(id, x, y, z, força)` — direção 3D.
+        lua.create_function(move |_, (id, args): (i64, mlua::Variadic<f32>)| {
             let entity = commands::entity_from_id(id)?;
-            let dir = Vec3::new(x, y, z);
+            let (dir, force) = match args.as_slice() {
+                [dx, dz, force] => (Vec3::new(*dx, 0.0, *dz).normalize_or_zero(), force.max(0.0)),
+                [x, y, z, force] => (Vec3::new(*x, *y, *z), *force),
+                _ => {
+                    return Err(mlua::Error::runtime(
+                        "viber.entity_knockback(id, dx, dz, força) ou (id, x, y, z, força)",
+                    ));
+                }
+            };
             if !dir.is_finite() || !force.is_finite() {
                 return Err(mlua::Error::runtime("viber.entity_knockback: valores têm de ser finitos"));
             }
@@ -2433,43 +2669,37 @@ fn install_viber_api_with(
         })?,
     )?;
 
-    // viber.move_towards(x, y, z[, speed]) / viber.move_by(dx, dy, dz[, speed])
-    // — o movimento de script vai para o `AiLocomotion` (snap no terreno).
+    // viber.move_towards(x, z, speed) — passo deste frame na direção do
     let mt_globals = globals.clone();
     viber.set(
         "move_towards",
-        lua.create_function(move |lua, (x, y, z, speed): (f32, f32, f32, Option<f32>)| {
-            let entity = script_entity(lua)?;
-            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
-                return Err(mlua::Error::runtime("viber.move_towards: alvo não finito"));
+        lua.create_function(move |lua, (x, z, speed): (f32, f32, f32)| {
+            if !(x.is_finite() && z.is_finite() && speed.is_finite()) {
+                return Err(mlua::Error::runtime(
+                    "viber.move_towards: argumentos não finitos (NaN/inf)",
+                ));
             }
+            let entity = script_entity(lua)?;
             push_command(&mt_globals, commands::ScriptCommand::MoveTowards {
                 entity,
-                target: Vec3::new(x, y, z),
-                speed: speed.unwrap_or(0.0),
+                target: Vec3::new(x, 0.0, z),
+                speed,
             });
             Ok(())
         })?,
     )?;
+    // viber.move_by(dx, dz) — velocidade planar direta deste frame (m/s).
     let mb_globals = globals.clone();
     viber.set(
         "move_by",
-        lua.create_function(move |lua, (dx, dy, dz, speed): (f32, f32, f32, Option<f32>)| {
-            let entity = script_entity(lua)?;
-            if !(dx.is_finite() && dy.is_finite() && dz.is_finite()) {
-                return Err(mlua::Error::runtime("viber.move_by: delta não finito"));
+        lua.create_function(move |lua, (dx, dz): (f32, f32)| {
+            if !(dx.is_finite() && dz.is_finite()) {
+                return Err(mlua::Error::runtime("viber.move_by: delta não finito (NaN/inf)"));
             }
-            // Alvo relativo: a posição de início-de-frame da própria
-            // entidade (o snapshot que o publisher publica). Sem snapshot
-            // (REPL/attach estático) o delta vira alvo absoluto — o erro
-            // de fora-de-on_update já apanhou o caso normal.
-            let origin = script_entity_opt(lua)
-                .and_then(|e| mb_globals.read().ok()?.positions.get(&(e.to_bits() as i64)).copied())
-                .unwrap_or_default();
-            push_command(&mb_globals, commands::ScriptCommand::MoveTowards {
+            let entity = script_entity(lua)?;
+            push_command(&mb_globals, commands::ScriptCommand::MoveBy {
                 entity,
-                target: origin + Vec3::new(dx, dy, dz),
-                speed: speed.unwrap_or(0.0),
+                velocity: Vec2::new(dx, dz),
             });
             Ok(())
         })?,
@@ -2995,11 +3225,11 @@ mod tests {
         let time: f64 = lua.load("return viber.time()").eval().expect("time");
         assert_eq!(time, 12.5);
 
-        let position: (f32, f32, f32) = lua
+        let position: (bool, f32, f32, f32) = lua
             .load("return viber.player_position()")
             .eval()
             .expect("position");
-        assert_eq!(position, (1.0, 2.0, 3.0));
+        assert_eq!(position, (true, 1.0, 2.0, 3.0));
 
         let scene: String = lua
             .load("return viber.scene_name()")
@@ -3013,10 +3243,10 @@ mod tests {
     }
 
     #[test]
-    fn player_position_e_nil_sem_heroi() {
+    fn player_position_e_falso_sem_heroi() {
         let (lua, _globals, _store) = vm();
         let missing: bool = lua
-            .load("return viber.player_position() == nil")
+            .load("return viber.player_position() == false")
             .eval()
             .expect("position");
         assert!(missing);

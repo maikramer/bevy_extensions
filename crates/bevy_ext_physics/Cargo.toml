@@ -31,9 +31,9 @@ bevy = { workspace = true, features = [
 ] }
 # Fork vendored do upstream `jmwmulle/bevy_skeleton_modifiers` 0.1.1 (port
 # Bevy 0.20/glam 0.33; proveniência e diffs em
-# `../bevy_ext_viber_engine/vendor/bevy_skeleton_modifiers/VAEL_PATCH.md`).
+# `../../vendor/bevy_skeleton_modifiers/VAEL_PATCH.md`).
 # Substitui o solver 2-bone próprio do `ik.rs` na Fase 1 da migração do IK.
-bevy_skeleton_modifiers = { path = "../bevy_ext_viber_engine/vendor/bevy_skeleton_modifiers" }
+bevy_skeleton_modifiers = { path = "../../vendor/bevy_skeleton_modifiers" }
 # Mesma linha do `viber`/monólito (0.8, bevy 0.20): defaults trazem o backend
 # parry-f32, os joints e o debug render (o toggle F3 dos colisores usa o
 # `PhysicsDebugPlugin` + `PhysicsGizmos`); a feature fica explícita para o

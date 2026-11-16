@@ -30,12 +30,15 @@ members = [
 # Standalone (fora do workspace): o plugin Jackdaw WIP. (O scene_runtime foi
 # apagado a 2026-11-15: órfão, zero consumidores — ver DELETE-MONOLITH.md no
 # Vael.)
-# O monólito (`bevy_ext_viber_engine`) continua fora: tem CelerAI por path,
-# vendor/rerecast próprio e um mlua vendored — mas agora DEPENDE dos members
-# (`bevy_ext_physics`/`bevy_ext_engine`, que já não o dep).
+# O monólito `bevy_ext_viber_engine` foi apagado a 2026-11-15: o que o jogo
+# ainda usa vive no Vael (`crates/vael_engine`) e esvazia-se para os crates
+# daqui. Os forks vendored (`vendor/`) têm workspace próprio.
 exclude = [
     "crates/bevy_voxel_terrain_jackdaw",
+    # TODO(cutover): sai assim que o copy do Vael (crates/vael_engine) compilar.
     "crates/bevy_ext_viber_engine",
+    "vendor/bevy_skeleton_modifiers",
+    "vendor/rerecast",
 ]
 resolver = "3"
 
