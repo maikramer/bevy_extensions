@@ -714,7 +714,9 @@ fn foot_ik_bind_system(
     locals: Query<&Transform>,
     names: Query<&Name>,
     children: Query<&Children>,
+    mut frame: Local<u32>,
 ) {
+    *frame = frame.wrapping_add(1);
     // Rigs ligados cuja subárvore morreu (troca de tier/LOD): voltar ao
     // pendente, depois de soltar os donos velhos (as entidades alvo morreram
     // com a subárvore, eram filhas dela).
@@ -737,6 +739,12 @@ fn foot_ik_bind_system(
         }
     }
 
+    // Rigs sem pernas (lodos, vermes) ou cenas ainda a carregar ficavam a
+    // percorrer a subárvore inteira TODOS os frames (~0,6 ms medido
+    // 2026-11-16): a nova tentativa é espaçada.
+    if *frame % 15 != 0 {
+        return;
+    }
     for (entity, _, animator) in &pending {
         let root = rig_root(entity, animator);
         let Some(legs) = find_leg_bones(root, &children, &names) else {
@@ -797,6 +805,9 @@ fn foot_ik_bind_system(
     }
 }
 
+/// Distância (m) à câmara a partir da qual o foot IK desliga.
+const FOOT_IK_MAX_DISTANCE: f32 = 40.0;
+
 /// Escreve os alvos dos pés e o peso de blend — o port da matemática de
 /// [`solve_leg`], que aqui já não resolve ossos: o crate fá-lo na
 /// [`SkeletonModifierSystems`]. Corre depois da animação (a pose do frame é a
@@ -820,7 +831,18 @@ fn foot_ik_target_system(
     globals: Query<&GlobalTransform>,
     frozen: Query<Has<FrozenAnimation>>,
     terrain: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
+    // Corte por distância: a ~228 rigs do mundo (os cedidos ao Jackdaw ficavam
+    // a peso 1.0 em qualquer distância) o IK escrevia 2 alvos + 6 ossos por
+    // frame cada — ~1.8k `Transform` mudados/frame, a maior parte de
+    // personagens que nem se vêem (medido 2026-11-15). Longe da câmara a pose
+    // do clip passa limpa.
+    let eye = cameras
+        .iter()
+        .filter(|(camera, _)| camera.is_active)
+        .max_by_key(|(camera, _)| camera.order)
+        .map(|(_, global)| global.translation());
     // Sem terreno (cenas sem mundo): IK todo desligado — o comportamento de
     // `foot_ik_system` (return cedo).
     let Some(terrain) = terrain.as_deref() else {
@@ -857,9 +879,19 @@ fn foot_ik_target_system(
                 }
             }
         };
-        if weight <= 0.0 {
+        let far = eye.is_some_and(|eye| {
+            globals.get(entity).is_ok_and(|g| {
+                g.translation().distance_squared(eye) > FOOT_IK_MAX_DISTANCE * FOOT_IK_MAX_DISTANCE
+            })
+        });
+        if weight <= 0.0 || far {
             for leg in &rig.legs {
-                set_active(&mut commons, leg, false);
+                // Só escrever quando muda: o `get_mut` incondicional marcava
+                // o `ModifierCommon` como mudado em todos os rigs, todos os
+                // frames.
+                if commons.get(leg.owner).is_ok_and(|c| c.active) {
+                    set_active(&mut commons, leg, false);
+                }
             }
             continue;
         }

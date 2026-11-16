@@ -112,6 +112,7 @@ pub(crate) fn seed_script_identity(lua: &Lua, path: &str, elapsed: f64) {
 /// warn por path — um timer a falhar nunca derruba o frame; `every`
 /// cancelado não re-agenda.
 pub fn tick_timers(contexts: Option<Res<ScriptContexts<LuaScriptingPlugin>>>) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("tick_timers"); // `VAEL_PERF_DIAG`
     let Some(contexts) = contexts else {
         return;
     };
@@ -135,6 +136,11 @@ fn tick_vm(lua: &Lua, elapsed: f64) {
     let Ok(timers) = lua.named_registry_value::<Table>("viber_timers") else {
         return;
     };
+    // A maioria das ~470 VMs não tem timers pendentes: sair antes dos outros
+    // lookups e do `clear` (eram ~1,2 ms/frame no Vael, medido 2026-11-16).
+    if timers.is_empty() {
+        return;
+    }
     let Ok(cancelled) = lua.named_registry_value::<Table>("viber_timer_cancelled") else {
         return;
     };

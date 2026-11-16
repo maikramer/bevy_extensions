@@ -12,6 +12,7 @@ pub mod animation;
 pub mod camera;
 pub mod dialogue;
 pub mod input_map;
+pub mod perf_probe;
 pub mod locale;
 pub mod rng;
 pub mod script_kind;

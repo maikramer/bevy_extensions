@@ -454,6 +454,15 @@ pub struct ColliderResolved;
 /// Registers the Avian plugins themselves; collider/body components are
 /// attached by the world spawner as entities are created, and deferred shapes
 /// are finished by [`resolve_pending_colliders`].
+/// Substeps do solver (`VIBER_PHYSICS_SUBSTEPS`, default 4).
+fn physics_substeps() -> u32 {
+    std::env::var("VIBER_PHYSICS_SUBSTEPS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| (1..=16).contains(n))
+        .unwrap_or(4)
+}
+
 #[derive(Default)]
 pub struct PhysicsPlugin {
     /// Draw collider wireframes (`viber run --physics-debug`).
@@ -465,6 +474,10 @@ impl bevy::app::Plugin for PhysicsPlugin {
         app.init_resource::<ColliderCache>()
             .init_resource::<TerrainCollisionStatus>()
             .add_plugins(PhysicsPlugins::default())
+            // 6 substeps (default do avian) são para pilhas/juntas; o mundo
+            // tem um corpo dinâmico (o herói) e milhares de estáticos. 4
+            // chegam e cortam ~1/3 do solver por passo. `VIBER_PHYSICS_SUBSTEPS`.
+            .insert_resource(avian3d::prelude::SubstepCount(physics_substeps()))
             .add_systems(bevy::app::PostUpdate, resolve_pending_colliders);
         // O wireframe existe sempre; o `enabled` do `PhysicsGizmos` segue
         // `debug` (jogo: `VIBER_PHYSICS_DEBUG`). O editor liga-o ao vivo via

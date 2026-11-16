@@ -426,6 +426,7 @@ pub fn drain_commands(
     mut sfx: Option<MessageWriter<SfxEvent>>,
     mut out: Option<MessageWriter<ScriptCommandMessage>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("drain_commands"); // `VAEL_PERF_DIAG`
     let shared = crate::globals();
     let mut queue = {
         let Ok(mut globals) = shared.write() else {
