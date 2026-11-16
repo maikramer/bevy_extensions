@@ -113,7 +113,11 @@ impl GameStore {
     /// Snapshot plano (persistência/diagnóstico). O overlay de sessão
     /// (tabelas/funções) não aparece — só o que o save persistiria.
     pub fn snapshot(&self) -> BTreeMap<String, GameValue> {
-        self.map.clone()
+        self.map
+            .iter()
+            .filter(|(key, _)| !is_nested_key(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
     }
 
     /// SUBSTITUI o estado plano pelo mapa dado (o load de um save). Bump de
@@ -150,6 +154,15 @@ pub(crate) fn read_scripts_dir(lua: &Lua) -> Option<PathBuf> {
     SCRIPTS_DIR.read().ok().and_then(|dir| dir.clone())
 }
 
+/// A pasta de scripts publicada pelo integrador (omissão do processo), para
+/// semear o app data POR VM em [`crate::init_context`]/REPL — o top-level de
+/// um script (e a REPL) pede `viber.load`/`decision.load`/`nlu.load` ANTES do
+/// primeiro `publish_globals`; só com o static isso dava "sem scripts_dir"
+/// (visto no `hud.lua` a 2026-11-15).
+pub(crate) fn process_scripts_dir() -> Option<PathBuf> {
+    SCRIPTS_DIR.read().ok().and_then(|dir| dir.clone())
+}
+
 static GAME_STORE: OnceLock<Arc<RwLock<GameStore>>> = OnceLock::new();
 
 /// O store real do processo (integrador e REPL); os testes injetam o seu.
@@ -161,6 +174,7 @@ pub fn game_store() -> Arc<RwLock<GameStore>> {
 
 /// Publica um patch no store do processo (load de save, cheat, demo…).
 pub fn publish_game_patch(patch: Vec<(String, GameValue)>) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("apply_game_patches"); // `VAEL_PERF_DIAG`
     if let Ok(mut store) = game_store().write() {
         store.publish_patch(patch);
     }
@@ -194,6 +208,8 @@ pub fn game_to_json_store(store: &Arc<RwLock<GameStore>>) -> BTreeMap<String, se
     store
         .map
         .iter()
+        // As tabelas partilhadas (`game.enemies`…) são de sessão: fora do save.
+        .filter(|(key, _)| !is_nested_key(key))
         .map(|(key, value)| (key.clone(), game_value_to_json(value)))
         .collect()
 }
@@ -624,9 +640,18 @@ end"#,
 /// a tabela da VM no Viber).
 fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Table> {
     let proxy = lua.create_table()?;
-    // Overlay de sessão (tabelas/funções) — por VM, escondido no registry.
+    // Overlay de sessão (FUNÇÕES) — por VM, escondido no registry. As
+    // tabelas já não vivem aqui: são partilhadas pelo store (ver
+    // [`nested_proxy`]).
     let overlay = lua.create_table()?;
     lua.set_named_registry_value("viber_game_overlay", overlay.clone())?;
+    // Cache de identidade dos proxies aninhados (valores fracos): o mesmo
+    // caminho devolve a mesma tabela enquanto alguém a segurar.
+    let cache = lua.create_table()?;
+    let cache_mt = lua.create_table()?;
+    cache_mt.set("__mode", "v")?;
+    cache.set_metatable(Some(cache_mt))?;
+    lua.set_named_registry_value("viber_game_nested", cache)?;
     let mt = lua.create_table()?;
 
     // Geração vista por este proxy (partilhada pelos metamétodos —
@@ -635,7 +660,8 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
         store.read().map(|s| s.generation).unwrap_or(0),
     ));
 
-    // __index — overlay de sessão primeiro, mapa partilhado depois.
+    // __index — overlay de sessão primeiro, mapa partilhado depois (um
+    // primitivo, ou uma tabela partilhada → proxy aninhado).
     let index_store = store.clone();
     let index_gen = seen_generation.clone();
     let index_overlay = overlay.clone();
@@ -654,19 +680,12 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
             {
                 return Ok(value);
             }
-            let value = index_store
-                .read()
-                .ok()
-                .and_then(|s| s.map.get(&name).cloned());
-            match value {
-                Some(GameValue::Null) | None => Ok(Value::Nil),
-                Some(gv) => gv.into_lua(lua),
-            }
+            read_path(lua, &index_store, name)
         })?,
     )?;
 
-    // __newindex — primitivos escrevem no mapa (nil remove); tabelas e
-    // funções ficam no overlay de sessão desta VM (invisível ao save).
+    // __newindex — primitivos e TABELAS escrevem no store partilhado (nil
+    // remove); funções ficam no overlay de sessão desta VM.
     let newindex_store = store.clone();
     let newindex_gen = seen_generation.clone();
     let newindex_overlay = overlay.clone();
@@ -681,33 +700,19 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
                     ));
                 };
                 let name = key.to_string_lossy();
-                match GameValue::from_lua(&value) {
-                    // Primitivo: só o mapa partilhado (e limpa o overlay —
-                    // `game.k = nil` depois de `game.k = {}` remove tudo).
-                    Some(gv) => {
-                        let _ = newindex_overlay.raw_remove(name.as_str());
-                        if let Ok(mut s) = newindex_store.write() {
-                            match gv {
-                                GameValue::Null => {
-                                    s.map.remove(&name);
-                                }
-                                other => {
-                                    s.map.insert(name, other);
-                                }
-                            }
-                        }
-                    }
-                    // Tabela/função: overlay de sessão, só nesta VM.
-                    None => newindex_overlay.raw_set(name, value)?,
+                if matches!(value, Value::Function(_) | Value::UserData(_) | Value::Thread(_)) {
+                    newindex_overlay.raw_set(name, value)?;
+                    return Ok(());
                 }
-                Ok(())
+                let _ = newindex_overlay.raw_remove(name.as_str());
+                write_path(&newindex_store, &name, &value)
             },
         )?,
     )?;
 
     // __iter — iteração genérica (`for k, v in viber.game() do` e o `pairs`
-    // envolvido): funde o overlay de sessão (cru) com as chaves do mapa
-    // partilhado. Os valores vêm de `t[k]` (via __index).
+    // envolvido): funde o overlay de sessão com as chaves do mapa (as raízes
+    // das tabelas partilhadas uma vez cada). Os valores vêm de `t[k]`.
     let iter_store = store;
     let iter_gen = seen_generation;
     let iter_overlay = overlay;
@@ -722,7 +727,8 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
                 .collect();
             if let Ok(s) = iter_store.read() {
                 for key in s.map.keys() {
-                    keys.push(Value::String(lua.create_string(key)?));
+                    let root = key.split([PATH_SEP, TABLE_MARK]).next().unwrap_or(key);
+                    keys.push(Value::String(lua.create_string(root)?));
                 }
             }
             // Overlay de sessão ganha na colisão (1.ª ocorrência).
@@ -731,22 +737,325 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
                 Value::String(s) => seen.insert(s.to_string_lossy()),
                 other => seen.insert(format!("{other:?}")),
             });
-            let mut next = 0usize;
-            lua.create_function_mut(move |lua, ()| -> mlua::Result<MultiValue> {
-                let Some(key) = keys.get(next).cloned() else {
-                    return Ok(MultiValue::new());
-                };
-                next += 1;
-                let value: Value = proxy.get(key.clone())?;
-                Ok(MultiValue::from_vec(vec![
-                    key.into_lua(lua)?,
-                    value.into_lua(lua)?,
-                ]))
-            })
+            iter_keys(lua, proxy, keys)
         })?,
     )?;
 
     proxy.set_metatable(Some(mt))?;
+    Ok(proxy)
+}
+
+/// Separador de segmentos do caminho de uma folha de tabela partilhada.
+const PATH_SEP: char = '\u{1F}';
+/// Marcador "a tabela existe" (`caminho` + marca): uma tabela vazia partilhada.
+const TABLE_MARK: char = '\u{1E}';
+
+/// `true` para chaves internas das tabelas partilhadas (fora do save).
+pub fn is_nested_key(key: &str) -> bool {
+    key.contains(PATH_SEP) || key.contains(TABLE_MARK)
+}
+
+/// Segmento de caminho de uma chave Lua de tabela aninhada: `s<texto>` ou
+/// `n<número>`. Outras chaves (tabelas, booleanos…) não são suportadas.
+fn encode_segment(key: &Value) -> Option<String> {
+    match key {
+        Value::String(text) => Some(format!("s{}", text.to_string_lossy())),
+        Value::Integer(i) => Some(format!("n{i}")),
+        Value::Number(n) if n.is_finite() => {
+            if n.fract() == 0.0 && n.abs() < 9.0e15 {
+                Some(format!("n{}", *n as i64))
+            } else {
+                Some(format!("n{n}"))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn decode_segment(lua: &Lua, segment: &str) -> mlua::Result<Value> {
+    match segment.split_at_checked(1) {
+        Some(("n", number)) => Ok(match number.parse::<i64>() {
+            Ok(int) => Value::Integer(int),
+            Err(_) => Value::Number(number.parse::<f64>().unwrap_or(0.0)),
+        }),
+        Some(("s", text)) => Ok(Value::String(lua.create_string(text)?)),
+        _ => Ok(Value::String(lua.create_string(segment)?)),
+    }
+}
+
+fn child_path(parent: &str, segment: &str) -> String {
+    format!("{parent}{PATH_SEP}{segment}")
+}
+
+/// O caminho é uma tabela partilhada (marcador ou alguma folha por baixo)?
+fn is_table_at(map: &BTreeMap<String, GameValue>, path: &str) -> bool {
+    if map.contains_key(&format!("{path}{TABLE_MARK}")) {
+        return true;
+    }
+    let prefix = format!("{path}{PATH_SEP}");
+    map.range(prefix.clone()..)
+        .next()
+        .is_some_and(|(key, _)| key.starts_with(&prefix))
+}
+
+/// Remove o valor no caminho e toda a subárvore.
+fn remove_subtree(map: &mut BTreeMap<String, GameValue>, path: &str) {
+    map.remove(path);
+    map.remove(&format!("{path}{TABLE_MARK}"));
+    let prefix = format!("{path}{PATH_SEP}");
+    let doomed: Vec<String> = map
+        .range(prefix.clone()..)
+        .take_while(|(key, _)| key.starts_with(&prefix))
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in doomed {
+        map.remove(&key);
+    }
+}
+
+/// Caminho de um proxy aninhado (`None` = tabela comum).
+fn proxy_path(table: &Table) -> Option<String> {
+    table
+        .metatable()
+        .and_then(|mt| mt.raw_get::<Option<String>>("__game_path").ok().flatten())
+}
+
+/// Escreve `value` no caminho, substituindo o que lá estava. Tabelas comuns
+/// são copiadas folha a folha (o mesmo `t` passa a viver no store e a ser
+/// visto por todas as VMs); um proxy copia a subárvore do caminho dele.
+fn write_path(store: &Arc<RwLock<GameStore>>, path: &str, value: &Value) -> mlua::Result<()> {
+    // Recolhe ANTES do lock: ler uma tabela Lua não toca no store, mas um
+    // proxy aninhado como valor exige ler o store.
+    let mut leaves: Vec<(String, GameValue)> = Vec::new();
+    let mut tables: Vec<String> = Vec::new();
+    let mut copy_from: Option<String> = None;
+    match value {
+        Value::Table(table) => {
+            if let Some(source) = proxy_path(table) {
+                if source == path {
+                    return Ok(());
+                }
+                copy_from = Some(source);
+            } else {
+                let mut visited = std::collections::HashSet::new();
+                collect_table(table, path, &mut leaves, &mut tables, &mut visited)?;
+            }
+        }
+        other => match GameValue::from_lua(other) {
+            Some(GameValue::Null) => {}
+            Some(gv) => leaves.push((path.to_string(), gv)),
+            None => {}
+        },
+    }
+    let Ok(mut s) = store.write() else {
+        return Ok(());
+    };
+    let copied: Vec<(String, GameValue)> = match &copy_from {
+        Some(source) => {
+            let prefix_leaf = format!("{source}{PATH_SEP}");
+            let mark = format!("{source}{TABLE_MARK}");
+            let mut out = vec![(format!("{path}{TABLE_MARK}"), GameValue::Bool(true))];
+            for (key, gv) in s.map.range(source.clone()..) {
+                if key == &mark {
+                    continue;
+                }
+                let Some(rest) = key.strip_prefix(&prefix_leaf) else {
+                    if key.starts_with(source.as_str()) {
+                        continue;
+                    }
+                    break;
+                };
+                out.push((format!("{path}{PATH_SEP}{rest}"), gv.clone()));
+            }
+            out
+        }
+        None => Vec::new(),
+    };
+    remove_subtree(&mut s.map, path);
+    for table_path in tables {
+        s.map.insert(format!("{table_path}{TABLE_MARK}"), GameValue::Bool(true));
+    }
+    for (key, gv) in leaves.into_iter().chain(copied) {
+        s.map.insert(key, gv);
+    }
+    Ok(())
+}
+
+/// Folhas primitivas e sub-tabelas de uma tabela Lua comum (recursivo;
+/// ciclos e chaves não suportadas são saltados; funções ficam de fora).
+fn collect_table(
+    table: &Table,
+    path: &str,
+    leaves: &mut Vec<(String, GameValue)>,
+    tables: &mut Vec<String>,
+    visited: &mut std::collections::HashSet<usize>,
+) -> mlua::Result<()> {
+    if !visited.insert(table.to_pointer() as usize) {
+        return Ok(());
+    }
+    tables.push(path.to_string());
+    for pair in table.clone().pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        let Some(segment) = encode_segment(&key) else {
+            continue;
+        };
+        let child = child_path(path, &segment);
+        match &value {
+            Value::Table(inner) => match proxy_path(inner) {
+                // Um proxy dentro de uma tabela nova: copia o valor actual
+                // dele (raro; a escrita seguinte a esse caminho trata-o).
+                Some(_) => {}
+                None => collect_table(inner, &child, leaves, tables, visited)?,
+            },
+            other => {
+                if let Some(gv) = GameValue::from_lua(other)
+                    && gv != GameValue::Null
+                {
+                    leaves.push((child, gv));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lê o caminho: primitivo, proxy aninhado (tabela partilhada) ou nil.
+fn read_path(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: String) -> mlua::Result<Value> {
+    let (value, table) = {
+        let Ok(s) = store.read() else {
+            return Ok(Value::Nil);
+        };
+        let value = s.map.get(&path).cloned();
+        let table = value.is_none() && is_table_at(&s.map, &path);
+        (value, table)
+    };
+    match value {
+        Some(GameValue::Null) => Ok(Value::Nil),
+        Some(gv) => gv.into_lua(lua),
+        None if table => Ok(Value::Table(nested_proxy(lua, store, path)?)),
+        None => Ok(Value::Nil),
+    }
+}
+
+/// Filhos directos de um caminho (chaves decodificadas, por ordem do mapa).
+fn child_keys(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: &str) -> mlua::Result<Vec<Value>> {
+    let segments: Vec<String> = {
+        let Ok(s) = store.read() else {
+            return Ok(Vec::new());
+        };
+        let prefix = format!("{path}{PATH_SEP}");
+        let mut out: Vec<String> = Vec::new();
+        for (key, _) in s.map.range(prefix.clone()..) {
+            let Some(rest) = key.strip_prefix(&prefix) else {
+                break;
+            };
+            let segment = rest.split([PATH_SEP, TABLE_MARK]).next().unwrap_or(rest);
+            if out.last().map(String::as_str) != Some(segment) {
+                out.push(segment.to_string());
+            }
+        }
+        out.dedup();
+        out
+    };
+    segments.iter().map(|segment| decode_segment(lua, segment)).collect()
+}
+
+/// Iterador `(k, v)` sobre `keys`, com os valores lidos por `t[k]`.
+fn iter_keys(lua: &Lua, proxy: Table, keys: Vec<Value>) -> mlua::Result<Function> {
+    let mut next = 0usize;
+    lua.create_function_mut(move |lua, ()| -> mlua::Result<MultiValue> {
+        loop {
+            let Some(key) = keys.get(next).cloned() else {
+                return Ok(MultiValue::new());
+            };
+            next += 1;
+            let value: Value = proxy.get(key.clone())?;
+            // Removido entretanto (outra escrita a meio da iteração): salta.
+            if value.is_nil() {
+                continue;
+            }
+            return Ok(MultiValue::from_vec(vec![key.into_lua(lua)?, value]));
+        }
+    })
+}
+
+/// Proxy de uma tabela PARTILHADA do `viber.game()` (`game.enemies`,
+/// `game.enemies[id]`…). No Viber todas as entidades corriam numa VM e estas
+/// tabelas eram de todos; no BMS cada script tem a sua VM e a tabela ficava
+/// na VM que a criou — o combate do herói não via o registo das criaturas
+/// (nenhum golpe acertava), o alerta de aggro e a esquiva não atravessavam
+/// (2026-11-15). As folhas vivem no store do processo com chaves
+/// `raiz␟seg␟…`; ficam fora do save (como as tabelas de sessão de antes) e
+/// o load (`replace`) limpa-as.
+fn nested_proxy(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: String) -> mlua::Result<Table> {
+    let cache: Table = lua.named_registry_value("viber_game_nested")?;
+    if let Ok(Some(hit)) = cache.raw_get::<Option<Table>>(path.as_str()) {
+        return Ok(hit);
+    }
+    let proxy = lua.create_table()?;
+    let mt = lua.create_table()?;
+    mt.raw_set("__game_path", path.as_str())?;
+
+    let index_store = store.clone();
+    let index_path = path.clone();
+    mt.raw_set(
+        "__index",
+        lua.create_function(move |lua, (_proxy, key): (Table, Value)| -> mlua::Result<Value> {
+            let Some(segment) = encode_segment(&key) else {
+                return Ok(Value::Nil);
+            };
+            read_path(lua, &index_store, child_path(&index_path, &segment))
+        })?,
+    )?;
+
+    let newindex_store = store.clone();
+    let newindex_path = path.clone();
+    mt.raw_set(
+        "__newindex",
+        lua.create_function(
+            move |_, (_proxy, key, value): (Table, Value, Value)| -> mlua::Result<()> {
+                let Some(segment) = encode_segment(&key) else {
+                    return Err(mlua::Error::runtime(
+                        "viber.game(): chave de tabela partilhada tem de ser string ou número",
+                    ));
+                };
+                write_path(&newindex_store, &child_path(&newindex_path, &segment), &value)
+            },
+        )?,
+    )?;
+
+    let iter_store = store.clone();
+    let iter_path = path.clone();
+    mt.raw_set(
+        "__iter",
+        lua.create_function(move |lua, proxy: Table| -> mlua::Result<Function> {
+            let keys = child_keys(lua, &iter_store, &iter_path)?;
+            iter_keys(lua, proxy, keys)
+        })?,
+    )?;
+
+    let len_store = store.clone();
+    let len_path = path.clone();
+    mt.raw_set(
+        "__len",
+        lua.create_function(move |_, _proxy: Table| -> mlua::Result<i64> {
+            let Ok(s) = len_store.read() else {
+                return Ok(0);
+            };
+            let mut n = 0i64;
+            loop {
+                let child = child_path(&len_path, &format!("n{}", n + 1));
+                if s.map.contains_key(&child) || is_table_at(&s.map, &child) {
+                    n += 1;
+                } else {
+                    return Ok(n);
+                }
+            }
+        })?,
+    )?;
+
+    proxy.set_metatable(Some(mt))?;
+    cache.raw_set(path.as_str(), proxy.clone())?;
     Ok(proxy)
 }
 
@@ -807,6 +1116,63 @@ mod tests {
 
     fn fresh_store() -> Arc<RwLock<GameStore>> {
         Arc::new(RwLock::new(GameStore::default()))
+    }
+
+    #[test]
+    fn tabelas_do_game_sao_partilhadas_entre_vms() {
+        let shared = fresh_store();
+        let vm = || {
+            let lua = Lua::new();
+            let viber = lua.create_table().expect("viber");
+            lua.globals().set("viber", viber.clone()).expect("global");
+            install(&lua, &viber, shared.clone()).expect("instala");
+            lua
+        };
+        let a = vm();
+        let b = vm();
+        a.load(
+            "local g = viber.game()
+             g.enemies = {}
+             g.enemies[5] = { kind = 'slime', hp = 10, pos = { x = 1 } }
+             g.hero_dodge = {}
+             g.hero_dodge.until_t = 3.5
+             g.respawns = {}
+             g.respawns[#g.respawns + 1] = { proto = 'p1' }
+             g.respawns[#g.respawns + 1] = { proto = 'p2' }",
+        )
+        .exec()
+        .expect("escreve");
+        let (hp, kind, x, dodge, n): (f64, String, f64, f64, i64) = b
+            .load(
+                "local g = viber.game()
+                 return g.enemies[5].hp, g.enemies[5].kind, g.enemies[5].pos.x,
+                        g.hero_dodge.until_t, #g.respawns",
+            )
+            .eval()
+            .expect("lê noutra VM");
+        assert_eq!((hp, kind.as_str(), x, dodge, n), (10.0, "slime", 1.0, 3.5, 2));
+        b.load("local e = viber.game().enemies[5]; e.hp = 3").exec().expect("muta");
+        let (hp, count, same): (f64, i64, bool) = a
+            .load(
+                "local g = viber.game()
+                 local c = 0
+                 for id, e in pairs(g.enemies) do c = c + 1 end
+                 return g.enemies[5].hp, c, g.enemies[5] == g.enemies[5]",
+            )
+            .eval()
+            .expect("vê a mutação");
+        assert_eq!((hp, count, same), (3.0, 1, true));
+        // Substituir por primitivo apaga a subárvore; nil remove.
+        a.load("viber.game().enemies[5] = nil").exec().expect("remove");
+        let gone: bool = b
+            .load("return viber.game().enemies[5] == nil and type(viber.game().enemies) == 'table'")
+            .eval()
+            .expect("removido");
+        assert!(gone, "a entrada sai, a tabela vazia continua");
+        // Fora do save: só os primitivos de topo.
+        a.load("viber.game().gold = 7").exec().expect("gold");
+        let json = game_to_json_store(&shared);
+        assert_eq!(json.keys().cloned().collect::<Vec<_>>(), vec!["gold".to_string()]);
     }
 
     #[test]

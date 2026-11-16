@@ -70,6 +70,11 @@ fn install(lua: &Lua) -> mlua::Result<()> {
     // A mesma tabela `viber` dos contextos BMS (globals/store estáticos
     // partilhados com o jogo a correr).
     crate::install_viber_api(lua)?;
+    // Pasta de scripts desta VM (o `viber.load`/`decision.load` da REPL lê-a
+    // do app data; o static do processo é a fonte publicada pelo integrador).
+    if let Some(dir) = crate::game::process_scripts_dir() {
+        lua.set_app_data(crate::game::ScriptsDir(Some(dir)));
+    }
     // F2: `viber.ui` — o snapshot do `UiScriptState` (o jogo publica no
     // Startup; a REPL pode nascer antes, nesse caso fica sem `viber.ui`).
     #[cfg(feature = "ui")]

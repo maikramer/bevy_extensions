@@ -150,26 +150,26 @@ pub struct ScriptHostState {
     /// `viber.position()`/`distance_to_player` da entidade que corre o
     /// script. O monólito semeava `ScriptCtx::origin` por chamada; aqui é o
     /// snapshot publicado.
-    pub positions: std::collections::HashMap<i64, Vec3>,
+    pub positions: std::sync::Arc<std::collections::HashMap<i64, Vec3>>,
     /// Nome de mundo por entidade (bits → nome) para `viber.self_name()`.
-    pub names: std::collections::HashMap<i64, String>,
+    pub names: std::sync::Arc<std::collections::HashMap<i64, String>>,
     /// Snapshot `nome → bits` de TODAS as entidades nomeadas do mundo
     /// (`viber.find`/`find_all`; vetores ordenados por bits).
-    pub named_entities: std::collections::HashMap<String, Vec<i64>>,
+    pub named_entities: std::sync::Arc<std::collections::HashMap<String, Vec<i64>>>,
     /// Snapshot `(current, max)` do HP por entidade COM vitais (sem o
     /// player) para `viber.entity_hp(id)`.
-    pub hp_snapshot: std::collections::HashMap<i64, (f32, f32)>,
+    pub hp_snapshot: std::sync::Arc<std::collections::HashMap<i64, (f32, f32)>>,
     /// Props autorais por entidade (`viber.nearby`/`viber.prop`).
-    pub props: std::collections::HashMap<i64, std::sync::Arc<Vec<(String, String)>>>,
+    pub props: std::sync::Arc<std::collections::HashMap<i64, std::sync::Arc<Vec<(String, String)>>>>,
     /// Esquema `--@export` por script path (`viber.prop`/`viber.props`) —
     /// o parser vive no `exports` deste crate.
-    pub exports: std::collections::HashMap<String, std::sync::Arc<exports::ScriptExports>>,
+    pub exports: std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<exports::ScriptExports>>>,
     /// Hostis vivos deste frame (`viber.hostiles`).
-    pub hostiles: Vec<HostileSnap>,
+    pub hostiles: std::sync::Arc<Vec<HostileSnap>>,
     /// Nomes dos prototypes do mundo (validação de `viber.spawn_prototype`).
-    pub prototype_names: Vec<String>,
+    pub prototype_names: std::sync::Arc<Vec<String>>,
     /// Presets de partícula válidos (`viber.burst`; `sparks` entra à parte).
-    pub particle_presets: Vec<String>,
+    pub particle_presets: std::sync::Arc<Vec<String>>,
     /// Consultas de superfície (`viber.ground_below`/`road`/`road_at`/
     /// `on_road`/`in_water`) — seam [`surfaces::SurfaceQueries`] implementado
     /// pela integração.
@@ -181,7 +181,7 @@ pub struct ScriptHostState {
     pub clip_durations: std::collections::HashMap<String, f32>,
     /// Grupos por entidade (`viber.group`/`in_group`): bits → nomes.
     /// exit5/ponte (2026-11-15).
-    pub groups: std::collections::HashMap<i64, Vec<String>>,
+    pub groups: std::sync::Arc<std::collections::HashMap<i64, Vec<String>>>,
     /// Id da cinemática em curso (`viber.cinematic_playing()`); `None` fora.
     pub cinematic: Option<String>,
     /// Acessibilidade publicada (`viber.a11y`): escala de legendas, shake,
@@ -192,7 +192,7 @@ pub struct ScriptHostState {
     /// Idioma ativo (`viber.locale.get()`).
     pub locale_lang: Option<String>,
     /// Tabela do locale ativo para `viber.localize` (chaves `@nome`).
-    pub locale_table: Option<std::collections::HashMap<String, String>>,
+    pub locale_table: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
     /// Metadados dos 4 slots (`viber.save_slots`), pares (chave, JSON) por
     /// slot — o mesmo conjunto de chaves que o monólito escreve na tabela.
     pub save_slots: Option<Vec<Vec<(String, serde_json::Value)>>>,
@@ -235,25 +235,25 @@ pub struct ScriptGlobals {
     player_id: Option<i64>,
     /// Posição de início-de-frame das entidades com script
     /// (`viber.position`/`distance_to_player` da própria entidade).
-    positions: std::collections::HashMap<i64, Vec3>,
+    positions: std::sync::Arc<std::collections::HashMap<i64, Vec3>>,
     /// Nome de mundo por entidade (`viber.self_name`).
-    names: std::collections::HashMap<i64, String>,
+    names: std::sync::Arc<std::collections::HashMap<i64, String>>,
     /// Snapshot `nome → bits` de TODAS as entidades nomeadas do mundo para
     /// `viber.find`/`find_all` (vetores ordenados por bits: ordem estável).
-    named_entities: std::collections::HashMap<String, Vec<i64>>,
+    named_entities: std::sync::Arc<std::collections::HashMap<String, Vec<i64>>>,
     /// Snapshot `(current, max)` do HP de cada entidade COM vitais (sem o
     /// player) para `viber.entity_hp(id)`.
-    hp_snapshot: std::collections::HashMap<i64, (f32, f32)>,
+    hp_snapshot: std::sync::Arc<std::collections::HashMap<i64, (f32, f32)>>,
     /// Props autorais (`prop-*`) por entidade — DADOS que o jogo interpreta.
-    props: std::collections::HashMap<i64, std::sync::Arc<Vec<(String, String)>>>,
+    props: std::sync::Arc<std::collections::HashMap<i64, std::sync::Arc<Vec<(String, String)>>>>,
     /// Esquema `--@export` por script path (`viber.prop`/`viber.props`).
-    exports: std::collections::HashMap<String, std::sync::Arc<exports::ScriptExports>>,
+    exports: std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<exports::ScriptExports>>>,
     /// Hostis vivos (`enemies/`/`bosses/`) para `viber.hostiles`.
-    hostiles: Vec<HostileSnap>,
+    hostiles: std::sync::Arc<Vec<HostileSnap>>,
     /// Nomes dos prototypes do mundo (validação de `viber.spawn_prototype`).
-    prototype_names: Vec<String>,
+    prototype_names: std::sync::Arc<Vec<String>>,
     /// Presets de partícula válidos para `viber.burst` (`sparks` à parte).
-    particle_presets: Vec<String>,
+    particle_presets: std::sync::Arc<Vec<String>>,
     /// Consultas de superfície publicadas (`viber.ground_below`/`road`/…).
     surfaces: Option<surfaces::SurfaceQueriesHandle>,
     /// Pose VIVA da câmara de jogo — `viber.camera_state()`: posição do olho
@@ -273,13 +273,13 @@ pub struct ScriptGlobals {
     /// Papel de rede (`viber.net_role`): "off" | "host" | "join".
     net_role: Option<String>,
     /// Tabela do locale ativo para `viber.localize` (chaves `@nome`).
-    locale_table: Option<std::collections::HashMap<String, String>>,
+    locale_table: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
     /// Idioma ativo (`viber.locale.get()`).
     locale_lang: Option<String>,
     /// Metadados dos 4 slots (`viber.save_slots`), JSON do sidecar.
     save_slots: Option<Vec<Vec<(String, serde_json::Value)>>>,
     /// Grupos por entidade (`viber.group`/`in_group`): bits → nomes.
-    groups: std::collections::HashMap<i64, Vec<String>>,
+    groups: std::sync::Arc<std::collections::HashMap<i64, Vec<String>>>,
     /// Vencedor da interação por tecla (`KeyCode` → bits da entidade) —
     /// espelho do `interaction_focus` do [`ScriptHostState`].
     interaction_focus: std::collections::HashMap<KeyCode, i64>,
@@ -428,6 +428,11 @@ fn init_context(
         }
     };
     context.set_app_data(events::ScriptPath(path));
+    // Pasta de scripts POR VM (para `viber.load`/`decision.load`/`nlu.load`
+    // no top-level do script, antes do primeiro `publish_globals`).
+    if let Some(dir) = game::process_scripts_dir() {
+        context.set_app_data(game::ScriptsDir(Some(dir)));
+    }
     let _ = entity;
     install_viber_api_with(context, globals(), game::game_store())
     .map_err(InteropError::external)?;
@@ -458,34 +463,72 @@ fn init_context(
 /// dela — o MESMO conjunto de APIs nos dois sítios.
 pub type BareInstaller = fn(&Lua) -> Result<(), String>;
 
-/// Registo GLOBAL de instaladores de contexto (fn pointers) que o
-/// [`VaelScriptingPlugin`] corre por contexto novo, depois do
-/// `install_viber_api`. Plugins fora deste crate (profiler da engine, glue do
-/// jogo) registam nele no build — em vez do host antigo, que instalava na VM
-/// partilhada única (`ResMut<LuaScriptHost>`).
+/// Instalador com CAPTURAS (closures que seguram `Arc`s do jogo — as
+/// `viber.vael` do cofre/XP/quests/QA). O [`BareInstaller`] é um fn pointer e
+/// não serve para elas; guardado por `Arc` para o snapshot ser clonável.
+pub type SharedInstaller =
+    std::sync::Arc<dyn Fn(&Lua) -> Result<(), String> + Send + Sync>;
+
+/// Registo GLOBAL de instaladores de contexto que o [`VaelScriptingPlugin`]
+/// corre por contexto novo, depois do `install_viber_api`. Plugins fora deste
+/// crate (profiler da engine, glue do jogo) registam nele no build — em vez
+/// do host antigo, que instalava na VM partilhada única (`ResMut<LuaScriptHost>`).
 pub fn add_context_installer(initializer: BareInstaller) {
+    // Dedup por ENDEREÇO do fn (o mesmo plugin a registar duas vezes — builds
+    // repetidos nos testes — não instala duas vezes por contexto). Os
+    // instaladores partilhados (`_shared`) dedupam por identidade do `Arc`.
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<HashSet<usize>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
+    let is_new = seen
+        .lock()
+        .map(|mut set| set.insert(initializer as usize))
+        .unwrap_or(true);
+    if is_new {
+        add_context_installer_shared(std::sync::Arc::new(initializer));
+    }
+}
+
+/// Idem para instaladores que CAPTURAM estado (o jogo: `viber.vael` com as
+/// rules e as filas em `Arc`). A REPL do bridge corre o MESMO registo —
+/// `viber.vael.qa_snapshot`/`dodge`/… existem no `viber.lua` como num script.
+pub fn add_context_installer_shared(initializer: SharedInstaller) {
     match EXTRA_INITIALIZERS.lock() {
         Ok(mut list) => list.push(initializer),
         Err(poisoned) => poisoned.into_inner().push(initializer),
     }
 }
 
-/// Snapshot do registo (ordem de registo; dedup por ponteiro — um plugin
-/// cujo build corre duas vezes não instala duas vezes por contexto).
-pub(crate) fn extra_installers() -> Vec<BareInstaller> {
+/// Snapshot do registo (ordem de registo; dedup por identidade do `Arc` — um
+/// plugin cujo build corre duas vezes não instala duas vezes por contexto).
+pub(crate) fn extra_installers() -> Vec<SharedInstaller> {
     let list = EXTRA_INITIALIZERS.lock();
     let Ok(list) = list else {
         return Vec::new();
     };
     let mut seen = HashSet::new();
     list.iter()
-        .copied()
-        .filter(|init| seen.insert(*init as usize))
+        // Fat pointer → thin antes do `usize` (o metadata do `dyn Fn` não
+        // entra na identidade: o que distingue é a alocação do `Arc`).
+        .filter(|init| seen.insert(std::sync::Arc::as_ptr(init) as *const () as usize))
+        .cloned()
         .collect()
 }
 
-static EXTRA_INITIALIZERS: std::sync::Mutex<Vec<BareInstaller>> =
+static EXTRA_INITIALIZERS: std::sync::Mutex<Vec<SharedInstaller>> =
     std::sync::Mutex::new(Vec::new());
+
+/// Larga a cópia publicada dos mapas grandes (nomes/posições), para o
+/// integrador os poder mutar com `Arc::make_mut` sem os clonar. Chamar no
+/// publisher do estado, ANTES de mexer nos mapas; o [`publish_globals`] do
+/// mesmo frame volta a partilhá-los.
+pub fn release_snapshot_maps() {
+    if let Ok(mut globals) = globals().write() {
+        globals.positions = Default::default();
+        globals.names = Default::default();
+        globals.named_entities = Default::default();
+    }
+}
 
 /// Publica o estado do frame: os campos do `ScriptHostState` e o
 /// `MenusOpen` do jogo (falta do recurso = menus fechados, apps mínimas).
@@ -495,6 +538,7 @@ pub fn publish_globals(
     state: Res<ScriptHostState>,
     menus: Option<Res<bevy_ext_core::MenusOpen>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("publish_globals"); // `VAEL_PERF_DIAG`
     if let Ok(mut globals) = globals().write() {
         globals.time = state.time;
         globals.player = state.player;
@@ -552,6 +596,7 @@ fn publish_input(
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     actions: Option<Res<bevy_ext_core::input_map::ActionState>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("publish_input"); // `VAEL_PERF_DIAG`
     let mut input = InputSnapshot::default();
     let typing = globals()
         .read()
@@ -2982,7 +3027,7 @@ fn install_viber_api_with(
                 .read()
                 .ok()
                 .and_then(|globals| globals.locale_table.clone());
-            Ok(bevy_ext_core::dialogue::localized(&text, table.as_ref()))
+            Ok(bevy_ext_core::dialogue::localized(&text, table.as_deref()))
         })?,
     )?;
 
@@ -3130,7 +3175,6 @@ fn install_viber_api_with(
     )?;
 
     // viber.sender() — dentro de um handler, quem emitiu (bits); nil fora.
-    let sender_globals = globals.clone();
     viber.set(
         "sender",
         lua.create_function(move |lua, ()| {
@@ -3781,7 +3825,7 @@ mod tests {
     fn hostiles_ordenam_por_distância_ao_heroi() {
         let (lua, globals, _store) = vm();
         globals.write().expect("globals").player = Some(Vec3::ZERO);
-        globals.write().expect("globals").hostiles = vec![
+        globals.write().expect("globals").hostiles = std::sync::Arc::new(vec![
             HostileSnap {
                 id: 3,
                 kind: "wolf".into(),
@@ -3798,7 +3842,7 @@ mod tests {
                 max: 30.0,
                 forward: Vec2::new(1.0, 0.0),
             },
-        ];
+        ]);
         let (count, first_id, first_distance): (usize, i64, f32) = lua
             .load("local h = viber.hostiles(10.0) return #h, h[1].id, h[1].distance")
             .eval()
@@ -3819,7 +3863,8 @@ mod tests {
             ("moinho".to_string(), vec![3]),
         ]
         .into_iter()
-        .collect();
+        .collect::<std::collections::HashMap<_, _>>()
+        .into();
         let north: i64 = lua.load("return viber.find('porta_norte')").eval().expect("exato");
         assert_eq!(north, 9);
         let substring: i64 = lua.load("return viber.find('porta')").eval().expect("substring 1.ª chave lexicográfica");
@@ -3880,7 +3925,7 @@ mod tests {
     #[test]
     fn spawn_prototype_valida_contra_a_biblioteca_publicada() {
         let (lua, globals, _store) = vm();
-        globals.write().expect("globals").prototype_names = vec!["barril".into()];
+        globals.write().expect("globals").prototype_names = std::sync::Arc::new(vec!["barril".into()]);
         lua.load("viber.spawn_prototype('barril', 5, -3, { y = 1.5 })")
             .exec()
             .expect("spawn");
@@ -3981,8 +4026,8 @@ mod tests {
             g.player_forward = Vec2::new(0.0, 1.0);
             g.player_hp = Some((70.0, 100.0));
             g.player_id = Some(1);
-            g.positions.insert(5, Vec3::new(4.0, 2.0, 6.0));
-            g.names.insert(5, "moinho".into());
+            std::sync::Arc::make_mut(&mut g.positions).insert(5, Vec3::new(4.0, 2.0, 6.0));
+            std::sync::Arc::make_mut(&mut g.names).insert(5, "moinho".into());
         }
         let (x, y, z): (f32, f32, f32) = lua.load("return viber.position()").eval().expect("position");
         assert_eq!((x, y, z), (4.0, 2.0, 6.0));
@@ -4159,7 +4204,7 @@ mod tests {
         let (lua, globals, _store) = vm();
         let own = Entity::try_from_bits(21u64).expect("entidade");
         lua.set_app_data(ScriptEntity(Some(own)));
-        globals.write().expect("globals").positions.insert(21, Vec3::new(3.0, 4.0, 5.0));
+        std::sync::Arc::make_mut(&mut globals.write().expect("globals").positions).insert(21, Vec3::new(3.0, 4.0, 5.0));
         lua.load("viber.sound('hit')").exec().expect("som");
         match globals.write().expect("globals").commands.pop_front().expect("comando") {
             commands::ScriptCommand::PlaySfx { clip, position } => {
@@ -4194,7 +4239,7 @@ mod tests {
         let (lua, globals, _store) = vm();
         let own = Entity::try_from_bits(30u64).expect("entidade");
         lua.set_app_data(ScriptEntity(Some(own)));
-        globals.write().expect("globals").positions.insert(30, Vec3::new(0.0, 7.0, 0.0));
+        std::sync::Arc::make_mut(&mut globals.write().expect("globals").positions).insert(30, Vec3::new(0.0, 7.0, 0.0));
         lua.load(
             "viber.sound_loop('motor', 'vehicles/engine_rev.ogg', { pitch = 1.5, volume = 0.4, x = 2, z = 8, bus = 'ambience' })",
         )
@@ -4340,15 +4385,15 @@ mod tests {
         {
             let mut g = globals.write().expect("globals");
             g.player = Some(Vec3::new(30.0, 0.0, 0.0));
-            g.positions.insert(42, Vec3::ZERO);
-            g.positions.insert(7, Vec3::new(1.0, 0.0, 0.0));
-            g.positions.insert(9, Vec3::new(2.0, 0.0, 0.0));
-            g.positions.insert(11, Vec3::new(30.0, 0.0, 0.0));
-            g.names.insert(42, "eu".into());
-            g.names.insert(7, "arbusto".into());
-            g.names.insert(9, "porta".into());
-            g.names.insert(11, "longe".into());
-            g.props.insert(
+            std::sync::Arc::make_mut(&mut g.positions).insert(42, Vec3::ZERO);
+            std::sync::Arc::make_mut(&mut g.positions).insert(7, Vec3::new(1.0, 0.0, 0.0));
+            std::sync::Arc::make_mut(&mut g.positions).insert(9, Vec3::new(2.0, 0.0, 0.0));
+            std::sync::Arc::make_mut(&mut g.positions).insert(11, Vec3::new(30.0, 0.0, 0.0));
+            std::sync::Arc::make_mut(&mut g.names).insert(42, "eu".into());
+            std::sync::Arc::make_mut(&mut g.names).insert(7, "arbusto".into());
+            std::sync::Arc::make_mut(&mut g.names).insert(9, "porta".into());
+            std::sync::Arc::make_mut(&mut g.names).insert(11, "longe".into());
+            std::sync::Arc::make_mut(&mut g.props).insert(
                 7,
                 std::sync::Arc::new(vec![("resource-wood".into(), "5".into())]),
             );
