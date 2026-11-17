@@ -836,7 +836,7 @@ dependencies = [
  "indexmap",
  "log",
  "nonmax",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "slotmap",
  "smallvec",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_terrain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_ext_world"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bevy",
@@ -917,6 +917,7 @@ dependencies = [
  "flate2",
  "jackdaw_bsn",
  "jackdaw_prefab",
+ "jackdaw_scene_types",
  "roxmltree",
  "serde",
  "serde_yaml",
@@ -1335,7 +1336,7 @@ dependencies = [
  "derive_more",
  "glam",
  "libm",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "thiserror 2.0.21",
  "variadics_please",
@@ -1707,7 +1708,7 @@ dependencies = [
  "bevy_math",
  "bevy_reflect",
  "derive_more",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_distr",
  "serde",
  "thiserror 2.0.21",
@@ -2001,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_terrain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bevy",
  "transvoxel",
@@ -2009,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_voxel_terrain_jackdaw"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "bevy",
  "bevy_ext_gltf",
@@ -2184,9 +2185,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "bytemuck"
@@ -2254,9 +2255,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -3157,7 +3158,7 @@ dependencies = [
  "bytemuck",
  "encase",
  "libm",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde_core",
 ]
 
@@ -3859,7 +3860,7 @@ dependencies = [
  "jackdaw_geometry",
  "meshopt 0.6.2",
  "path-slash",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
 ]
@@ -3877,7 +3878,7 @@ dependencies = [
  "jackdaw_scene_types",
  "noise",
  "path-slash",
- "rand 0.10.3",
+ "rand 0.10.4",
 ]
 
 [[package]]
@@ -4331,9 +4332,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.4"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "log",
@@ -4498,9 +4499,9 @@ dependencies = [
 
 [[package]]
 name = "notify-types"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c491a384baf9fec20df565cdb8138a12809d4c7439763b566eb8114c5d59979"
+checksum = "cbd044e85df3d939d8e32a1c35a3b737c7d0a4eeb7acd737bd207644e00f4e5f"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -5379,9 +5380,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -5407,7 +5408,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
 dependencies = [
  "num-traits",
- "rand 0.10.3",
+ "rand 0.10.4",
 ]
 
 [[package]]
