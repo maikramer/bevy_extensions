@@ -12,6 +12,12 @@ coluna** assado no swap atómico do LOD.
 - `TerrainPlugin`/`TerrainSet` — ladder de LOD por coluna com histerese e
   clamp 2:1, construção staged sob orçamento de caixas por frame, cull por
   `render-distance`, respawn à aproximação, rebake por revisão de edição.
+  O orçamento multiplica enquanto `bevy_ext_core::cinematic::StreamingBoost`
+  vale (corte de cinemática, pós-respawn) ou `LoadingStreaming` (o véu está em
+  cima) — `VAEL_TERRAIN_BOOST=0` tira só o de carga, para A/B.
+  A câmara que ancora o streaming é a de JANELA (a de editor, quando existe):
+  câmaras offscreen (bakes de impostores, render-to-texture) não contam nem
+  forçam re-LOD quando nascem ou morrem.
 - `TerrainRuntime` — registry de gameplay: `sample`/`sample_mesh_surface`/
   `surface_below`, `in_water`/`on_road`, água (`WaterBody`), estradas
   (`RoadPath`), splat blend de 13 camadas (`splat` + `layer_material`

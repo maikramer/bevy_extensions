@@ -154,6 +154,7 @@ fn bake_cliff_colors(
     >,
     mut commands: Commands,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("terrain.bake_cliff_colors");
     let Some(mask) = mask else {
         return;
     };
@@ -258,6 +259,16 @@ const VOXEL_BUILD_BUDGET_MS: f32 = 3.5;
 /// Durante um corte de cinemática o ecrã está em negro: pode-se gastar mais.
 const VOXEL_BUILD_BUDGET_BOOST_MS: f32 = 18.0;
 
+/// `VAEL_TERRAIN_BOOST=0` tira o boost de CARGA (o da cinemática fica) — é o
+/// braço de A/B do arranque no mesmo binário.
+fn load_boost_enabled() -> &'static bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    ENABLED.get_or_init(|| {
+        !std::env::var("VAEL_TERRAIN_BOOST")
+            .is_ok_and(|value| matches!(value.as_str(), "0" | "false" | "off"))
+    })
+}
+
 /// Estado de construção de uma coluna a meio de uma troca de LOD: as caixas
 /// do `target` nascem escondidas (`staged`) sob o orçamento do frame; quando
 /// `remaining` esvazia, as caixas velhas morrem e as staged ficam visíveis —
@@ -289,15 +300,24 @@ fn update_voxel_columns(
     runtime: Option<Res<TerrainRuntime>>,
     published: Option<Res<TerrainChunkMaterials>>,
     editor: Query<&GlobalTransform, With<crate::host::EditorCamera>>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<
+        (
+            &GlobalTransform,
+            Option<&bevy::camera::Camera>,
+            Option<&bevy::camera::RenderTarget>,
+        ),
+        With<Camera3d>,
+    >,
     players: Query<&GlobalTransform, With<bevy_ext_core::Player>>,
     mut columns: Query<(Entity, &mut TerrainChunk, Option<&mut ColumnBuild>)>,
     boxes: Query<(), With<super::voxel::VoxelChunk>>,
     children_q: Query<&Children>,
     mut meshes: ResMut<Assets<Mesh>>,
     boost: Option<Res<crate::host::StreamingBoost>>,
+    loading: Option<Res<bevy_ext_core::cinematic::LoadingStreaming>>,
     mut commands: Commands,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("terrain.update_voxel_columns");
     let Some(runtime) = runtime else {
         return;
     };
@@ -312,7 +332,7 @@ fn update_voxel_columns(
     let Some(cam) = crate::host::active_camera_eye(&editor, &cameras) else {
         return;
     };
-    let cam_xz = Vec2::new(cam.translation().x, cam.translation().z);
+    let cam_xz = Vec2::new(cam.x, cam.z);
     // O piso de LOD 0 da banda de colisão olha o HERÓI (a câmara pode estar
     // dezenas de metros ao lado dele com o zoom puxado): a banda de colisão
     // cobre ambos, e o chão sob os pés nunca troca de LOD.
@@ -355,15 +375,17 @@ fn update_voxel_columns(
         state.chunks.insert(chunk.coords, entity);
     }
 
-    // Cortes de cinemática pedem o terreno do destino JÁ (ecrã em negro):
-    // o orçamento por frame multiplica enquanto o `StreamingBoost` vale.
-    let mut budget = VOXEL_MAX_MESH_BUILDS_PER_FRAME
-        * if boost.as_deref().is_some_and(|b| b.0) {
-            STREAMING_BOOST
-        } else {
-            1
-        };
-    let budget_ms = if boost.as_deref().is_some_and(|b| b.0) {
+    // Cortes de cinemática pedem o terreno do destino JÁ (ecrã em negro), e o
+    // mesmo vale enquanto o véu está em cima: no arranque medido, a vaga de
+    // colunas a seguir ao bootstrap segurava o véu vários segundos ao
+    // orçamento normal. `LoadingStreaming` é lido directamente para não
+    // depender da ordem (nem de a cinemática correr) — é o jogo que o escreve
+    // a partir do véu. `VAEL_TERRAIN_BOOST=0` desliga só o boost de carga
+    // (A/B no mesmo binário).
+    let load_boost = loading.as_deref().is_some_and(|loading| loading.0) && *load_boost_enabled();
+    let boosted = boost.as_deref().is_some_and(|b| b.0) || load_boost;
+    let mut budget = VOXEL_MAX_MESH_BUILDS_PER_FRAME * if boosted { STREAMING_BOOST } else { 1 };
+    let budget_ms = if boosted {
         VOXEL_BUILD_BUDGET_BOOST_MS
     } else {
         VOXEL_BUILD_BUDGET_MS
@@ -640,7 +662,7 @@ fn update_voxel_columns(
             // collider velho sai — nunca fica chão invisível.
             if spec.collision_resolution > 0 {
                 if in_collision_band {
-                    match b.bake.bake() {
+                    match b.bake.bake_into() {
                         Some(collider) => {
                             commands.entity(*entity).try_insert((
                                 collider,

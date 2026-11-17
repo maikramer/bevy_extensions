@@ -276,6 +276,35 @@ impl PaintGrid {
         out
     }
 
+    /// Streams the exact byte layout of [`Self::to_bytes`] into `hasher`
+    /// without allocating a 33 MB `Vec<u8>`. Produces the bit-identical hash
+    /// of `self.to_bytes().hash(hasher)`.
+    pub fn hash_encoded_bytes<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        let total_len = 8 + 4 + 4 + self.slots.len() * 2;
+        // O `Hash for [u8]` do std usa `write_length_prefix`, que é instável;
+        // o default dela é `write_usize` (os mesmos bytes em qualquer
+        // `Hasher`), por isso a hash continua bit-idêntica à do
+        // `to_bytes().hash(hasher)`.
+        hasher.write_usize(total_len);
+        hasher.write(PAINT_MAGIC);
+        hasher.write(&self.world_size.to_le_bytes());
+        hasher.write(&(self.side as u32).to_le_bytes());
+        let mut buf = [0u8; 4096];
+        let mut pos = 0;
+        for (&slot, &weight) in self.slots.iter().zip(&self.weights) {
+            buf[pos] = slot;
+            buf[pos + 1] = weight;
+            pos += 2;
+            if pos == buf.len() {
+                hasher.write(&buf);
+                pos = 0;
+            }
+        }
+        if pos > 0 {
+            hasher.write(&buf[..pos]);
+        }
+    }
+
     /// O simétrico de [`Self::to_bytes`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < 16 || &bytes[..8] != PAINT_MAGIC {

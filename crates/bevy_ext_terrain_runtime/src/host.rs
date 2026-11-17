@@ -129,24 +129,48 @@ pub struct EditorCamera;
 /// de colunas, culling/LOD — TEM de usar isto: com `--camera free` há DUAS
 /// `Camera3d` no mundo (a de jogo inactiva) e `iter().next()` devolve uma
 /// arbitrária.
-pub fn active_camera_eye<'w>(
-    editor: &'w Query<&GlobalTransform, With<EditorCamera>>,
-    cameras: &'w Query<&GlobalTransform, With<Camera3d>>,
-) -> Option<&'w GlobalTransform> {
-    editor.iter().next().or_else(|| cameras.iter().next())
+/// Olho da câmara activa (posição mundo), para ancorar o streaming do terreno.
+///
+/// Só câmaras de JANELA contam: as câmaras offscreen (bakes de impostores do
+/// `bevy_flora`, render-to-texture) também são `Camera3d`, e "a primeira da
+/// query" mudava quando elas nasciam/morriam — o terreno re-escolhia o LOD do
+/// mundo inteiro a meio da carga (medido: a vaga de colunas começava
+/// exactamente quando os 64 bakes acabavam). A câmara de editor, quando
+/// existe, manda.
+pub fn active_camera_eye(
+    editor: &Query<&GlobalTransform, With<EditorCamera>>,
+    cameras: &Query<
+        (
+            &GlobalTransform,
+            Option<&bevy::camera::Camera>,
+            Option<&bevy::camera::RenderTarget>,
+        ),
+        With<Camera3d>,
+    >,
+) -> Option<Vec3> {
+    editor
+        .iter()
+        .next()
+        .map(|transform| transform.translation())
+        .or_else(|| {
+            cameras
+                .iter()
+                .find(|(_, cam, target)| {
+                    bevy_ext_core::camera::is_window_camera(*cam, *target)
+                })
+                .map(|(transform, _, _)| transform.translation())
+        })
 }
 
 /// Orçamentos de streaming (terreno, LOD de malhas) multiplicados — vale
-/// enquanto uma cinemática espera em negro por um destino distante ou na
-/// janela pós-respawn.
+/// Orçamentos de streaming multiplicados, vindos da cinemática/arranque —
+/// enquanto uma cinemática espera em negro por um destino distante, na janela
+/// pós-respawn ou com o véu em cima.
 ///
-/// TODO(viber-exit): cópia de `viber::cinematic::StreamingBoost` — o host
-/// adota (o TypePath está congelado); enquanto não adotar, os cortes de
-/// cinemática não aceleram o streaming.
-#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::cinematic"]
-pub struct StreamingBoost(pub bool);
+/// O tipo é o do `bevy_ext_core` (o mesmo que a `bevy_ext_engine` insere); a
+/// cópia local que aqui vivia nunca era inserida por ninguém e o orçamento
+/// ×10 do terreno não corria.
+pub use bevy_ext_core::cinematic::StreamingBoost;
 
 // ── swimmers (contrato de IA para os FX de água) ─────────────────────────
 
@@ -374,6 +398,31 @@ impl ColumnColliderBake {
         match Collider::try_trimesh_with_config(
             self.vertices.clone(),
             self.indices.clone(),
+            TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
+        ) {
+            Ok(collider) => Some(collider),
+            Err(err) => {
+                bevy::log::warn!(
+                    "terrain collider: bake do trimesh da coluna falhou ({err}) — sem collider"
+                );
+                None
+            }
+        }
+    }
+
+    /// Consuming variant of [`Self::bake`] that avoids cloning `vertices` and
+    /// `indices` when the column build is finished.
+    pub fn bake_into(&mut self) -> Option<avian3d::prelude::Collider> {
+        if self.is_empty() {
+            self.vertices.clear();
+            self.indices.clear();
+            return None;
+        }
+        let vertices = std::mem::take(&mut self.vertices);
+        let indices = std::mem::take(&mut self.indices);
+        match Collider::try_trimesh_with_config(
+            vertices,
+            indices,
             TrimeshFlags::FIX_INTERNAL_EDGES | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES,
         ) {
             Ok(collider) => Some(collider),

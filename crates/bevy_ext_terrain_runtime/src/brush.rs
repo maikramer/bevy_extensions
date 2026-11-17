@@ -460,28 +460,14 @@ impl BrushGrid {
             + h1
     }
 
-    /// Catmull-Rom (blend `smoothing`) do eixo primário em (x, z), com o
-    /// eixo CRUZADO interpolado — o truncamento antigo (`as usize`) amostrava
-    /// só a linha/coluna inteira mais próxima e quantizava encostas em
-    /// patamares dependentes do eixo.
-    fn smoothed_axis(&self, x: f32, z: f32, axis: Axis) -> f32 {
-        let half = self.world_size * 0.5;
-        let (sx, sz) = (self.step_x(), self.step_z());
-        // `n` é a dimensão do eixo CRUZADO (para o clamp de j0) — com grids
-        // não-quadrados, clampar com a contagem do eixo primário achatava
-        // metade do mapa na última linha.
-        let (cells, cross, n) = match axis {
-            Axis::X => (
-                (((x + half) / sx).clamp(0.0, (self.width - 1) as f32)),
-                (z + half) / sz,
-                self.depth,
-            ),
-            Axis::Z => (
-                (((z + half) / sz).clamp(0.0, (self.depth - 1) as f32)),
-                (x + half) / sx,
-                self.width,
-            ),
-        };
+    #[inline]
+    fn smoothed_axis_coords(
+        &self,
+        cells: f32,
+        cross: f32,
+        n: usize,
+        axis: Axis,
+    ) -> f32 {
         let i0 = cells.floor() as usize;
         let t = cells - i0 as f32;
         let j0 = cross.floor().clamp(0.0, (n - 1) as f32) as usize;
@@ -492,7 +478,6 @@ impl BrushGrid {
                 Axis::Z => self.cell_height(j, i),
             }
         };
-        // Spline do eixo primário avaliada numa linha/coluna do eixo cruzado.
         let axis_value = |j: usize| -> f32 {
             let h1 = at(i0, j);
             let h2 = at(i0 + 1, j);
@@ -502,6 +487,9 @@ impl BrushGrid {
             let h0 = at(i0.saturating_sub(1), j);
             let h3 = at(i0 + 2, j);
             let cr = Self::catmull_axis(h0, h1, h2, h3, t);
+            if self.smoothing >= 1.0 {
+                return cr;
+            }
             let bilinear = h1 + (h2 - h1) * t;
             bilinear + (cr - bilinear) * self.smoothing
         };
@@ -515,8 +503,14 @@ impl BrushGrid {
         if self.smoothing <= 0.0 {
             return self.bilinear(x, z);
         }
-        let lin_x = self.smoothed_axis(x, z, Axis::X);
-        let lin_z = self.smoothed_axis(x, z, Axis::Z);
+        let half = self.world_size * 0.5;
+        let (sx, sz) = (self.step_x(), self.step_z());
+        let fx = (x + half) / sx;
+        let fz = (z + half) / sz;
+        let cx = fx.clamp(0.0, (self.width - 1) as f32);
+        let cz = fz.clamp(0.0, (self.depth - 1) as f32);
+        let lin_x = self.smoothed_axis_coords(cx, fz, self.depth, Axis::X);
+        let lin_z = self.smoothed_axis_coords(cz, fx, self.width, Axis::Z);
         // Tensor-product evaluation converges with the axis pair order kept
         // stable; averaging both orders removes the residual bias instead.
         (lin_x + lin_z) * 0.5

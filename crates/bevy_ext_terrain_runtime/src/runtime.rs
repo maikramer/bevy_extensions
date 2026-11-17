@@ -1639,6 +1639,9 @@ impl BootLap {
             self.t0.elapsed().as_secs_f32() * 1000.0,
             phases.join(", ")
         );
+        // O mesmo total no traço do arranque: é o sistema exclusivo do
+        // `Startup`, por isso este bloco é ecrã preto antes do véu.
+        bevy_ext_core::boot::mark("terrain.bootstrap");
     }
 }
 
@@ -2809,19 +2812,26 @@ fn spawn_ground_surface(
 /// Converts pure [`super::mesh::ChunkMeshData`] buffers into a Bevy mesh
 /// (CPU-resident, so tests/tools can inspect it).
 pub(crate) fn to_bevy_mesh(data: &super::mesh::ChunkMeshData) -> Mesh {
+    to_bevy_mesh_owned(data.clone())
+}
+
+/// Variante que CONSOME os buffers: o chamador já é dono do `ChunkMeshData` e
+/// clonar aqui custava 4-5 cópias completas por caixa de terreno (943 caixas
+/// no arranque do Vael).
+pub(crate) fn to_bevy_mesh_owned(data: super::mesh::ChunkMeshData) -> Mesh {
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, data.positions.clone());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, data.normals.clone());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, data.uvs.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, data.positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, data.normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, data.uvs);
     // Only surfaces that actually use vertex colours get the attribute:
     // terrain chunks carry the height/slope tint, roads their edge alpha.
     if !data.colors.is_empty() {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, data.colors.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, data.colors);
     }
-    mesh.insert_indices(Indices::U32(data.indices.clone()));
+    mesh.insert_indices(Indices::U32(data.indices));
     mesh
 }
 

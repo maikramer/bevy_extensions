@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use super::super::brush::BrushGrid;
 use super::super::mesh::HeightField;
-use super::super::runtime::{ChunkLayerMap, ChunkMaterialHandle, to_bevy_mesh};
+use super::super::runtime::{ChunkLayerMap, ChunkMaterialHandle};
 use super::super::spec::TerrainSpec;
 use super::field::VoxelField;
 use super::mods::Bounds3;
@@ -428,7 +428,7 @@ pub(crate) fn spawn_box_entity(
     material: &ChunkMaterialHandle,
     visible: bool,
 ) -> Entity {
-    let handle = meshes.add(to_bevy_mesh(&data));
+    let handle = meshes.add(super::super::runtime::to_bevy_mesh_owned(data));
     let mut entity = commands.spawn((
         Name::new(format!("voxel chunk {}-{}-{}", b.pos.x, b.pos.y, b.pos.z)),
         VoxelChunk {
@@ -519,7 +519,7 @@ pub(crate) fn spawn_column(
     }
     if meshed > 0
         && in_collision_band
-        && let Some(collider) = bake.bake()
+        && let Some(collider) = bake.bake_into()
     {
         commands.entity(column).insert((
             collider,
