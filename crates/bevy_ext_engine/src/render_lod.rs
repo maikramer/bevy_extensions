@@ -326,22 +326,37 @@ pub const MAX_LOD_SWAPS_PER_FRAME: usize = 12;
 pub const LOD_CROSSFADE_SECS: f32 = 0.12;
 
 /// Resolved swap budget: `VIBER_LOD_SWAP_BUDGET`, else the default.
+///
+/// Lido uma vez (`OnceLock`) porque era um `std::env::var` por frame — mas
+/// **não** em testes: há um teste que faz `set_var`/`remove_var` desta env a
+/// meio do processo e a cache tornava o valor pegajoso (desligava a escada nos
+/// testes seguintes).
 fn swap_budget() -> usize {
-    std::env::var("VIBER_LOD_SWAP_BUDGET")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(MAX_LOD_SWAPS_PER_FRAME)
+    static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let read = || {
+        std::env::var("VIBER_LOD_SWAP_BUDGET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(MAX_LOD_SWAPS_PER_FRAME)
+    };
+    if cfg!(test) { return read(); }
+    *BUDGET.get_or_init(read)
 }
 
 /// Intervalo entre varreduras da escada (s). `VIBER_LOD_SCAN_HZ=0` desliga o
 /// throttle — o braço de controlo do A/B contra o scan por frame.
 fn lod_scan_interval() -> f32 {
-    let hz = std::env::var("VIBER_LOD_SCAN_HZ")
-        .ok()
-        .and_then(|raw| raw.parse::<f32>().ok())
-        .filter(|hz| hz.is_finite() && *hz >= 0.0)
-        .unwrap_or(10.0);
-    if hz == 0.0 { 0.0 } else { 1.0 / hz }
+    static INTERVAL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let read = || {
+        let hz = std::env::var("VIBER_LOD_SCAN_HZ")
+            .ok()
+            .and_then(|raw| raw.parse::<f32>().ok())
+            .filter(|hz| hz.is_finite() && *hz >= 0.0)
+            .unwrap_or(10.0);
+        if hz == 0.0 { 0.0 } else { 1.0 / hz }
+    };
+    if cfg!(test) { return read(); }
+    *INTERVAL.get_or_init(read)
 }
 
 /// Scene swaps performed on the last frame, and instances still waiting.
@@ -572,6 +587,7 @@ pub fn auto_cull_from_bounds(
     time: Res<Time<Real>>,
     mut report: Local<(f32, usize)>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("lod.auto_cull");
     // Diagnóstico barato: a cada 10 s com raízes pendentes, quantas faltam e
     // quantas já ganharam corte (uma raiz sem malhas nunca resolve).
     report.0 += time.delta_secs();

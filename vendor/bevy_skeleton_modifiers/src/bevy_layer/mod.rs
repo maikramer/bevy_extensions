@@ -101,13 +101,19 @@ fn update(world: &mut World) {
     };
     world.resource_scope(|world, mut stack: Mut<Stack>| {
         stack.poses.retain(|&entity, cached| {
-            let Some(mut current) = world.get_mut::<Transform>(entity) else {
+            let Some(&current_val) = world.get::<Transform>(entity) else {
                 return false;
             };
-            if *current != cached.output {
-                cached.input = *current;
+            if current_val != cached.output {
+                // Nothing to write: `Transform` already holds the external/animation pose,
+                // and syncing `cached.output` clears stale modifier output when inactive.
+                cached.input = current_val;
+                cached.output = current_val;
+            } else if current_val != cached.input {
+                if let Some(mut current) = world.get_mut::<Transform>(entity) {
+                    *current = cached.input;
+                }
             }
-            *current = cached.input;
             true
         });
         stack.entities.clear();

@@ -39,11 +39,19 @@ pub fn batch_wanted(
     mesh_count == 1 && !has_script && !has_animator && !has_collider
 }
 
+/// `VIBER_FOLIAGE_BATCH=0` desliga o batching. Lido uma vez (`OnceLock`) fora
+/// dos testes: era um `std::env::var` por frame no `batch_tiles`, e em testes o
+/// ambiente muda a meio do processo (a cache ficaria pegajosa).
 pub fn batch_enabled() -> bool {
-    !matches!(
-        std::env::var("VIBER_FOLIAGE_BATCH").ok().as_deref(),
-        Some("0" | "false" | "off")
-    )
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let read = || {
+        !matches!(
+            std::env::var("VIBER_FOLIAGE_BATCH").ok().as_deref(),
+            Some("0" | "false" | "off")
+        )
+    };
+    if cfg!(test) { return read(); }
+    *ENABLED.get_or_init(read)
 }
 
 #[derive(Component, Reflect)]

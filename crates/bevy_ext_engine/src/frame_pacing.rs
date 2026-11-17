@@ -8,11 +8,13 @@
 //! os frames ocupem o mesmo número de vblanks.
 //!
 //! `VIBER_FPS_CAP`:
-//! * `auto` (omissão) — escolhe o divisor mais rápido que o jogo sustenta
-//!   (p90 do trabalho por frame com 8 % de folga). Desce logo que falha,
-//!   sobe só depois de [`UPSHIFT_SECONDS`] seguidos com folga.
+//! * `off` (omissão desde 2026-11-16) — sem pacing: o frame sai assim que o
+//!   trabalho acaba. É o que dá mais fps; o custo é a duração variável.
+//! * `auto` — alisa: escolhe o divisor mais rápido que o jogo sustenta (p90 do
+//!   trabalho com 8 % de folga), desce logo que falha e sobe só depois de
+//!   [`UPSHIFT_SECONDS`] com folga. Num ecrã de 144 Hz com ~25 ms de trabalho
+//!   fica em 28,8 fps (medido), por isso deixou de ser a omissão.
 //! * `N` — alvo fixo em fps (não é arredondado ao refresh).
-//! * `0` / `off` — sem pacing (o comportamento antigo).
 
 use std::time::{Duration, Instant};
 
@@ -49,14 +51,23 @@ pub enum PacingMode {
 }
 
 impl PacingMode {
+    /// Omissão: **`off`**.
+    ///
+    /// O `auto` alisa os frames (todos com o mesmo número de vblanks), mas
+    /// paga-o em fps: com ~25 ms de trabalho num monitor de 144 Hz ele escolhe
+    /// o divisor que cabe (34,7 ms = 28,8 fps) e só sobe depois de 3 s de
+    /// folga — o serrote 29↔48 fps. Medido no Vael a 2026-11-16 (pose `_base`,
+    /// defaults): `auto` 34,7 ms (28,8 fps) contra `off` 24,7–25,0 ms
+    /// (40,3 fps). `VIBER_FPS_CAP=auto` repõe o alisamento.
     pub fn parse(raw: Option<&str>) -> Self {
         match raw.map(|r| r.trim().to_ascii_lowercase()) {
-            None => Self::Auto,
-            Some(r) if r.is_empty() || r == "auto" => Self::Auto,
+            None => Self::Off,
+            Some(r) if r.is_empty() => Self::Off,
+            Some(r) if r == "auto" => Self::Auto,
             Some(r) if r == "0" || r == "off" || r == "false" => Self::Off,
             Some(r) => match r.parse::<f32>() {
                 Ok(fps) if fps.is_finite() && fps > 0.0 => Self::Fixed(fps),
-                _ => Self::Auto,
+                _ => Self::Off,
             },
         }
     }
@@ -248,11 +259,13 @@ mod tests {
 
     #[test]
     fn parse_modes() {
-        assert_eq!(PacingMode::parse(None), PacingMode::Auto);
+        // Omissão `off` desde 2026-11-16 (ver `PacingMode::parse`).
+        assert_eq!(PacingMode::parse(None), PacingMode::Off);
         assert_eq!(PacingMode::parse(Some("off")), PacingMode::Off);
         assert_eq!(PacingMode::parse(Some("0")), PacingMode::Off);
+        assert_eq!(PacingMode::parse(Some("auto")), PacingMode::Auto);
         assert_eq!(PacingMode::parse(Some("48")), PacingMode::Fixed(48.0));
-        assert_eq!(PacingMode::parse(Some("lixo")), PacingMode::Auto);
+        assert_eq!(PacingMode::parse(Some("lixo")), PacingMode::Off);
     }
 
     #[test]

@@ -406,6 +406,7 @@ pub fn bind_animations(
     children: Query<&Children>,
     players: Query<(), (With<AnimationPlayer>, Without<BoundAnimation>)>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("anim.bind");
     for (entity, scene, previous) in &pending {
         let Some(gltf) = gltfs.get(&scene.gltf) else {
             continue; // still loading
@@ -476,20 +477,13 @@ pub fn bind_animations(
             start.map(|_| AnimState::Idle)
         };
 
-        let animator = CharacterAnimator {
-            clip_names,
-            nodes,
-            durations,
-            player: player_entity,
-            state,
-            current: start,
-            action_time: 0.0,
-            locked: false,
-            air_time,
-            speed,
-            last_pos,
-            locomotion,
-        };
+        let mut animator =
+            CharacterAnimator::new(clip_names, nodes, durations, player_entity, locomotion);
+        animator.state = state;
+        animator.current = start;
+        animator.air_time = air_time;
+        animator.speed = speed;
+        animator.last_pos = last_pos;
         // Start the rig on `start` right away. Only the hero has a movement
         // driver, so without this the NPCs and creatures would stand in their
         // bind pose forever — the same T-pose the hero used to have.
@@ -577,6 +571,7 @@ pub fn drive_locomotion_blend(
     speeds: MotionSpeeds,
     active: bool,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("anim.loco_blend");
     let Some(loco) = animator.locomotion else {
         return;
     };
@@ -725,6 +720,7 @@ pub fn rearm_after_scene_swap(
         Changed<bevy::world_serialization::WorldAssetRoot>,
     >,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("anim.rearm");
     for (entity, lod, animated, animator) in &swapped {
         if animated.is_none() && animator.is_none() {
             continue; // not an animated character (props, vegetation, rocks)
@@ -827,6 +823,7 @@ pub fn play_action_scaled(
 
 /// Ticks one-shot actions down and hands the rig back to the motion drivers.
 pub fn tick_animator_actions(time: Res<Time>, mut animators: Query<&mut CharacterAnimator>) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("anim.actions");
     let dt = time.delta_secs();
     for mut animator in &mut animators {
         if animator.locked || animator.action_time <= 0.0 {
@@ -896,6 +893,7 @@ pub fn hit_react_system(
     time: Res<Time>,
     mut commands: Commands,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("anim.hit_react");
     let dt = time.delta_secs();
     for mut cooldown in &mut cooling {
         cooldown.timer = (cooldown.timer - dt).max(0.0);
@@ -1030,6 +1028,10 @@ pub fn drive_player_animation(
         &bevy_ext_core::Player,
         &mut CharacterAnimator,
         Option<&bevy_ext_core::animation::AnimStateOverride>,
+        // As nominais dos CLIPS do rig do herói (o Vael mediu os do
+        // `hero_lod0.glb`: walk ≈ 0.75 m/s, run ≈ 4.1). Sem perfil, o
+        // `MotionSpeeds::HERO` de sempre (o herói do exemplo standalone).
+        Option<&LocomotionProfile>,
     )>,
     mut players: PlayerQuery,
     handles: Query<&AnimationGraphHandle>,
@@ -1038,7 +1040,15 @@ pub fn drive_player_animation(
     time: Res<Time>,
 ) {
     let dt = time.delta_secs().max(1e-4);
-    for (transform, hero, mut animator, anim_override) in &mut heroes {
+    for (transform, hero, mut animator, anim_override, profile) in &mut heroes {
+        // O perfil é o do RIG (o que os clips dele andam de facto); o padrão do
+        // herói (`MotionSpeeds::HERO`) assume 4/6 m/s, que é o que um `hero_lod0`
+        // do pipeline NÃO anda — o clip `walk` é um passo de ~0.75 m/s. A 4 m/s
+        // esse clip roda a 1.0 e as pernas ciclam 5× mais devagar do que o chão
+        // (marcha em câmara lenta + pés a patinar). Com o perfil medido, o
+        // blend escolhe o clip certo e o playback escala contra a nominal dele.
+        let speeds = profile.map_or(MotionSpeeds::HERO, profile_speeds);
+        let gates = profile.map_or(MotionGates::HERO, profile_gates);
         // `advance_motion` zera o air_time no primeiro frame grounded, pelo que
         // o valor ANTES da chamada é o voo acumulado até à aterragem.
         let was_airborne = animator.air_time;
@@ -1058,7 +1068,7 @@ pub fn drive_player_animation(
             hero.grounded,
             hero.vel_y,
             dt,
-            MotionGates::HERO,
+            gates,
         );
         if controller_speed > 1e-3 && animator.speed > controller_speed {
             animator.speed = controller_speed;
@@ -1068,7 +1078,7 @@ pub fn drive_player_animation(
                 animator.speed,
                 !airborne,
                 hero.vel_y,
-                MotionGates::HERO,
+                gates,
             );
         }
         // Água: submerso até ao peito, nadar/boiar substituem Jump/Fall (a
@@ -1093,14 +1103,14 @@ pub fn drive_player_animation(
                 AnimState::Jump | AnimState::Fall | AnimState::Swim | AnimState::SwimIdle
             );
         if let Ok(handle) = handles.get(animator.player) {
-            let weights = locomotion_weights(animator.speed, MotionGates::HERO, MotionSpeeds::HERO);
+            let weights = locomotion_weights(animator.speed, gates, speeds);
             drive_locomotion_blend(
                 &mut animator,
                 &mut players,
                 &mut graphs,
                 handle,
                 weights,
-                MotionSpeeds::HERO,
+                speeds,
                 blended,
             );
         }
@@ -1120,7 +1130,7 @@ pub fn drive_player_animation(
             play_action(&mut animator, &mut players, node, ACTION_BLEND, false);
         }
         if animator.locomotion.is_none() {
-            sync_clip_speed(&animator, &mut players, state, MotionSpeeds::HERO);
+            sync_clip_speed(&animator, &mut players, state, speeds);
         }
     }
 }
@@ -1430,6 +1440,35 @@ mod tests {
         assert_eq!((profile.walk, profile.run), (1.1, 4.6));
     }
 
+    /// O herói do Vael anda a 4 m/s e corre a 6, mas o `hero_lod0.glb` tem um
+    /// clip `walk` de ~0.75 m/s e um `run` de ~4.1 (medidos do stance dos pés
+    /// em 2026-11-16). Sem o perfil, a 4 m/s o blend fica no `walk` a 1.0 —
+    /// a marcha em câmara lenta que o jogo mostrava. Com o perfil do rig, o
+    /// clip certo entra e o playback acompanha a nominal, sem deslize.
+
+    #[test]
+
+    fn test_a_hero_with_measured_clip_nominals_plants_its_feet() {
+        let hero = LocomotionProfile::authored(0.75, 4.1);
+        // Andar (W) e sprintar (Shift, ×1.5) caem os dois no clip `run`; o
+        // `walk` só serve as velocidades lentas (agachar, golpe, água).
+        assert_eq!(
+            next_state_with(None, 4.0, true, 0.0, profile_gates(&hero)),
+            AnimState::Run
+        );
+        for speed in [4.0_f32, 6.0] {
+            let slide = foot_slide(&hero, speed);
+            assert!(
+                slide < 0.05,
+                "hero at {speed} m/s slides {:.1} % of a stride",
+                slide * 100.0
+            );
+        }
+        // A marcha lenta continua no clip `walk`, à nominal dele.
+        let slow = profile_speeds(&hero).scale_for(AnimState::Walk, 0.75);
+        assert_eq!(slow, 1.0);
+    }
+
     /// The hero's thresholds and clamp are untouched by the per-rig work.
 
     #[test]
@@ -1695,20 +1734,13 @@ mod tests {
         let nodes = (0..names.len())
             .map(|i| AnimationNodeIndex::new(i + 1))
             .collect();
-        CharacterAnimator {
-            durations: vec![1.0; names.len()],
+        CharacterAnimator::new(
             clip_names,
             nodes,
-            player: Entity::PLACEHOLDER,
-            state: None,
-            current: None,
-            action_time: 0.0,
-            locked: false,
-            air_time: 0.0,
-            speed: 0.0,
-            last_pos: None,
-            locomotion: None,
-        }
+            vec![1.0; names.len()],
+            Entity::PLACEHOLDER,
+            None,
+        )
     }
 
     #[test]
@@ -2383,10 +2415,10 @@ mod tests {
             .world()
             .get::<CharacterAnimator>(instance)
             .expect("re-bound after the swap");
-        assert_ne!(
-            animator.player, first,
-            "the animator points at the fresh tier's player"
-        );
+        // Sem `assert_ne!(animator.player, first)`: o `first` foi despawnado,
+        // mas o ECS RECICLA índices de entidade e o player novo pode sair com o
+        // mesmo id (a asserção passava ou falhava conforme a ordem dos testes).
+        // O sinal de re-bind é o player vivo, marcado e com grafo próprio.
         assert!(
             app.world().get_entity(first).is_err(),
             "the swapped-out subtree — old player included — despawned"
@@ -2467,18 +2499,14 @@ mod tests {
         };
         fn walk_animator() -> CharacterAnimator {
             CharacterAnimator {
-                clip_names: vec!["idle".into()],
-                nodes: vec![AnimationNodeIndex::new(1)],
-                durations: vec![1.0],
-                player: Entity::PLACEHOLDER,
                 state: Some(AnimState::Walk),
-                current: None,
-                action_time: 0.0,
-                locked: false,
-                air_time: 0.0,
-                speed: 0.0,
-                last_pos: None,
-                locomotion: None,
+                ..CharacterAnimator::new(
+                    vec!["idle".into()],
+                    vec![AnimationNodeIndex::new(1)],
+                    vec![1.0],
+                    Entity::PLACEHOLDER,
+                    None,
+                )
             }
         }
 

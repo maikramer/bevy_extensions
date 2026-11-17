@@ -9,11 +9,13 @@
 
 pub mod a11y;
 pub mod animation;
+pub mod boot;
 pub mod camera;
+pub mod cinematic;
 pub mod dialogue;
 pub mod input_map;
-pub mod perf_probe;
 pub mod locale;
+pub mod perf_probe;
 pub mod rng;
 pub mod script_kind;
 pub mod scripting;
@@ -634,7 +636,6 @@ pub const SFX_CLIPS_ALL: &[SfxClip] = &[
     SfxClip::Thunder,
 ];
 
-
 impl SfxClip {
     /// Clip RELATIVO ao `sfx_dir` do config.yaml do jogo
     /// (`config.sfx_path(clip.file())` dá o path AssetServer).
@@ -687,7 +688,6 @@ impl SfxClip {
         }
     }
 }
-
 
 /// Toca um SFX (volume cai com a distância ao oyente — a câmara).
 #[derive(Debug, Clone, Copy, bevy::ecs::message::Message)]
@@ -1146,8 +1146,6 @@ pub struct VoxelCollider;
 // Preserva o TypePath do BRP/`viber.ecs` depois da extração.
 #[type_path = "viber::ragdoll"]
 pub struct RagdollBodyOf(pub Entity);
-
-
 
 #[cfg(test)]
 mod teleport_settle_tests {

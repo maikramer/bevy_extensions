@@ -38,8 +38,8 @@
 
 use bevy::prelude::*;
 // O walk mesh→triângulos é do contrato do host (uma só cópia).
-use bevy_ext_terrain_runtime::host::mesh_vertices_indices;
 use avian3d::prelude::*;
+use bevy_ext_terrain_runtime::host::mesh_vertices_indices;
 
 // IR das receitas: a primitiva `Shape` e o parser de strings de componente
 // saíram do monólito para o crate dos specs tipados (`bevy_ext_scene`).
@@ -633,9 +633,7 @@ pub fn collider_for_shape(shape: &Shape, scale: Vec3) -> Collider {
             (half_size[1] * scale.y * 2.0).max(1e-3),
             (half_size[2] * scale.z * 2.0).max(1e-3),
         ),
-        Shape::Sphere { radius } => {
-            Collider::sphere((radius * scale.max_element()).max(1e-3))
-        }
+        Shape::Sphere { radius } => Collider::sphere((radius * scale.max_element()).max(1e-3)),
         Shape::Cylinder {
             half_height,
             radius,
@@ -700,6 +698,7 @@ pub fn resolve_pending_colliders(
     // verdadeiros que o QA lê).
     mut fallback_warn: Local<(f64, u32)>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("physics.resolve_colliders");
     for (entity, mut request, entity_global) in pending.iter_mut() {
         request.age += time.delta_secs();
         let trigger = request.trigger;
@@ -943,10 +942,7 @@ fn bounds_cuboid(
         return;
     }
     let child = commands
-        .spawn((
-            Name::new("collider"),
-            Transform::from_translation(center),
-        ))
+        .spawn((Name::new("collider"), Transform::from_translation(center)))
         .id();
     stamp_collider_role_cmd(commands, child, trigger, scripted);
     commands.entity(child).insert(collider);
@@ -1490,8 +1486,7 @@ mod shape_collider_tests {
         let cuboid = collider.shape_scaled().as_cuboid().unwrap();
         assert_eq!(cuboid.half_extents.x, 4.0);
         assert_eq!(
-            cuboid.half_extents.y,
-            0.02,
+            cuboid.half_extents.y, 0.02,
             "lâmina fina (convenção Pad/Plane)"
         );
         assert_eq!(cuboid.half_extents.z, 2.0);

@@ -491,6 +491,7 @@ pub fn jaw_system(
     globals: Query<&GlobalTransform>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ik.jaw");
     if env.level <= 0.01 {
         return;
     }
@@ -597,6 +598,7 @@ pub fn bone_offsets_system(
     rigs: Query<Has<FrozenAnimation>>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ik.bone_offsets");
     for (entity, offsets) in &offsets_q {
         if offsets.entries.is_empty() {
             continue;
@@ -668,10 +670,7 @@ fn skeleton_mods_enabled() -> bool {
 /// Raiz da subárvore de ossos de um rig: o `AnimationPlayer` da cena quando há
 /// animator da engine, ou a própria entidade de gameplay nos rigs cedidos ao
 /// runtime do Jackdaw (sem `CharacterAnimator`).
-fn rig_root(
-    entity: Entity,
-    animator: Option<&CharacterAnimator>,
-) -> Entity {
+fn rig_root(entity: Entity, animator: Option<&CharacterAnimator>) -> Entity {
     animator.map_or(entity, |a| a.player)
 }
 
@@ -684,9 +683,7 @@ fn find_leg_bones(
 ) -> Option<[(Entity, Entity, Entity); 2]> {
     let mut bones = Vec::new();
     walk_bones(root, children, names, &mut bones);
-    let find = |pred: fn(&str) -> bool| {
-        bones.iter().find(|(_, n)| pred(n)).map(|(e, _)| *e)
-    };
+    let find = |pred: fn(&str) -> bool| bones.iter().find(|(_, n)| pred(n)).map(|(e, _)| *e);
     Some([
         (find(is_left_hip)?, find(is_left_knee)?, find(is_left_foot)?),
         (
@@ -716,6 +713,7 @@ fn foot_ik_bind_system(
     children: Query<&Children>,
     mut frame: Local<u32>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ik.bind");
     *frame = frame.wrapping_add(1);
     // Rigs ligados cuja subárvore morreu (troca de tier/LOD): voltar ao
     // pendente, depois de soltar os donos velhos (as entidades alvo morreram
@@ -833,6 +831,7 @@ fn foot_ik_target_system(
     terrain: Option<Res<bevy_ext_terrain_runtime::runtime::TerrainRuntime>>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ik.targets");
     // Corte por distância: a ~228 rigs do mundo (os cedidos ao Jackdaw ficavam
     // a peso 1.0 em qualquer distância) o IK escrevia 2 alvos + 6 ossos por
     // frame cada — ~1.8k `Transform` mudados/frame, a maior parte de
@@ -950,8 +949,7 @@ fn foot_ik_target_system(
             ) {
                 let hip_p = hip_g.translation();
                 let knee_p = knee_g.translation();
-                let soft_max_reach =
-                    (knee_p.distance(hip_p) + foot_p.distance(knee_p)) * 0.985;
+                let soft_max_reach = (knee_p.distance(hip_p) + foot_p.distance(knee_p)) * 0.985;
                 let to_goal = goal - hip_p;
                 let reach = to_goal.length();
                 if reach > soft_max_reach && reach > 1e-4 {
@@ -966,10 +964,16 @@ fn foot_ik_target_system(
                 .inverse()
                 .transform_point3(goal);
             if let Ok(mut tf) = targets.get_mut(leg.target) {
-                tf.translation = target_local;
-                tf.rotation = Quat::IDENTITY;
+                if tf.translation != target_local {
+                    tf.translation = target_local;
+                }
+                if tf.rotation != Quat::IDENTITY {
+                    tf.rotation = Quat::IDENTITY;
+                }
             }
-            set_active(&mut commons, leg, true);
+            if commons.get(leg.owner).is_ok_and(|c| !c.active) {
+                set_active(&mut commons, leg, true);
+            }
         }
     }
 }
@@ -1018,6 +1022,7 @@ fn head_look_bind_system(
     names: Query<&Name>,
     children: Query<&Children>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ik.head_look_bind");
     for (entity, _, animator) in &pending {
         let root = rig_root(entity, animator);
         let mut bones = Vec::new();
@@ -1025,7 +1030,9 @@ fn head_look_bind_system(
         let Some((head, _)) = bones.iter().find(|(_, n)| is_head(n)) else {
             continue; // ossos ainda não spawnados, ou rig sem cabeça — retry
         };
-        commands.entity(entity).insert(HeadLookBound { head: *head });
+        commands
+            .entity(entity)
+            .insert(HeadLookBound { head: *head });
     }
 }
 
@@ -1035,7 +1042,12 @@ fn head_look_bind_system(
 /// de onde parte já inclui a pose do clipe + offsets) e antes da propagação.
 #[allow(clippy::too_many_arguments)]
 fn head_look_system(
-    looks: Query<(Entity, &HeadLookAt, &HeadLookBound, Option<&CharacterAnimator>)>,
+    looks: Query<(
+        Entity,
+        &HeadLookAt,
+        &HeadLookBound,
+        Option<&CharacterAnimator>,
+    )>,
     parents: Query<&ChildOf>,
     // ParamSet como no `foot_ik_system`: ler a pose local dos ossos e escrever
     // a rotação da cabeça são acessos de Transform em conflito (B0001) — o
@@ -1044,6 +1056,7 @@ fn head_look_system(
     globals: Query<&GlobalTransform>,
     frozen: Query<Has<FrozenAnimation>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ik.head_look");
     for (entity, look, bound, animator) in &looks {
         if look.weight <= 0.0 {
             continue;

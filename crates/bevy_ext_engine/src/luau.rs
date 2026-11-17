@@ -298,20 +298,13 @@ mod tests {
 
     #[test]
     fn test_match_gesture_clip_prefers_exact_over_substring() {
-        let animator = bevy_ext_core::animation::CharacterAnimator {
-            clip_names: vec!["swordidle".into(), "idle".into()],
-            nodes: vec![],
-            durations: vec![],
-            player: Entity::PLACEHOLDER,
-            state: None,
-            current: None,
-            action_time: 0.0,
-            locked: false,
-            air_time: 0.0,
-            speed: 0.0,
-            last_pos: None,
-            locomotion: None,
-        };
+        let animator = bevy_ext_core::animation::CharacterAnimator::new(
+            vec!["swordidle".into(), "idle".into()],
+            vec![],
+            vec![],
+            Entity::PLACEHOLDER,
+            None,
+        );
         assert_eq!(
             match_gesture_clip(&animator, "idle"),
             Some(1),

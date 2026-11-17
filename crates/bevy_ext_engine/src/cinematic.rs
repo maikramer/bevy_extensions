@@ -570,11 +570,12 @@ const PRE_CUT_RAMP: f32 = 0.3;
 
 /// Orçamentos de streaming (terreno, LOD de malhas) multiplicados — vale
 /// enquanto uma cinemática espera em negro por um destino distante OU na
-/// janela pós-respawn ([`RespawnStreaming`]).
-#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq, Reflect)]
-#[reflect(Resource)]
-#[type_path = "viber::cinematic"]
-pub struct StreamingBoost(pub bool);
+/// janela pós-respawn ([`RespawnStreaming`]) OU enquanto o mundo carrega
+/// ([`LoadingStreaming`]).
+///
+/// O tipo vive no `bevy_ext_core`: o terreno lia uma cópia própria que ninguém
+/// inseria, por isso o ramo ×10 nunca corria.
+pub use bevy_ext_core::cinematic::{LoadingStreaming, StreamingBoost};
 
 /// Janela de boost pós-respawn (segundos restantes). O respawn teleporta o
 /// herói para o ponto mais próximo — que pode estar fora da janela de
@@ -616,6 +617,12 @@ pub struct StreamingBoostParams<'w> {
 
 impl<'w> StreamingBoostParams<'w> {
     /// Desce a janela pós-respawn e funde-a com a espera da cinemática.
+    ///
+    /// A carga do mundo NÃO entra aqui de propósito: o boost global também
+    /// multiplica os swaps de LOD de render (12 → 120/frame, cada um a
+    /// desmontar e remontar a subárvore do glTF) e os tiles de relva — medido,
+    /// isso piorava o arranque. Durante o véu só o terreno é boostado, e é ele
+    /// que lê o [`LoadingStreaming`] directamente.
     fn merged(&mut self, waiting: bool, dt: f32) -> StreamingBoost {
         let respawn_boost = self
             .respawn
@@ -716,6 +723,7 @@ impl Plugin for CinematicPlugin {
         app.init_resource::<CinematicLibrary>()
             .init_resource::<CinematicPlayback>()
             .init_resource::<StreamingBoost>()
+            .init_resource::<LoadingStreaming>()
             .init_resource::<RespawnStreaming>()
             .add_message::<PlayCinematic>()
             .add_message::<StopCinematic>()

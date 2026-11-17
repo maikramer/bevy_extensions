@@ -62,6 +62,9 @@ mod tests {
         let mut table = HashMap::new();
         table.insert("a".to_string(), "um".to_string());
         table.insert("b".to_string(), "dois".to_string());
-        assert_eq!(localized_lines("@a\nmeio\n@b", Some(&table)), "um\nmeio\ndois");
+        assert_eq!(
+            localized_lines("@a\nmeio\n@b", Some(&table)),
+            "um\nmeio\ndois"
+        );
     }
 }

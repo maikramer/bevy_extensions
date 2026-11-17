@@ -245,6 +245,7 @@ pub fn drive_ragdolls(
     globals: Query<&GlobalTransform>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ragdoll.drive");
     let now = time.elapsed_secs();
     for (entity, active, animator) in &mut rigs {
         if ragdoll_expired(now, active.until) {
@@ -310,6 +311,7 @@ pub fn reap_orphan_ragdoll_bodies(
     bodies: Query<(Entity, &RagdollBodyOf)>,
     owners: Query<(), With<RagdollActive>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ragdoll.reap_bodies");
     for (body, owner) in &bodies {
         if owners.get(owner.0).is_err() {
             commands.entity(body).despawn();
@@ -325,6 +327,7 @@ pub fn reap_orphan_joints(
     joints: Query<(Entity, &SphericalJoint)>,
     bodies: Query<(), With<RagdollBodyOf>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("ragdoll.reap_joints");
     for (entity, joint) in &joints {
         if bodies.get(joint.body1).is_err() || bodies.get(joint.body2).is_err() {
             commands.entity(entity).despawn();
@@ -376,18 +379,14 @@ mod tests {
     /// `animation::test_animator`, que é `#[cfg(test)]` no monólito).
     fn test_animator(player: Entity) -> CharacterAnimator {
         CharacterAnimator {
-            clip_names: vec!["idle".into()],
-            nodes: vec![AnimationNodeIndex::new(1)],
-            durations: vec![1.0],
-            player,
             state: Some(AnimState::Idle),
-            current: None,
-            action_time: 0.0,
-            locked: false,
-            air_time: 0.0,
-            speed: 0.0,
-            last_pos: None,
-            locomotion: None,
+            ..CharacterAnimator::new(
+                vec!["idle".into()],
+                vec![AnimationNodeIndex::new(1)],
+                vec![1.0],
+                player,
+                None,
+            )
         }
     }
 

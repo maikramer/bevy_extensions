@@ -48,6 +48,31 @@ pub enum AnimState {
 }
 
 impl AnimState {
+    /// Todos os estados, na ordem de [`Self::index`].
+    pub const ALL: [AnimState; 7] = [
+        AnimState::Idle,
+        AnimState::Walk,
+        AnimState::Run,
+        AnimState::Jump,
+        AnimState::Fall,
+        AnimState::Swim,
+        AnimState::SwimIdle,
+    ];
+
+    /// Índice estável do estado — a chave da LUT de nodes do
+    /// [`CharacterAnimator`].
+    pub fn index(self) -> usize {
+        match self {
+            AnimState::Idle => 0,
+            AnimState::Walk => 1,
+            AnimState::Run => 2,
+            AnimState::Jump => 3,
+            AnimState::Fall => 4,
+            AnimState::Swim => 5,
+            AnimState::SwimIdle => 6,
+        }
+    }
+
     /// Clip names to look for, best first.
     ///
     /// Every entry is already normalized (see [`normalize_clip_name`]). The
@@ -112,6 +137,11 @@ pub fn normalize_clip_name(name: &str) -> String {
 /// whichever happened to be first.
 pub fn resolve_clip(names: &[String], state: AnimState) -> Option<usize> {
     let normalized: Vec<String> = names.iter().map(|n| normalize_clip_name(n)).collect();
+    resolve_normalized(&normalized, state)
+}
+
+/// [`resolve_clip`] sobre uma lista já normalizada — o caminho quente.
+pub fn resolve_normalized(normalized: &[String], state: AnimState) -> Option<usize> {
     for candidate in state.candidates() {
         if let Some(i) = normalized.iter().position(|n| n == candidate) {
             return Some(i);
@@ -169,20 +199,84 @@ pub struct CharacterAnimator {
     pub last_pos: Option<Vec3>,
     /// Blend idle/walk/run, quando o ficheiro tem os três clips.
     pub locomotion: Option<LocomotionBlendNodes>,
+    /// Nomes dos clips já normalizados, paralelo a `clip_names`.
+    ///
+    /// `resolve_clip` normalizava a lista INTEIRA em cada chamada, e
+    /// `play_state` corre por personagem por frame — duas `String` por clip por
+    /// frame. A lista é derivada no bind e não entra na reflexão.
+    #[reflect(ignore)]
+    pub normalized: Vec<String>,
+    /// O node resolvido (com a cadeia de fallbacks) de cada [`AnimState`],
+    /// indexado por [`AnimState::index`]. Uma leitura de array por frame.
+    #[reflect(ignore)]
+    pub state_nodes: [Option<AnimationNodeIndex>; AnimState::ALL.len()],
 }
 
 impl CharacterAnimator {
+    /// Constrói o animador e as tabelas derivadas (nomes normalizados e o node
+    /// de cada estado) — uma vez por bind; o caminho por frame é um índice.
+    ///
+    /// Os restantes campos ficam neutros: quem chama preenche o estado que
+    /// sobrevive a um re-bind (`state`/`current`/`speed`/`last_pos`/`air_time`).
+    pub fn new(
+        clip_names: Vec<String>,
+        nodes: Vec<AnimationNodeIndex>,
+        durations: Vec<f32>,
+        player: Entity,
+        locomotion: Option<LocomotionBlendNodes>,
+    ) -> Self {
+        let normalized: Vec<String> = clip_names.iter().map(|name| normalize_clip_name(name)).collect();
+        let mut state_nodes = [None; AnimState::ALL.len()];
+        for state in AnimState::ALL {
+            state_nodes[state.index()] = resolve_with_fallback(&clip_names, state)
+                .and_then(|index| nodes.get(index).copied());
+        }
+        Self {
+            clip_names,
+            nodes,
+            durations,
+            player,
+            state: None,
+            current: None,
+            action_time: 0.0,
+            locked: false,
+            air_time: 0.0,
+            speed: 0.0,
+            last_pos: None,
+            locomotion,
+            normalized,
+            state_nodes,
+        }
+    }
+
+    /// Recalcula as tabelas derivadas (só depois de mexer em `clip_names` ou
+    /// `nodes`, o que o bind já faz).
+    pub fn refresh_clip_tables(&mut self) {
+        self.normalized = self
+            .clip_names
+            .iter()
+            .map(|name| normalize_clip_name(name))
+            .collect();
+        for state in AnimState::ALL {
+            self.state_nodes[state.index()] = resolve_with_fallback(&self.clip_names, state)
+                .and_then(|index| self.nodes.get(index).copied());
+        }
+    }
+
     /// Graph node for a state, honouring the fallback chain.
+    ///
+    /// Era `resolve_with_fallback` (que normaliza a lista de clips) em cada
+    /// chamada; agora é uma leitura da LUT calculada no bind.
     pub fn node_for(&self, state: AnimState) -> Option<AnimationNodeIndex> {
-        resolve_with_fallback(&self.clip_names, state).and_then(|i| self.nodes.get(i).copied())
+        self.state_nodes[state.index()]
     }
 
     /// Graph node for the first clip whose name satisfies `pred`, matched
-    /// against the *normalized* name.
+    /// against the *normalized* name (já calculado no bind).
     pub fn node_matching(&self, pred: impl Fn(&str) -> bool) -> Option<AnimationNodeIndex> {
-        self.clip_names
+        self.normalized
             .iter()
-            .position(|name| pred(&normalize_clip_name(name)))
+            .position(|name| pred(name))
             .and_then(|i| self.nodes.get(i).copied())
     }
 
@@ -213,3 +307,62 @@ impl CharacterAnimator {
 #[reflect(Component)]
 #[type_path = "viber::animation"]
 pub struct FrozenAnimation(pub AnimationGraphHandle);
+
+#[cfg(test)]
+mod lut_tests {
+    use super::*;
+
+    /// A LUT por estado tem de dar exactamente o mesmo que a resolução com
+    /// fallbacks — é o que permite `node_for` ser uma leitura de array no
+    /// caminho por frame (antes normalizava a lista de clips inteira).
+    #[test]
+    fn the_state_lut_matches_full_resolution() {
+        let names: Vec<String> = vec![
+            "Animator3D_BreatheIdle".into(),
+            "walk".into(),
+            "RunForward".into(),
+            "swordidle".into(),
+        ];
+        let nodes: Vec<AnimationNodeIndex> = (0..names.len())
+            .map(|i| AnimationNodeIndex::new(i + 1))
+            .collect();
+        let animator = CharacterAnimator::new(
+            names.clone(),
+            nodes.clone(),
+            vec![1.0; names.len()],
+            Entity::PLACEHOLDER,
+            None,
+        );
+        assert_eq!(animator.normalized[0], "breatheidle");
+        assert_eq!(animator.normalized[2], "runforward");
+        for state in AnimState::ALL {
+            let expected = resolve_with_fallback(&names, state).map(|index| nodes[index]);
+            assert_eq!(animator.node_for(state), expected, "{state:?}");
+        }
+        // `Idle` casa `breatheidle` (o prefixo `animator3d` sai) e não
+        // `swordidle`, que só casaria por substring.
+        assert_eq!(animator.node_for(AnimState::Idle), Some(AnimationNodeIndex::new(1)));
+        assert_eq!(animator.state_nodes.len(), AnimState::ALL.len());
+        assert_eq!(AnimState::ALL[AnimState::Swim.index()], AnimState::Swim);
+    }
+
+    /// `node_matching` compara contra os nomes já normalizados e não realoca.
+    #[test]
+    fn node_matching_uses_the_normalized_names() {
+        let nodes = vec![AnimationNodeIndex::new(7)];
+        let mut animator = CharacterAnimator::new(
+            vec!["Animator3D_Wave".into()],
+            nodes,
+            vec![1.0],
+            Entity::PLACEHOLDER,
+            None,
+        );
+        assert_eq!(animator.node_matching(|name| name == "wave"), Some(AnimationNodeIndex::new(7)));
+        // Depois de mexer nos clips, `refresh_clip_tables` volta a alinhar.
+        animator.clip_names = vec!["jump".into()];
+        animator.refresh_clip_tables();
+        assert_eq!(animator.normalized, vec!["jump".to_string()]);
+        assert_eq!(animator.node_for(AnimState::Jump), Some(AnimationNodeIndex::new(7)));
+        assert_eq!(animator.node_for(AnimState::Idle), None);
+    }
+}
