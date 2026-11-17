@@ -674,15 +674,16 @@ mod tests {
 
         let mut app = App::new();
         app.init_resource::<PendingSavePatches>();
-        app.world_mut().resource_mut::<PendingSavePatches>().0.push(
-            DeltaPatch {
+        app.world_mut()
+            .resource_mut::<PendingSavePatches>()
+            .0
+            .push(DeltaPatch {
                 min: [0.0, 0.0],
                 step: [1.0, 1.0],
                 cols: 2,
                 rows: 2,
                 data: vec![1.0, 2.0, 3.0, 4.0],
-            },
-        );
+            });
         // Sem terreno vivo (interior/menu à espera): fica pendente.
         app.world_mut()
             .run_system_once(apply_pending_save_patches::<IdleLoader>)
@@ -724,15 +725,16 @@ mod tests {
         app.init_resource::<PendingSavePatches>();
         app.init_resource::<BusyLoader>();
         app.insert_resource(small_runtime_of());
-        app.world_mut().resource_mut::<PendingSavePatches>().0.push(
-            DeltaPatch {
+        app.world_mut()
+            .resource_mut::<PendingSavePatches>()
+            .0
+            .push(DeltaPatch {
                 min: [0.0, 0.0],
                 step: [1.0, 1.0],
                 cols: 1,
                 rows: 1,
                 data: vec![5.0],
-            },
-        );
+            });
         app.world_mut()
             .run_system_once(apply_pending_save_patches::<BusyLoader>)
             .unwrap();
