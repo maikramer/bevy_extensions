@@ -30,7 +30,7 @@ use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderStartup, R
 
 use std::marker::PhantomData;
 
-use crate::body::{CONTOUR_PEAK, WaterBody, WaterDomainSample, WaterKind};
+use crate::body::{WaterBody, WaterDomainSample};
 use crate::environment::WaterEnvironment;
 use crate::obstacles::{self, WaterObstacle};
 use crate::source::{WaterFocus, WaterObstacles, WaterSource};
@@ -339,32 +339,47 @@ pub fn rasterize_domain_with_obstacles<S: WaterSource>(
     origin_cell_1m: IVec2,
     obstacles: &[obstacles::WaterObstacle],
     out_domain_bytes: &mut [u8],
+    out_obstacle_bytes: Option<&mut [u8]>,
+) -> bool {
+    let body_indices = crate::body::WaterBodyIndex::build_vec(source.bodies());
+    let mut obs_grid = obstacles::ObstacleSpatialGrid::default();
+    let ox = origin_cell_1m.x as f32 * DOMAIN_SNAP_M;
+    let oz = origin_cell_1m.y as f32 * DOMAIN_SNAP_M;
+    obs_grid.rebuild(ox, oz, WAVE_WORLD_SIZE, obstacles);
+    let mut active_indices = Vec::new();
+    rasterize_domain_with_cache(
+        source,
+        origin_cell_1m,
+        obstacles,
+        &body_indices,
+        &obs_grid,
+        &mut active_indices,
+        out_domain_bytes,
+        out_obstacle_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rasterize_domain_with_cache<S: WaterSource>(
+    source: &S,
+    origin_cell_1m: IVec2,
+    obstacles: &[obstacles::WaterObstacle],
+    body_indices: &[crate::body::WaterBodyIndex],
+    obs_grid: &obstacles::ObstacleSpatialGrid,
+    active_indices: &mut Vec<usize>,
+    out_domain_bytes: &mut [u8],
     mut out_obstacle_bytes: Option<&mut [u8]>,
 ) -> bool {
     let size = DOMAIN_GRID_SIZE as usize;
     let ox = origin_cell_1m.x as f32 * DOMAIN_SNAP_M;
     let oz = origin_cell_1m.y as f32 * DOMAIN_SNAP_M;
-    let wx_max = ox + WAVE_WORLD_SIZE;
-    let wz_max = oz + WAVE_WORLD_SIZE;
+    let win_min = Vec2::new(ox, oz);
+    let win_max = Vec2::new(ox + WAVE_WORLD_SIZE, oz + WAVE_WORLD_SIZE);
 
-    // Filter water bodies overlapping the active 128 m x 128 m window.
-    let mut active_indices: Vec<usize> = Vec::new();
-    for (idx, body) in source.bodies().iter().enumerate() {
-        let reach = match body.kind {
-            WaterKind::Lake => body.radius * CONTOUR_PEAK * body.mirror_reach.max(1.0) + 1.5,
-            WaterKind::River => {
-                if body.hull > 0.0 {
-                    body.hull + body.carve_radius + 2.0
-                } else {
-                    1.0e5
-                }
-            }
-        };
-        if body.at.x + reach >= ox
-            && body.at.x - reach <= wx_max
-            && body.at.y + reach >= oz
-            && body.at.y - reach <= wz_max
-        {
+    active_indices.clear();
+    let bodies = source.bodies();
+    for (idx, body_idx) in body_indices.iter().enumerate() {
+        if body_idx.overlaps_rect(win_min, win_max, 2.0) {
             active_indices.push(idx);
         }
     }
@@ -377,51 +392,143 @@ pub fn rasterize_domain_with_obstacles<S: WaterSource>(
         return false;
     }
 
+    let cell_dim = obstacles::OBSTACLE_GRID_DIM;
+    let tex_per_cell = size / cell_dim;
+    let cell_world = WAVE_WORLD_SIZE / cell_dim as f32;
     let mut any_wet = false;
-    for iz in 0..size {
-        let wz = oz + (iz as f32 + 0.5) * DOMAIN_TEXEL_M;
-        for ix in 0..size {
-            let wx = ox + (ix as f32 + 0.5) * DOMAIN_TEXEL_M;
-            let p = Vec2::new(wx, wz);
-            let bed_y = source.bed_y(wx, wz);
-            let mut best: Option<WaterDomainSample> = None;
-            for &bi in &active_indices {
-                if let Some(sample) = source.bodies()[bi].sample_domain(p, bed_y, 1.5) {
-                    let take = match best {
-                        None => true,
-                        Some(prev) => sample.depth > prev.depth,
-                    };
-                    if take {
-                        best = Some(sample);
+    let mut cell_lakes: Vec<usize> = Vec::new();
+    let mut cell_rivers: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+    let mut cell_segs: Vec<usize> = Vec::new();
+
+    for cz in 0..cell_dim {
+        let cell_z0 = oz + cz as f32 * cell_world;
+        let cell_z1 = cell_z0 + cell_world;
+        let iz0 = cz * tex_per_cell;
+        let iz1 = iz0 + tex_per_cell;
+        for cx in 0..cell_dim {
+            let cell_x0 = ox + cx as f32 * cell_world;
+            let cell_x1 = cell_x0 + cell_world;
+            let ix0 = cx * tex_per_cell;
+            let ix1 = ix0 + tex_per_cell;
+            let cmin = Vec2::new(cell_x0, cell_z0);
+            let cmax = Vec2::new(cell_x1, cell_z1);
+
+            cell_lakes.clear();
+            cell_rivers.clear();
+            cell_segs.clear();
+            for &bi in active_indices.iter() {
+                if !body_indices[bi].overlaps_rect(cmin, cmax, 0.5) {
+                    continue;
+                }
+                match bodies[bi].kind {
+                    crate::body::WaterKind::Lake => cell_lakes.push(bi),
+                    crate::body::WaterKind::River => {
+                        let s0 = cell_segs.len();
+                        body_indices[bi].collect_river_segments_in_rect(
+                            &bodies[bi],
+                            cmin,
+                            cmax,
+                            &mut cell_segs,
+                        );
+                        let s1 = cell_segs.len();
+                        if s1 > s0 {
+                            cell_rivers.push((bi, s0..s1));
+                        }
                     }
                 }
             }
-            let tidx = iz * size + ix;
-            let base = tidx * 8;
-            if let Some(s) = best {
-                any_wet = true;
-                let flow = obstacles::deflect_flow_by_obstacles(p, s.flow, obstacles);
-                write_rgba16f_texel(out_domain_bytes, tidx, [s.depth, flow.x, flow.y, s.plunge]);
-            } else {
-                out_domain_bytes[base..base + 8].fill(0);
+
+            let obs_empty = obs_grid.cell_indices(cx, cz).is_empty();
+            let water_empty = cell_lakes.is_empty() && cell_rivers.is_empty();
+            if water_empty && obs_empty {
+                for iz in iz0..iz1 {
+                    let row_start = (iz * size + ix0) * 8;
+                    let row_end = (iz * size + ix1) * 8;
+                    out_domain_bytes[row_start..row_end].fill(0);
+                    if let Some(obs_bytes) = out_obstacle_bytes.as_deref_mut() {
+                        obs_bytes[row_start..row_end].fill(0);
+                    }
+                }
+                continue;
             }
 
-            if let Some(obs_bytes) = out_obstacle_bytes.as_deref_mut() {
-                if let Some(obs) = obstacles::nearest_obstacle_at(p, obstacles) {
-                    let halo = if obs.signed_dist <= 0.0 {
-                        1.0 + (-obs.signed_dist / obs.radius.max(0.5)).min(1.0)
-                    } else {
-                        ((obstacles::OBSTACLE_HALO_M - obs.signed_dist)
-                            / obstacles::OBSTACLE_HALO_M)
-                            .clamp(0.0, 1.0)
-                    };
-                    write_rgba16f_texel(
-                        obs_bytes,
-                        tidx,
-                        [halo, obs.normal.x, obs.normal.y, obs.radius],
-                    );
-                } else {
-                    obs_bytes[base..base + 8].fill(0);
+            for iz in iz0..iz1 {
+                let wz = oz + (iz as f32 + 0.5) * DOMAIN_TEXEL_M;
+                if water_empty {
+                    let row_start = (iz * size + ix0) * 8;
+                    let row_end = (iz * size + ix1) * 8;
+                    out_domain_bytes[row_start..row_end].fill(0);
+                }
+                if obs_empty && let Some(obs_bytes) = out_obstacle_bytes.as_deref_mut() {
+                    let row_start = (iz * size + ix0) * 8;
+                    let row_end = (iz * size + ix1) * 8;
+                    obs_bytes[row_start..row_end].fill(0);
+                }
+                for ix in ix0..ix1 {
+                    let wx = ox + (ix as f32 + 0.5) * DOMAIN_TEXEL_M;
+                    let p = Vec2::new(wx, wz);
+                    let tidx = iz * size + ix;
+                    let base = tidx * 8;
+
+                    if !water_empty {
+                        let mut cached_bed: Option<Option<f32>> = None;
+                        let mut best: Option<WaterDomainSample> = None;
+                        for &bi in &cell_lakes {
+                            if let Some(sample) = body_indices[bi].sample_domain_with_bed(
+                                &bodies[bi],
+                                p,
+                                || *cached_bed.get_or_insert_with(|| source.bed_y(wx, wz)),
+                                1.5,
+                            ) {
+                                if best.is_none_or(|prev| sample.depth > prev.depth) {
+                                    best = Some(sample);
+                                }
+                            }
+                        }
+                        for (bi, range) in &cell_rivers {
+                            if let Some(sample) = body_indices[*bi].sample_domain_river_segs(
+                                &bodies[*bi],
+                                p,
+                                &cell_segs[range.clone()],
+                                || *cached_bed.get_or_insert_with(|| source.bed_y(wx, wz)),
+                                1.5,
+                            ) {
+                                if best.is_none_or(|prev| sample.depth > prev.depth) {
+                                    best = Some(sample);
+                                }
+                            }
+                        }
+                        if let Some(s) = best {
+                            any_wet = true;
+                            let flow = obs_grid.deflect_flow_at(cx, cz, p, s.flow, obstacles);
+                            write_rgba16f_texel(
+                                out_domain_bytes,
+                                tidx,
+                                [s.depth, flow.x, flow.y, s.plunge],
+                            );
+                        } else {
+                            out_domain_bytes[base..base + 8].fill(0);
+                        }
+                    }
+
+                    if !obs_empty && let Some(obs_bytes) = out_obstacle_bytes.as_deref_mut() {
+                        if let Some(obs) = obs_grid.nearest_obstacle_at(cx, cz, p, obstacles) {
+                            let halo = if obs.signed_dist <= 0.0 {
+                                1.0 + (-obs.signed_dist / obs.radius.max(0.5)).min(1.0)
+                            } else {
+                                ((obstacles::OBSTACLE_HALO_M - obs.signed_dist)
+                                    / obstacles::OBSTACLE_HALO_M)
+                                    .clamp(0.0, 1.0)
+                            };
+                            write_rgba16f_texel(
+                                obs_bytes,
+                                tidx,
+                                [halo, obs.normal.x, obs.normal.y, obs.radius],
+                            );
+                        } else {
+                            obs_bytes[base..base + 8].fill(0);
+                        }
+                    }
                 }
             }
         }
@@ -430,8 +537,22 @@ pub fn rasterize_domain_with_obstacles<S: WaterSource>(
 }
 
 fn begin_wave_frame(mut waves: ResMut<WaterWaveWorld>) {
-    waves.impulses.clear();
-    waves.pending_shift_fine = IVec2::ZERO;
+    if !waves.impulses.is_empty() {
+        waves.impulses.clear();
+    }
+    if waves.pending_shift_fine != IVec2::ZERO {
+        waves.pending_shift_fine = IVec2::ZERO;
+    }
+}
+
+#[derive(Default)]
+struct DomainRasterScratch {
+    body_sig: u64,
+    body_len: usize,
+    body_indices: Vec<crate::body::WaterBodyIndex>,
+    obs_grid: obstacles::ObstacleSpatialGrid,
+    active_indices: Vec<usize>,
+    obs_bytes: Vec<u8>,
 }
 
 /// Foco da janela rolante: o `WaterFocus` do host (posição do herói), ou a
@@ -479,13 +600,16 @@ fn update_wave_window_and_domain<S: WaterSource>(
     source: Option<Res<S>>,
     obstacles_res: Option<Res<WaterObstacles>>,
     mut images: ResMut<Assets<Image>>,
+    mut scratch: Local<DomainRasterScratch>,
 ) {
     if let Some(pos) = window_focus(focus.as_deref(), &cam_q) {
         waves.update_window_focus(pos);
     }
 
     let Some(source) = source else {
-        waves.active_water = false;
+        if waves.active_water {
+            waves.active_water = false;
+        }
         return;
     };
     let obs_gen = obstacles_res.as_ref().map_or(0, |o| o.generation);
@@ -499,45 +623,72 @@ fn update_wave_window_and_domain<S: WaterSource>(
     }
 
     let origin = waves.origin_cell_1m;
-    let obstacles = obstacles_res
-        .as_ref()
-        .map(|o| o.obstacles.clone())
-        .unwrap_or_default();
-    let obs_sig = obstacles::obstacles_signature(&obstacles);
+    let obs_slice = obstacles_res
+        .as_deref()
+        .map_or(&[][..], |o| o.obstacles.as_slice());
+    let obs_sig = obstacles::obstacles_signature(obs_slice);
     let need_raster = !waves.domain_populated
         || origin != waves.last_domain_origin
         || sig != waves.last_terrain_sig
         || obs_sig != waves.last_obstacle_sig;
     if !need_raster {
+        waves.last_obstacle_gen = obs_gen;
         return;
     }
 
+    let bodies = source.bodies();
+    if scratch.body_len != bodies.len() || scratch.body_sig != sig {
+        scratch.body_indices = crate::body::WaterBodyIndex::build_vec(bodies);
+        scratch.body_sig = sig;
+        scratch.body_len = bodies.len();
+    }
+
+    let ox = origin.x as f32 * DOMAIN_SNAP_M;
+    let oz = origin.y as f32 * DOMAIN_SNAP_M;
+    scratch.obs_grid.rebuild(ox, oz, WAVE_WORLD_SIZE, obs_slice);
+
     let need_len = (DOMAIN_GRID_SIZE as usize) * (DOMAIN_GRID_SIZE as usize) * 8;
-    let mut obs_bytes = vec![0u8; need_len];
+    if scratch.obs_bytes.len() != need_len {
+        scratch.obs_bytes.resize(need_len, 0);
+    }
+
     let domain_handle = waves.domain_tex.clone();
+    let mut active_water = false;
+    // Projeções disjuntas: o `Deref` do `Local` só sabe emprestar o struct
+    // inteiro, e o raster precisa de `active_indices`/`obs_bytes` mutáveis ao
+    // mesmo tempo que lê `body_indices`/`obs_grid`.
+    let scratch = &mut *scratch;
     if let Some(mut img) = images.get_mut(&domain_handle) {
         let data = img.data.get_or_insert_with(|| vec![0u8; need_len]);
         if data.len() != need_len {
             data.resize(need_len, 0);
         }
-        waves.active_water = rasterize_domain_with_obstacles(
+        active_water = rasterize_domain_with_cache(
             &*source,
             origin,
-            &obstacles,
+            obs_slice,
+            &scratch.body_indices,
+            &scratch.obs_grid,
+            &mut scratch.active_indices,
             data,
-            Some(&mut obs_bytes),
+            Some(&mut scratch.obs_bytes),
         );
     }
+    waves.active_water = active_water;
+
     let obstacle_handle = waves.obstacle_tex.clone();
     if let Some(mut img) = images.get_mut(&obstacle_handle) {
         let data = img.data.get_or_insert_with(|| vec![0u8; need_len]);
         if data.len() != need_len {
             data.resize(need_len, 0);
         }
-        data.copy_from_slice(&obs_bytes);
+        data.copy_from_slice(&scratch.obs_bytes);
     }
 
-    waves.active_obstacles = obstacles;
+    if obs_sig != waves.last_obstacle_sig {
+        waves.active_obstacles.clear();
+        waves.active_obstacles.extend_from_slice(obs_slice);
+    }
     waves.domain_populated = true;
     waves.last_domain_origin = origin;
     waves.last_terrain_sig = sig;
@@ -1078,5 +1229,87 @@ mod tests {
     fn water_waves_wgsl_parses_cleanly() {
         let parsed = naga::front::wgsl::parse_str(WATER_WAVES_WGSL);
         assert!(parsed.is_ok(), "water_waves.wgsl parse error: {:?}", parsed.err());
+    }
+
+    #[test]
+    fn spatial_rasterize_matches_bruteforce_and_deflects_obstacles() {
+        use crate::body::{LakeShape, WaterBody, WaterKind};
+        use crate::obstacles::{WaterObstacle, deflect_flow_by_obstacles, nearest_obstacle_at};
+
+        #[derive(Resource)]
+        struct MockSource {
+            bodies: Vec<WaterBody>,
+        }
+        impl WaterSource for MockSource {
+            fn bodies(&self) -> &[WaterBody] {
+                &self.bodies
+            }
+            fn bed_y(&self, x: f32, z: f32) -> Option<f32> {
+                Some(6.0 + (x * 0.05).sin() + (z * 0.05).cos())
+            }
+        }
+
+        let mut stations = Vec::with_capacity(200);
+        let mut surface_y = Vec::with_capacity(200);
+        let mut half_width = Vec::with_capacity(200);
+        for i in 0..200 {
+            let s = i as f32 * 3.0;
+            stations.push(Vec2::new(s - 300.0, (s * 0.02).sin() * 25.0));
+            surface_y.push(11.0 - s * 0.003);
+            half_width.push(8.0);
+        }
+        let river = WaterBody {
+            kind: WaterKind::River,
+            at: Vec2::ZERO,
+            radius: 0.0,
+            carve_radius: 12.0,
+            hull: 320.0,
+            water_y: 10.5,
+            mirror_reach: 1.0,
+            shape: LakeShape::default(),
+            stations,
+            surface_y,
+            water_width: 16.0,
+            half_width,
+            depths: Vec::new(),
+            cascades: Vec::new(),
+        };
+        let src = MockSource { bodies: vec![river] };
+        let obs = vec![
+            WaterObstacle::circle(Vec2::new(-20.0, 2.0), 1.8),
+            WaterObstacle::oriented_box(Vec2::new(15.0, -4.0), Vec2::X, Vec2::Y, Vec2::new(2.0, 3.0)),
+            WaterObstacle::capsule(Vec2::new(40.0, -8.0), Vec2::new(48.0, 8.0), 1.2),
+        ];
+
+        let mut grid = obstacles::ObstacleSpatialGrid::default();
+        grid.rebuild(-64.0, -64.0, WAVE_WORLD_SIZE, &obs);
+        for iz in (0..DOMAIN_GRID_SIZE as usize).step_by(7) {
+            let wz = -64.0 + (iz as f32 + 0.5) * DOMAIN_TEXEL_M;
+            for ix in (0..DOMAIN_GRID_SIZE as usize).step_by(7) {
+                let wx = -64.0 + (ix as f32 + 0.5) * DOMAIN_TEXEL_M;
+                let p = Vec2::new(wx, wz);
+                let cx = ix >> 4;
+                let cz = iz >> 4;
+                let g_flow = grid.deflect_flow_at(cx, cz, p, Vec2::new(1.5, 0.2), &obs);
+                let b_flow = deflect_flow_by_obstacles(p, Vec2::new(1.5, 0.2), &obs);
+                assert!((g_flow - b_flow).length() < 1e-5, "flow mismatch at {p:?}");
+                let g_obs = grid.nearest_obstacle_at(cx, cz, p, &obs);
+                let b_obs = nearest_obstacle_at(p, &obs);
+                assert_eq!(g_obs.is_some(), b_obs.is_some());
+                if let (Some(a), Some(b)) = (g_obs, b_obs) {
+                    assert!((a.signed_dist - b.signed_dist).abs() < 1e-5);
+                    assert!((a.normal - b.normal).length() < 1e-5);
+                }
+            }
+        }
+
+        let len = (DOMAIN_GRID_SIZE as usize) * (DOMAIN_GRID_SIZE as usize) * 8;
+        let mut dom = vec![0u8; len];
+        let mut obs_bytes = vec![0u8; len];
+        let t0 = std::time::Instant::now();
+        let wet = rasterize_domain_with_obstacles(&src, IVec2::new(-64, -64), &obs, &mut dom, Some(&mut obs_bytes));
+        let dt = t0.elapsed();
+        assert!(wet);
+        eprintln!("bevy_ext_water::rasterize_domain_with_obstacles (200-seg river + obs) = {dt:?}");
     }
 }

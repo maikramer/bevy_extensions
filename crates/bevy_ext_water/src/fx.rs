@@ -596,6 +596,12 @@ fn tag_water_bodied(
     }
 }
 
+#[derive(Default)]
+struct ContactWaterCache {
+    signature: u64,
+    indices: Vec<crate::body::WaterBodyIndex>,
+}
+
 /// Deteta entrada/saída/vadeagem e emite impulsos físicos de onda no solver
 /// GPU (`WaterWaveWorld`) além de partículas de salpico/espuma.
 #[allow(clippy::too_many_arguments)]
@@ -605,16 +611,27 @@ fn water_contact_system<S: WaterSource>(
     mut waves: Option<ResMut<WaterWaveWorld>>,
     mut commands: Commands,
     mut swimmers: Query<(&GlobalTransform, &mut WaterContact, Option<&WaterKinematics>)>,
-    mut bounds: Local<Vec<(Vec2, Vec2)>>,
+    mut cache: Local<ContactWaterCache>,
 ) {
     let Some(source) = source else {
         return;
     };
+    let bodies = source.bodies();
+    if bodies.is_empty() {
+        for (_, mut contact, _) in &mut swimmers {
+            if contact.wet {
+                contact.wet = false;
+                contact.since_ripple = 0.0;
+            }
+        }
+        return;
+    }
+    let sig = source.signature();
+    if cache.indices.len() != bodies.len() || cache.signature != sig {
+        cache.indices = crate::body::WaterBodyIndex::build_vec(bodies);
+        cache.signature = sig;
+    }
     let dt = time.delta_secs().max(1e-4);
-    // Broad-phase: uma caixa por corpo por frame (`body_bounds`), para a query
-    // por nadador não pagar o `nearest_on_path` do rio em todos eles.
-    bounds.clear();
-    bounds.extend(source.bodies().iter().map(body_bounds));
     for (transform, mut contact, kinematics) in &mut swimmers {
         let pos = transform.translation();
         let previous = contact.last_pos.unwrap_or(pos);
@@ -655,13 +672,12 @@ fn water_contact_system<S: WaterSource>(
         let previous_contact = previous + Vec3::Y * contact_offset;
 
         let p = Vec2::new(pos.x, pos.z);
-        let surface = source
-            .bodies()
-            .iter()
-            .zip(bounds.iter())
-            .filter(|(_, (min, max))| p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y)
-            .filter_map(|(body, _)| body.surface_y_at(p))
-            .fold(None::<f32>, |acc, y| Some(acc.map_or(y, |a| a.max(y))));
+        let mut surface: Option<f32> = None;
+        for (body, idx) in bodies.iter().zip(cache.indices.iter()) {
+            if let Some(y) = idx.surface_y_at(body, p) {
+                surface = Some(surface.map_or(y, |a| a.max(y)));
+            }
+        }
         let Some(surface_y) = surface else {
             if contact.wet {
                 contact.wet = false;

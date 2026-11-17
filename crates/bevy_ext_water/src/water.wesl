@@ -159,81 +159,63 @@ fn active_time() -> f32 {
     return select(globals.time, wt, wt > 0.0);
 }
 
-fn sample_interactive_wave(world_xz: vec2<f32>) -> vec4<f32> {
+// Computes `(uv_x, uv_y, win_mask)` inside the active 128 m wave window once per query.
+fn window_uv_mask(world_xz: vec2<f32>, margin_m: f32) -> vec3<f32> {
     let wsize = water_params.wave_window.z;
     if wsize < 1.0 {
-        return vec4<f32>(0.0);
+        return vec3<f32>(0.0);
     }
     let uv = (world_xz - water_params.wave_window.xy) / wsize;
-    let margin = 6.0 / wsize;
+    let margin = margin_m / wsize;
     let bx = smoothstep(0.0, margin, uv.x) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.x));
     let bz = smoothstep(0.0, margin, uv.y) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.y));
     let win_mask = bx * bz;
-    if win_mask <= 0.001 {
-        return vec4<f32>(0.0);
-    }
-    return textureSampleLevel(wave_tex, wave_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0) * win_mask;
+    return vec3<f32>(uv.x, uv.y, win_mask);
 }
 
-// Samples `(depth_m * win_mask, d_depth_dx, d_depth_dz)` from `domain_tex` inside the active 128 m wave window.
-fn sample_domain_bank_grad(world_xz: vec2<f32>) -> vec3<f32> {
-    let wsize = water_params.wave_window.z;
-    if wsize < 1.0 {
-        return vec3<f32>(0.0);
+fn sample_interactive_wave(world_xz: vec2<f32>) -> vec4<f32> {
+    let uvm = window_uv_mask(world_xz, 6.0);
+    if uvm.z <= 0.001 {
+        return vec4<f32>(0.0);
     }
-    let uv = (world_xz - water_params.wave_window.xy) / wsize;
-    let margin = 6.0 / wsize;
-    let bx = smoothstep(0.0, margin, uv.x) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.x));
-    let bz = smoothstep(0.0, margin, uv.y) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.y));
-    let win_mask = bx * bz;
-    if win_mask <= 0.001 {
-        return vec3<f32>(0.0);
+    return textureSampleLevel(wave_tex, wave_sampler, clamp(uvm.xy, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0) * uvm.z;
+}
+
+// Samples `(depth_m * win_mask, d_depth_dx, d_depth_dz)` + obstacle-deflected current in 3 fetches instead of 4.
+struct DomainInfo {
+    bank_grad: vec3<f32>,
+    flow: vec2<f32>,
+};
+
+fn sample_domain_info(world_xz: vec2<f32>, fallback_flow: vec2<f32>) -> DomainInfo {
+    let uvm = window_uv_mask(world_xz, 6.0);
+    if uvm.z <= 0.001 {
+        return DomainInfo(vec3<f32>(0.0), fallback_flow);
     }
+    let uv = clamp(uvm.xy, vec2<f32>(0.0), vec2<f32>(1.0));
+    let win_mask = uvm.z;
     let step_uv = 1.0 / 256.0;
-    let d0 = max(textureSampleLevel(domain_tex, domain_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).x, 0.0);
+    let dom = textureSampleLevel(domain_tex, domain_sampler, uv, 0.0);
+    let d0 = max(dom.x, 0.0);
     let dx = max(textureSampleLevel(domain_tex, domain_sampler, clamp(uv + vec2<f32>(step_uv, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).x, 0.0);
     let dz = max(textureSampleLevel(domain_tex, domain_sampler, clamp(uv + vec2<f32>(0.0, step_uv), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).x, 0.0);
-    return vec3<f32>(d0, dx - d0, dz - d0) * win_mask;
-}
-
-// Samples obstacle-deflected current inside the rolling 128 m domain, fading back to `fallback_flow`.
-fn sample_domain_flow(world_xz: vec2<f32>, fallback_flow: vec2<f32>) -> vec2<f32> {
-    let wsize = water_params.wave_window.z;
-    if wsize < 1.0 {
-        return fallback_flow;
-    }
-    let uv = (world_xz - water_params.wave_window.xy) / wsize;
-    let margin = 6.0 / wsize;
-    let bx = smoothstep(0.0, margin, uv.x) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.x));
-    let bz = smoothstep(0.0, margin, uv.y) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.y));
-    let win_mask = bx * bz;
-    if win_mask <= 0.001 {
-        return fallback_flow;
-    }
-    let dom = textureSampleLevel(domain_tex, domain_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
-    return mix(fallback_flow, dom.yz, win_mask * smoothstep(0.0, 0.04, dom.x));
+    let bank_grad = vec3<f32>(d0, dx - d0, dz - d0) * win_mask;
+    let flow = mix(fallback_flow, dom.yz, win_mask * smoothstep(0.0, 0.04, dom.x));
+    return DomainInfo(bank_grad, flow);
 }
 
 // Returns `(signed_dist_m, obs_nx, obs_nz, obs_radius_m)` from `obstacle_tex`.
 fn sample_obstacle(world_xz: vec2<f32>) -> vec4<f32> {
-    let wsize = water_params.wave_window.z;
-    if wsize < 1.0 {
+    let uvm = window_uv_mask(world_xz, 4.0);
+    if uvm.z <= 0.001 {
         return vec4<f32>(8.0, 1.0, 0.0, 0.0);
     }
-    let uv = (world_xz - water_params.wave_window.xy) / wsize;
-    let margin = 4.0 / wsize;
-    let bx = smoothstep(0.0, margin, uv.x) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.x));
-    let bz = smoothstep(0.0, margin, uv.y) * (1.0 - smoothstep(1.0 - margin, 1.0, uv.y));
-    let win_mask = bx * bz;
-    if win_mask <= 0.001 {
-        return vec4<f32>(8.0, 1.0, 0.0, 0.0);
-    }
-    let obs = textureSampleLevel(obstacle_tex, domain_sampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
+    let obs = textureSampleLevel(obstacle_tex, domain_sampler, clamp(uvm.xy, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
     let halo = clamp(obs.x, 0.0, 2.0);
     if halo <= 0.01 {
         return vec4<f32>(8.0, 1.0, 0.0, 0.0);
     }
-    let signed_dist = mix(8.0, (1.0 - halo) * 4.0, win_mask);
+    let signed_dist = mix(8.0, (1.0 - halo) * 4.0, uvm.z);
     let n = normalize(select(vec2<f32>(1.0, 0.0), obs.yz, dot(obs.yz, obs.yz) > 1e-4));
     return vec4<f32>(signed_dist, n.x, n.y, max(obs.w, 0.25));
 }
@@ -351,12 +333,19 @@ fn advected_capillary_height(p: vec2<f32>, flow: vec2<f32>, t: f32) -> f32 {
     let p1 = fract(t / cycle + 0.5);
     let w0 = 1.0 - abs(p0 * 2.0 - 1.0);
     let w1 = 1.0 - abs(p1 * 2.0 - 1.0);
-    let uv0 = p - flow * (p0 * cycle);
-    let uv1 = p - flow * (p1 * cycle);
-    let n0 = fbm(uv0 * 2.4, vec2<f32>(0.0)) * 0.062 + (value_noise(uv0 * 6.4) - 0.5) * 0.028;
-    let n1 = fbm(uv1 * 2.4 + vec2<f32>(17.3, 9.1), vec2<f32>(0.0)) * 0.062
-           + (value_noise(uv1 * 6.4 + vec2<f32>(5.2, 13.7)) - 0.5) * 0.028;
-    return n0 * w0 + n1 * w1 + wave_height(p - flow * 0.12 * t, t) * 0.048;
+    var cap = 0.0;
+    if w0 > 0.005 {
+        let uv0 = p - flow * (p0 * cycle);
+        let n0 = fbm(uv0 * 2.4, vec2<f32>(0.0)) * 0.062 + (value_noise(uv0 * 6.4) - 0.5) * 0.028;
+        cap += n0 * w0;
+    }
+    if w1 > 0.005 {
+        let uv1 = p - flow * (p1 * cycle);
+        let n1 = fbm(uv1 * 2.4 + vec2<f32>(17.3, 9.1), vec2<f32>(0.0)) * 0.062
+            + (value_noise(uv1 * 6.4 + vec2<f32>(5.2, 13.7)) - 0.5) * 0.028;
+        cap += n1 * w1;
+    }
+    return cap + wave_height(p - flow * 0.12 * t, t) * 0.048;
 }
 
 // High-frequency raindrop micro-rings for storm atmosphere.
@@ -611,12 +600,13 @@ fn fragment(
     let shallow_t = 1.0 - smoothstep(0.16, 0.48, vert_depth);
     let wading_t = smoothstep(0.15, 0.42, vert_depth) * (1.0 - smoothstep(0.85, 1.45, vert_depth));
     let deep_t = smoothstep(0.80, 1.65, vert_depth);
-    let dom_info = sample_domain_bank_grad(world.xz);
+    let dom_all = sample_domain_info(world.xz, flow);
+    let dom_info = dom_all.bank_grad;
     let dom_slope = length(dom_info.yz);
     let obs = sample_obstacle(world.xz);
     let obs_dist = obs.x;
     let obs_n = obs.yz;
-    let stream_flow = sample_domain_flow(world.xz, flow);
+    let stream_flow = dom_all.flow;
     let bank_slow = 0.28 + 0.72 * smoothstep(0.03, 0.62, vert_depth);
     let flow_eff = stream_flow * bank_slow;
     let flow_eff_speed = length(flow_eff);
@@ -640,56 +630,58 @@ fn fragment(
     } else {
         let swell = gerstner_swell(world.xz, t);
         wave_crest_h += swell.y * mix(0.24, 1.0, smoothstep(0.28, 1.10, vert_depth));
-        let ec = 0.09;
-        let cx0 = advected_capillary_height(world.xz - vec2<f32>(ec, 0.0), flow_eff, t);
-        let cx1 = advected_capillary_height(world.xz + vec2<f32>(ec, 0.0), flow_eff, t);
-        let cz0 = advected_capillary_height(world.xz - vec2<f32>(0.0, ec), flow_eff, t);
-        let cz1 = advected_capillary_height(world.xz + vec2<f32>(0.0, ec), flow_eff, t);
-        let cap_grad = vec2<f32>(cx1 - cx0, cz1 - cz0) * (0.5 / ec);
-        let cap_depth_gain = 1.40 * (0.48 + 0.52 * smoothstep(0.02, 0.28, vert_depth)) * (1.0 + 0.14 * wading_t + 0.24 * deep_t);
-
-        // Shoreline boundary shear eddies (moving flow scraping banks/stones) + calm shore swash.
-        var shear_grad = vec2<f32>(0.0);
-        let bank_shear_mask = smoothstep(0.015, 0.08, vert_depth) * (1.0 - smoothstep(0.26, 0.62, vert_depth));
-        if flow_speed > 0.18 && bank_shear_mask > 0.01 {
-            let f_dir = flow / max(flow_speed, 1e-3);
-            let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
-            let along = dot(world.xz, f_dir);
-            let across = dot(world.xz, f_perp);
-            let eddy = sin(along * 4.8 - t * (3.0 + flow_eff_speed * 2.2) + sin(across * 3.1) * 1.4)
-                * (value_noise(world.xz * 4.2 - flow_eff * (t * 0.45)) - 0.5);
-            shear_grad = (f_perp * 0.75 + f_dir * 0.35) * (eddy * 0.52 * min(flow_speed, 2.5) * bank_shear_mask);
-        }
-        var obs_eddy_grad = vec2<f32>(0.0);
-        if obs_dist < 3.6 && flow_speed > 0.14 {
-            let obs_t = vec2<f32>(-obs_n.y, obs_n.x);
-            let f_dir = flow / max(flow_speed, 1e-3);
-            let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
-            let obs_impact = max(-dot(flow, obs_n), 0.0);
-            let obs_graze = abs(dot(flow, obs_t));
-            let bow_mask = smoothstep(-0.08, 0.08, obs_dist) * smoothstep(1.35, 0.05, obs_dist);
-            let bow_wave = cos(obs_dist * 12.5 - t * (3.2 + obs_impact * 1.4))
-                * bow_mask * clamp(obs_impact * 0.35, 0.0, 0.55);
-            let v_band = smoothstep(-0.04, 0.10, obs_dist) * smoothstep(2.40, 0.12, obs_dist);
-            let wake_phase = dot(world.xz, f_dir) * 4.8 - abs(dot(world.xz, f_perp)) * 3.6 - t * (4.6 + flow_speed * 1.2);
-            let v_ripples = sin(wake_phase) * v_band * clamp(obs_graze * 0.24, 0.0, 0.38);
-            obs_eddy_grad = (obs_n * bow_wave + (obs_n * 0.6 + obs_t * 0.45) * v_ripples) * smoothstep(0.01, 0.10, vert_depth);
-        }
-        let swash_mask = smoothstep(0.008, 0.05, vert_depth) * (1.0 - smoothstep(0.14, 0.36, vert_depth));
-        let in_dir = select(
-            normalize(vec2<f32>(0.6, 0.8)),
-            normalize(dom_info.yz),
-            dom_slope > 1e-3,
-        );
-        let swash_phase = dot(world.xz, in_dir) * 9.5 + t * 2.2;
-        let swash_grad = in_dir * (cos(swash_phase) * 0.095 * swash_mask * (0.65 + 0.35 * active_amp()));
-
-        let rain_grad = rain_ripple_ring_slope(world.xz, t, rain);
         let shallow_n = smoothstep(0.0, 0.10, vert_depth);
-        let inter_slope = inter_grad * (1.70 / (1.0 + length(inter_grad) * 0.45));
-        let grad = (cap_grad * cap_depth_gain + inter_slope + rain_grad * 1.30 + shear_grad + obs_eddy_grad + swash_grad) * damp * shallow_n;
-        let wave_n = normalize(vec3<f32>(-grad.x, 1.0, -grad.y));
-        surf_normal = select(geom_n, normalize(mix(geom_n, wave_n, 0.94)), is_front);
+        if shallow_n > 0.001 && is_front {
+            let ec = 0.09;
+            let cx0 = advected_capillary_height(world.xz - vec2<f32>(ec, 0.0), flow_eff, t);
+            let cx1 = advected_capillary_height(world.xz + vec2<f32>(ec, 0.0), flow_eff, t);
+            let cz0 = advected_capillary_height(world.xz - vec2<f32>(0.0, ec), flow_eff, t);
+            let cz1 = advected_capillary_height(world.xz + vec2<f32>(0.0, ec), flow_eff, t);
+            let cap_grad = vec2<f32>(cx1 - cx0, cz1 - cz0) * (0.5 / ec);
+            let cap_depth_gain = 1.40 * (0.48 + 0.52 * smoothstep(0.02, 0.28, vert_depth)) * (1.0 + 0.14 * wading_t + 0.24 * deep_t);
+
+            // Shoreline boundary shear eddies (moving flow scraping banks/stones) + calm shore swash.
+            var shear_grad = vec2<f32>(0.0);
+            let bank_shear_mask = smoothstep(0.015, 0.08, vert_depth) * (1.0 - smoothstep(0.26, 0.62, vert_depth));
+            if flow_speed > 0.18 && bank_shear_mask > 0.01 {
+                let f_dir = flow / max(flow_speed, 1e-3);
+                let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
+                let along = dot(world.xz, f_dir);
+                let across = dot(world.xz, f_perp);
+                let eddy = sin(along * 4.8 - t * (3.0 + flow_eff_speed * 2.2) + sin(across * 3.1) * 1.4)
+                    * (value_noise(world.xz * 4.2 - flow_eff * (t * 0.45)) - 0.5);
+                shear_grad = (f_perp * 0.75 + f_dir * 0.35) * (eddy * 0.52 * min(flow_speed, 2.5) * bank_shear_mask);
+            }
+            var obs_eddy_grad = vec2<f32>(0.0);
+            if obs_dist < 3.6 && flow_speed > 0.14 {
+                let obs_t = vec2<f32>(-obs_n.y, obs_n.x);
+                let f_dir = flow / max(flow_speed, 1e-3);
+                let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
+                let obs_impact = max(-dot(flow, obs_n), 0.0);
+                let obs_graze = abs(dot(flow, obs_t));
+                let bow_mask = smoothstep(-0.08, 0.08, obs_dist) * smoothstep(1.35, 0.05, obs_dist);
+                let bow_wave = cos(obs_dist * 12.5 - t * (3.2 + obs_impact * 1.4))
+                    * bow_mask * clamp(obs_impact * 0.35, 0.0, 0.55);
+                let v_band = smoothstep(-0.04, 0.10, obs_dist) * smoothstep(2.40, 0.12, obs_dist);
+                let wake_phase = dot(world.xz, f_dir) * 4.8 - abs(dot(world.xz, f_perp)) * 3.6 - t * (4.6 + flow_speed * 1.2);
+                let v_ripples = sin(wake_phase) * v_band * clamp(obs_graze * 0.24, 0.0, 0.38);
+                obs_eddy_grad = (obs_n * bow_wave + (obs_n * 0.6 + obs_t * 0.45) * v_ripples) * smoothstep(0.01, 0.10, vert_depth);
+            }
+            let swash_mask = smoothstep(0.008, 0.05, vert_depth) * (1.0 - smoothstep(0.14, 0.36, vert_depth));
+            let in_dir = select(
+                normalize(vec2<f32>(0.6, 0.8)),
+                normalize(dom_info.yz),
+                dom_slope > 1e-3,
+            );
+            let swash_phase = dot(world.xz, in_dir) * 9.5 + t * 2.2;
+            let swash_grad = in_dir * (cos(swash_phase) * 0.095 * swash_mask * (0.65 + 0.35 * active_amp()));
+
+            let rain_grad = rain_ripple_ring_slope(world.xz, t, rain);
+            let inter_slope = inter_grad * (1.70 / (1.0 + length(inter_grad) * 0.45));
+            let grad = (cap_grad * cap_depth_gain + inter_slope + rain_grad * 1.30 + shear_grad + obs_eddy_grad + swash_grad) * damp * shallow_n;
+            let wave_n = normalize(vec3<f32>(-grad.x, 1.0, -grad.y));
+            surf_normal = normalize(mix(geom_n, wave_n, 0.94));
+        }
     }
     pbr_input.N = surf_normal;
 

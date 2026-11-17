@@ -279,10 +279,17 @@ impl WaterBody {
         self.shape.contour(self.radius, delta.y.atan2(delta.x))
     }
 
+    #[inline]
+    fn lake_radial_bounds(&self, margin: f32) -> (f32, f32) {
+        let (min_frac, max_frac) = self.shape.radius_frac_bounds();
+        let scale = self.radius * self.mirror_reach;
+        ((scale * min_frac + margin).max(0.0), (scale * max_frac + margin).max(0.0))
+    }
+
     /// Point is inside the carve zone (spawner `avoid-water`).
     pub fn contains(&self, p: Vec2) -> bool {
         match self.kind {
-            WaterKind::Lake => p.distance(self.at) <= self.carve_radius,
+            WaterKind::Lake => (p - self.at).length_squared() <= self.carve_radius * self.carve_radius,
             WaterKind::River => {
                 !self.stations.is_empty()
                     // Rejeição O(1) pelo casco antes do scan O(estações): um
@@ -302,7 +309,10 @@ impl WaterBody {
     /// Point is inside the carve zone plus `margin` (spawner `near-water`).
     pub fn is_near(&self, p: Vec2, margin: f32) -> bool {
         match self.kind {
-            WaterKind::Lake => p.distance(self.at) <= self.carve_radius + margin,
+            WaterKind::Lake => {
+                let r = (self.carve_radius + margin).max(0.0);
+                (p - self.at).length_squared() <= r * r
+            }
             WaterKind::River => {
                 !self.stations.is_empty()
                     && (self.hull <= 0.0
@@ -324,8 +334,16 @@ impl WaterBody {
                 // do raio nominal — e um recorte tem de responder "seco"
                 // mesmo dentro dele (assentamento `in-water` à lâmina).
                 let delta = p - self.at;
+                let dist_sq = delta.length_squared();
+                let (min_r, max_r) = self.lake_radial_bounds(0.0);
+                if dist_sq > max_r * max_r {
+                    return None;
+                }
+                if dist_sq <= min_r * min_r {
+                    return Some(self.water_y);
+                }
                 let contour = self.contour_at_delta(delta) * self.mirror_reach;
-                (delta.length() <= contour).then_some(self.water_y)
+                (dist_sq.sqrt() <= contour).then_some(self.water_y)
             }
             WaterKind::River => {
                 // Mesma rejeição O(1) do casco (`contains`): além do hull não
@@ -335,11 +353,12 @@ impl WaterBody {
                     return None;
                 }
                 let hit = nearest_on_path(&self.stations, p)?;
-                let d = hit.point.distance(p);
+                let d_sq = hit.point.distance_squared(p);
+                let hw = self.half_width_lerp(&hit);
                 // Meia-largura EFETIVA da estação — a ribbon acaba em
                 // `half · reach` (guardado no carve); usar a nominal punha a
                 // lâmina/queries sobre a margem seca.
-                (d <= self.half_width_lerp(&hit)).then(|| {
+                (d_sq <= hw * hw).then(|| {
                     if self.surface_y.is_empty() {
                         self.water_y
                     } else {
@@ -382,8 +401,16 @@ impl WaterBody {
             WaterKind::Lake => {
                 // Mesma métrica de [`WaterBody::surface_y_at`] + margem.
                 let delta = p - self.at;
+                let dist_sq = delta.length_squared();
+                let (min_r, max_r) = self.lake_radial_bounds(margin);
+                if dist_sq > max_r * max_r {
+                    return None;
+                }
+                if dist_sq <= min_r * min_r {
+                    return Some(self.water_y);
+                }
                 let contour = self.contour_at_delta(delta) * self.mirror_reach;
-                (delta.length() <= contour + margin).then_some(self.water_y)
+                (dist_sq.sqrt() <= contour + margin).then_some(self.water_y)
             }
             WaterKind::River => {
                 // Mesma rejeição O(1) do casco, +margem (`blend_surface_y`);
@@ -393,10 +420,11 @@ impl WaterBody {
                     return None;
                 }
                 let hit = nearest_on_path(&self.stations, p)?;
-                let d = hit.point.distance(p);
+                let d_sq = hit.point.distance_squared(p);
+                let hw_m = self.half_width_lerp(&hit) + margin;
                 // Meia-largura EFETIVA + margem (mesma métrica de
                 // [`WaterBody::surface_y_at`]).
-                (d <= self.half_width_lerp(&hit) + margin).then(|| {
+                (d_sq <= hw_m * hw_m).then(|| {
                     if self.surface_y.is_empty() {
                         self.water_y
                     } else {
@@ -415,26 +443,60 @@ impl WaterBody {
         bed_y: Option<f32>,
         default_depth: f32,
     ) -> Option<WaterDomainSample> {
+        self.sample_domain_with_bed(p, || bed_y, default_depth)
+    }
+
+    /// Variant of [`Self::sample_domain`] that evaluates `bed_y_fn` lazily — only
+    /// when `p` is actually inside the body contour/ribbon — avoiding expensive
+    /// heightfield sampling on dry texels.
+    pub fn sample_domain_with_bed<F>(
+        &self,
+        p: Vec2,
+        bed_y_fn: F,
+        default_depth: f32,
+    ) -> Option<WaterDomainSample>
+    where
+        F: FnOnce() -> Option<f32>,
+    {
         match self.kind {
             WaterKind::Lake => {
                 let delta = p - self.at;
-                let contour = self.contour_at_delta(delta) * self.mirror_reach;
-                let radial_dist = delta.length();
-                if radial_dist > contour {
+                let dist_sq = delta.length_squared();
+                let (min_r, max_r) = self.lake_radial_bounds(0.0);
+                if dist_sq > max_r * max_r {
                     return None;
                 }
+                let mut contour_cache: Option<f32> = None;
+                let radial_dist = if dist_sq <= min_r * min_r {
+                    None
+                } else {
+                    let radial_dist = dist_sq.sqrt();
+                    let contour = self.contour_at_delta(delta) * self.mirror_reach;
+                    if radial_dist > contour {
+                        return None;
+                    }
+                    contour_cache = Some(contour);
+                    Some(radial_dist)
+                };
+                let bed_y = bed_y_fn();
                 if let Some(by) = bed_y {
                     if by >= self.water_y - 0.01 {
                         return None;
                     }
+                    return Some(WaterDomainSample {
+                        surface_y: self.water_y,
+                        depth: (self.water_y - by).clamp(0.02, 40.0),
+                        flow: Vec2::ZERO,
+                        plunge: 0.0,
+                    });
                 }
+                let radial_dist = radial_dist.unwrap_or_else(|| dist_sq.sqrt());
+                let contour = contour_cache
+                    .unwrap_or_else(|| self.contour_at_delta(delta) * self.mirror_reach);
                 let rim_t = (1.0 - (radial_dist / contour.max(0.1)).powi(2)).clamp(0.05, 1.0);
-                let depth = bed_y
-                    .map(|by| (self.water_y - by).clamp(0.02, 40.0))
-                    .unwrap_or_else(|| (default_depth.max(0.4) * rim_t).max(0.05));
                 Some(WaterDomainSample {
                     surface_y: self.water_y,
-                    depth,
+                    depth: (default_depth.max(0.4) * rim_t).max(0.05),
                     flow: Vec2::ZERO,
                     plunge: 0.0,
                 })
@@ -444,65 +506,595 @@ impl WaterBody {
                     return None;
                 }
                 let hit = nearest_on_path(&self.stations, p)?;
-                let hw = self.half_width_lerp(&hit);
-                let dist = hit.point.distance(p);
-                if dist > hw {
-                    return None;
-                }
-                let surf_y = if self.surface_y.is_empty() {
-                    self.water_y
-                } else {
-                    station_lerp(&self.surface_y, &hit)
-                };
-                if let Some(by) = bed_y {
-                    if by >= surf_y + 0.08 {
-                        return None;
-                    }
-                }
-                let channel_depth = if self.depths.is_empty() {
-                    default_depth
-                } else {
-                    station_lerp(&self.depths, &hit)
-                };
-                let bank_u = (dist / hw.max(0.1)).clamp(0.0, 1.0);
-                let analytic_depth = (channel_depth * (1.0 - 0.65 * bank_u * bank_u)).max(0.05);
-                let depth = bed_y
-                    .map(|by| (surf_y - by).max(analytic_depth * 0.35).clamp(0.02, 40.0))
-                    .unwrap_or(analytic_depth);
+                self.sample_river_hit(p, hit, bed_y_fn, default_depth, None)
+            }
+        }
+    }
 
-                let n = self.stations.len();
-                let seg_a = hit.segment.min(n.saturating_sub(2));
-                let seg_b = (seg_a + 1).min(n.saturating_sub(1));
-                let tangent = self.stations[seg_b] - self.stations[seg_a];
-                let seg_len = tangent.length().max(0.05);
-                let dir = tangent / seg_len;
-                let slope = if self.surface_y.len() > seg_b {
-                    ((self.surface_y[seg_a] - self.surface_y[seg_b]) / seg_len).max(0.0)
-                } else {
-                    0.0
-                };
-                let speed = (1.15_f32 + slope * 14.0).clamp(0.9, 3.8);
-                let profile = 0.45 + 0.55 * (1.0 - bank_u * bank_u);
-                let flow = dir * (speed * profile);
+    fn sample_river_hit<F>(
+        &self,
+        p: Vec2,
+        hit: PathHit,
+        bed_y_fn: F,
+        default_depth: f32,
+        cascade_bounds: Option<(Vec2, Vec2)>,
+    ) -> Option<WaterDomainSample>
+    where
+        F: FnOnce() -> Option<f32>,
+    {
+        let hw = self.half_width_lerp(&hit);
+        let dist_sq = hit.point.distance_squared(p);
+        if dist_sq > hw * hw {
+            return None;
+        }
+        let surf_y = if self.surface_y.is_empty() {
+            self.water_y
+        } else {
+            station_lerp(&self.surface_y, &hit)
+        };
+        let bed_y = bed_y_fn();
+        if let Some(by) = bed_y {
+            if by >= surf_y + 0.08 {
+                return None;
+            }
+        }
+        let dist = dist_sq.sqrt();
+        let channel_depth = if self.depths.is_empty() {
+            default_depth
+        } else {
+            station_lerp(&self.depths, &hit)
+        };
+        let bank_u = (dist / hw.max(0.1)).clamp(0.0, 1.0);
+        let analytic_depth = (channel_depth * (1.0 - 0.65 * bank_u * bank_u)).max(0.05);
+        let depth = bed_y
+            .map(|by| (surf_y - by).max(analytic_depth * 0.35).clamp(0.02, 40.0))
+            .unwrap_or(analytic_depth);
 
-                let mut plunge = 0.0_f32;
+        let n = self.stations.len();
+        let seg_a = hit.segment.min(n.saturating_sub(2));
+        let seg_b = (seg_a + 1).min(n.saturating_sub(1));
+        let tangent = self.stations[seg_b] - self.stations[seg_a];
+        let seg_len = tangent.length().max(0.05);
+        let dir = tangent / seg_len;
+        let slope = if self.surface_y.len() > seg_b {
+            ((self.surface_y[seg_a] - self.surface_y[seg_b]) / seg_len).max(0.0)
+        } else {
+            0.0
+        };
+        let speed = (1.15_f32 + slope * 14.0).clamp(0.9, 3.8);
+        let profile = 0.45 + 0.55 * (1.0 - bank_u * bank_u);
+        let flow = dir * (speed * profile);
+
+        let mut plunge = 0.0_f32;
+        if !self.cascades.is_empty() {
+            let check_cascades = cascade_bounds.is_none_or(|(cmin, cmax)| {
+                p.x >= cmin.x && p.x <= cmax.x && p.y >= cmin.y && p.y <= cmax.y
+            });
+            if check_cascades {
                 for c in &self.cascades {
                     if let Some(&base_pos) = self.stations.get(c.base) {
                         let pr = (self.half_width_at(c.base) * 1.45).max(2.5);
-                        let pd = p.distance(base_pos);
-                        if pd < pr {
+                        let pd_sq = p.distance_squared(base_pos);
+                        if pd_sq < pr * pr {
+                            let pd = pd_sq.sqrt();
                             let fall_scale = (c.drop / 4.0).clamp(0.35, 1.0);
                             plunge = plunge.max((1.0 - pd / pr) * fall_scale);
                         }
                     }
                 }
+            }
+        }
 
-                Some(WaterDomainSample {
-                    surface_y: surf_y,
-                    depth,
-                    flow,
-                    plunge,
+        Some(WaterDomainSample {
+            surface_y: surf_y,
+            depth,
+            flow,
+            plunge,
+        })
+    }
+}
+
+const PATH_BLOCK_SEGS: usize = 8;
+const SUPER_BLOCK_CHILDREN: usize = 8;
+
+#[derive(Debug, Clone)]
+struct PathBlock {
+    start: usize,
+    end: usize,
+    min: Vec2,
+    max: Vec2,
+}
+
+#[derive(Debug, Clone)]
+struct SuperPathBlock {
+    block_start: usize,
+    block_end: usize,
+    min: Vec2,
+    max: Vec2,
+}
+
+#[inline]
+fn dist_sq_to_aabb(p: Vec2, min: Vec2, max: Vec2) -> f32 {
+    let clamped = p.clamp(min, max);
+    (p - clamped).length_squared()
+}
+
+/// Hierarchical AABB index over a polyline's segments for fast bounded and exact
+/// `nearest_on_path` queries without modifying [`WaterBody`] fields or reflection.
+#[derive(Debug, Clone)]
+pub struct PathSpatialIndex {
+    min: Vec2,
+    max: Vec2,
+    blocks: Vec<PathBlock>,
+    super_blocks: Vec<SuperPathBlock>,
+}
+
+impl PathSpatialIndex {
+    pub fn build(points: &[Vec2]) -> Option<Self> {
+        if points.len() < 2 {
+            return None;
+        }
+        let seg_count = points.len() - 1;
+        let num_blocks = seg_count.div_ceil(PATH_BLOCK_SEGS);
+        let mut blocks = Vec::with_capacity(num_blocks);
+        let mut g_min = Vec2::splat(f32::INFINITY);
+        let mut g_max = Vec2::splat(f32::NEG_INFINITY);
+
+        for start in (0..seg_count).step_by(PATH_BLOCK_SEGS) {
+            let end = (start + PATH_BLOCK_SEGS).min(seg_count);
+            let mut b_min = points[start];
+            let mut b_max = points[start];
+            for &pt in &points[start + 1..=end] {
+                b_min = b_min.min(pt);
+                b_max = b_max.max(pt);
+            }
+            g_min = g_min.min(b_min);
+            g_max = g_max.max(b_max);
+            blocks.push(PathBlock {
+                start,
+                end,
+                min: b_min,
+                max: b_max,
+            });
+        }
+
+        let mut super_blocks = Vec::new();
+        if blocks.len() > SUPER_BLOCK_CHILDREN {
+            for block_start in (0..blocks.len()).step_by(SUPER_BLOCK_CHILDREN) {
+                let block_end = (block_start + SUPER_BLOCK_CHILDREN).min(blocks.len());
+                let mut s_min = Vec2::splat(f32::INFINITY);
+                let mut s_max = Vec2::splat(f32::NEG_INFINITY);
+                for b in &blocks[block_start..block_end] {
+                    s_min = s_min.min(b.min);
+                    s_max = s_max.max(b.max);
+                }
+                super_blocks.push(SuperPathBlock {
+                    block_start,
+                    block_end,
+                    min: s_min,
+                    max: s_max,
+                });
+            }
+        }
+
+        Some(Self {
+            min: g_min,
+            max: g_max,
+            blocks,
+            super_blocks,
+        })
+    }
+
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        (self.min, self.max)
+    }
+
+    /// Exact closest point on `points`, equivalent to [`nearest_on_path`] when the
+    /// result lies within `max_dist` (and returns `None` if farther than `max_dist`).
+    pub fn nearest_within(&self, points: &[Vec2], p: Vec2, max_dist: f32) -> Option<PathHit> {
+        let mut best_d = max_dist * max_dist;
+        if dist_sq_to_aabb(p, self.min, self.max) > best_d {
+            return None;
+        }
+        let mut best: Option<PathHit> = None;
+
+        if !self.super_blocks.is_empty() {
+            for sb in &self.super_blocks {
+                if dist_sq_to_aabb(p, sb.min, sb.max) > best_d {
+                    continue;
+                }
+                for b in &self.blocks[sb.block_start..sb.block_end] {
+                    if dist_sq_to_aabb(p, b.min, b.max) > best_d {
+                        continue;
+                    }
+                    scan_segment_range(points, b.start, b.end, p, &mut best_d, &mut best);
+                }
+            }
+        } else {
+            for b in &self.blocks {
+                if dist_sq_to_aabb(p, b.min, b.max) > best_d {
+                    continue;
+                }
+                scan_segment_range(points, b.start, b.end, p, &mut best_d, &mut best);
+            }
+        }
+
+        best
+    }
+
+    /// Exact closest point anywhere on `points`, bit-equivalent to [`nearest_on_path`].
+    pub fn nearest(&self, points: &[Vec2], p: Vec2) -> Option<PathHit> {
+        if points.len() < 2 {
+            return nearest_on_path(points, p);
+        }
+        // Pick an initial upper bound from the block whose AABB is closest to `p`
+        // so branch-and-bound prunes all distant blocks immediately.
+        let mut best_d = f32::INFINITY;
+        let mut best: Option<PathHit> = None;
+        let seed_block = self
+            .blocks
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                dist_sq_to_aabb(p, a.min, a.max)
+                    .partial_cmp(&dist_sq_to_aabb(p, b.min, b.max))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let sb0 = &self.blocks[seed_block];
+        scan_segment_range(points, sb0.start, sb0.end, p, &mut best_d, &mut best);
+
+        if !self.super_blocks.is_empty() {
+            for sb in &self.super_blocks {
+                if dist_sq_to_aabb(p, sb.min, sb.max) > best_d {
+                    continue;
+                }
+                for (bi, b) in self.blocks[sb.block_start..sb.block_end].iter().enumerate() {
+                    if sb.block_start + bi == seed_block {
+                        continue;
+                    }
+                    if dist_sq_to_aabb(p, b.min, b.max) > best_d {
+                        continue;
+                    }
+                    scan_segment_range(points, b.start, b.end, p, &mut best_d, &mut best);
+                }
+            }
+        } else {
+            for (bi, b) in self.blocks.iter().enumerate() {
+                if bi == seed_block || dist_sq_to_aabb(p, b.min, b.max) > best_d {
+                    continue;
+                }
+                scan_segment_range(points, b.start, b.end, p, &mut best_d, &mut best);
+            }
+        }
+
+        best
+    }
+}
+
+#[inline]
+fn scan_segment_range(
+    points: &[Vec2],
+    start: usize,
+    end: usize,
+    p: Vec2,
+    best_d: &mut f32,
+    best: &mut Option<PathHit>,
+) {
+    for i in start..end {
+        let a = points[i];
+        let b = points[i + 1];
+        let seg_min = a.min(b);
+        let seg_max = a.max(b);
+        if dist_sq_to_aabb(p, seg_min, seg_max) > *best_d {
+            continue;
+        }
+        let ab = b - a;
+        let len_sq = ab.length_squared();
+        let t = if len_sq <= 1e-12 {
+            0.0
+        } else {
+            ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+        };
+        let q = a + ab * t;
+        let d = q.distance_squared(p);
+        // Preserve strict `<` tie-break order only when equal distance occurs on
+        // the block scan vs seed scan; matches linear `nearest_on_path` on ties by
+        // only tightening on `<`, except we treat exact ties cleanly.
+        if d < *best_d || (d == *best_d && best.is_none_or(|prev| i < prev.segment)) {
+            *best_d = d;
+            *best = Some(PathHit {
+                point: q,
+                segment: i,
+                t,
+            });
+        }
+    }
+}
+
+/// Precomputed spatial accelerator for a [`WaterBody`] (used by domain rasterization,
+/// contact detection, buoyancy, and ground splatting).
+#[derive(Debug, Clone)]
+pub struct WaterBodyIndex {
+    bounds_min: Vec2,
+    bounds_max: Vec2,
+    max_hw: f32,
+    path: Option<PathSpatialIndex>,
+    cascade_bounds: Option<(Vec2, Vec2)>,
+}
+
+impl WaterBodyIndex {
+    pub fn for_body(body: &WaterBody) -> Self {
+        match body.kind {
+            WaterKind::Lake => {
+                let (_, max_frac) = body.shape.radius_frac_bounds();
+                let reach = body
+                    .carve_radius
+                    .max(body.radius * max_frac * body.mirror_reach);
+                Self {
+                    bounds_min: body.at - Vec2::splat(reach),
+                    bounds_max: body.at + Vec2::splat(reach),
+                    max_hw: reach,
+                    path: None,
+                    cascade_bounds: None,
+                }
+            }
+            WaterKind::River => {
+                let max_hw = body
+                    .half_width
+                    .iter()
+                    .copied()
+                    .fold(body.water_width * 0.5, f32::max);
+                let expand = max_hw.max(body.carve_radius);
+                let path = PathSpatialIndex::build(&body.stations);
+                let (pmin, pmax) = path
+                    .as_ref()
+                    .map(|idx| idx.bounds())
+                    .unwrap_or_else(|| {
+                        body.stations
+                            .first()
+                            .copied()
+                            .map(|p| (p, p))
+                            .unwrap_or((body.at, body.at))
+                    });
+                let cascade_bounds = if body.cascades.is_empty() {
+                    None
+                } else {
+                    let mut cmin = Vec2::splat(f32::INFINITY);
+                    let mut cmax = Vec2::splat(f32::NEG_INFINITY);
+                    let mut any = false;
+                    for c in &body.cascades {
+                        if let Some(&base_pos) = body.stations.get(c.base) {
+                            let pr = (body.half_width_at(c.base) * 1.45).max(2.5);
+                            cmin = cmin.min(base_pos - Vec2::splat(pr));
+                            cmax = cmax.max(base_pos + Vec2::splat(pr));
+                            any = true;
+                        }
+                    }
+                    any.then_some((cmin, cmax))
+                };
+                Self {
+                    bounds_min: pmin - Vec2::splat(expand),
+                    bounds_max: pmax + Vec2::splat(expand),
+                    max_hw,
+                    path,
+                    cascade_bounds,
+                }
+            }
+        }
+    }
+
+    pub fn build_vec(bodies: &[WaterBody]) -> Vec<Self> {
+        bodies.iter().map(Self::for_body).collect()
+    }
+
+    #[inline]
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        (self.bounds_min, self.bounds_max)
+    }
+
+    #[inline]
+    pub fn overlaps_rect(&self, min: Vec2, max: Vec2, pad: f32) -> bool {
+        self.bounds_max.x + pad >= min.x
+            && self.bounds_min.x - pad <= max.x
+            && self.bounds_max.y + pad >= min.y
+            && self.bounds_min.y - pad <= max.y
+    }
+
+    /// Appends river segment indices that can possibly satisfy `d <= hw` for any point
+    /// in `[cell_min, cell_max]` (preserving exact `nearest_on_path` semantics).
+    pub fn collect_river_segments_in_rect(
+        &self,
+        body: &WaterBody,
+        cell_min: Vec2,
+        cell_max: Vec2,
+        out_segs: &mut Vec<usize>,
+    ) {
+        if body.kind != WaterKind::River || body.stations.len() < 2 {
+            return;
+        }
+        let expand = self.max_hw + 1e-3;
+        let qmin = cell_min - Vec2::splat(expand);
+        let qmax = cell_max + Vec2::splat(expand);
+        if self.bounds_max.x < qmin.x
+            || self.bounds_min.x > qmax.x
+            || self.bounds_max.y < qmin.y
+            || self.bounds_min.y > qmax.y
+        {
+            return;
+        }
+        let Some(path) = &self.path else {
+            out_segs.extend(0..body.stations.len() - 1);
+            return;
+        };
+        let push_block = |b: &PathBlock, out: &mut Vec<usize>| {
+            if b.max.x < qmin.x || b.min.x > qmax.x || b.max.y < qmin.y || b.min.y > qmax.y {
+                return;
+            }
+            for i in b.start..b.end {
+                let s0 = body.stations[i];
+                let s1 = body.stations[i + 1];
+                let smin = s0.min(s1);
+                let smax = s0.max(s1);
+                if smax.x >= qmin.x && smin.x <= qmax.x && smax.y >= qmin.y && smin.y <= qmax.y {
+                    out.push(i);
+                }
+            }
+        };
+        if !path.super_blocks.is_empty() {
+            for sb in &path.super_blocks {
+                if sb.max.x < qmin.x || sb.min.x > qmax.x || sb.max.y < qmin.y || sb.min.y > qmax.y {
+                    continue;
+                }
+                for b in &path.blocks[sb.block_start..sb.block_end] {
+                    push_block(b, out_segs);
+                }
+            }
+        } else {
+            for b in &path.blocks {
+                push_block(b, out_segs);
+            }
+        }
+    }
+
+    pub fn sample_domain_river_segs<F>(
+        &self,
+        body: &WaterBody,
+        p: Vec2,
+        segs: &[usize],
+        bed_y_fn: F,
+        default_depth: f32,
+    ) -> Option<WaterDomainSample>
+    where
+        F: FnOnce() -> Option<f32>,
+    {
+        if segs.is_empty() {
+            return None;
+        }
+        let mut best_d = (self.max_hw + 1e-4).powi(2);
+        let mut best: Option<PathHit> = None;
+        for &i in segs {
+            let a = body.stations[i];
+            let b = body.stations[i + 1];
+            let ab = b - a;
+            let len_sq = ab.length_squared();
+            let t = if len_sq <= 1e-12 {
+                0.0
+            } else {
+                ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+            };
+            let q = a + ab * t;
+            let d = q.distance_squared(p);
+            if d < best_d || (d == best_d && best.is_none_or(|prev| i < prev.segment)) {
+                best_d = d;
+                best = Some(PathHit {
+                    point: q,
+                    segment: i,
+                    t,
+                });
+            }
+        }
+        let hit = best?;
+        body.sample_river_hit(p, hit, bed_y_fn, default_depth, self.cascade_bounds)
+    }
+
+    pub fn surface_y_at(&self, body: &WaterBody, p: Vec2) -> Option<f32> {
+        if p.x < self.bounds_min.x
+            || p.x > self.bounds_max.x
+            || p.y < self.bounds_min.y
+            || p.y > self.bounds_max.y
+        {
+            return None;
+        }
+        match body.kind {
+            WaterKind::Lake => body.surface_y_at(p),
+            WaterKind::River => {
+                let hit = match &self.path {
+                    Some(idx) => idx.nearest_within(&body.stations, p, self.max_hw + 1e-4)?,
+                    None => nearest_on_path(&body.stations, p)?,
+                };
+                let d_sq = hit.point.distance_squared(p);
+                let hw = body.half_width_lerp(&hit);
+                (d_sq <= hw * hw).then(|| {
+                    if body.surface_y.is_empty() {
+                        body.water_y
+                    } else {
+                        station_lerp(&body.surface_y, &hit)
+                    }
                 })
+            }
+        }
+    }
+
+    pub fn blend_surface_y(&self, body: &WaterBody, p: Vec2, margin: f32) -> Option<f32> {
+        if p.x < self.bounds_min.x - margin
+            || p.x > self.bounds_max.x + margin
+            || p.y < self.bounds_min.y - margin
+            || p.y > self.bounds_max.y + margin
+        {
+            return None;
+        }
+        match body.kind {
+            WaterKind::Lake => body.blend_surface_y(p, margin),
+            WaterKind::River => {
+                let hit = match &self.path {
+                    Some(idx) => {
+                        idx.nearest_within(&body.stations, p, self.max_hw + margin + 1e-4)?
+                    }
+                    None => nearest_on_path(&body.stations, p)?,
+                };
+                let d_sq = hit.point.distance_squared(p);
+                let hw_m = body.half_width_lerp(&hit) + margin;
+                (d_sq <= hw_m * hw_m).then(|| {
+                    if body.surface_y.is_empty() {
+                        body.water_y
+                    } else {
+                        station_lerp(&body.surface_y, &hit)
+                    }
+                })
+            }
+        }
+    }
+
+    pub fn distance_to_waterline(&self, body: &WaterBody, p: Vec2) -> f32 {
+        match body.kind {
+            WaterKind::Lake => body.distance_to_waterline(p),
+            WaterKind::River => match &self.path {
+                Some(idx) => match idx.nearest(&body.stations, p) {
+                    Some(hit) => hit.point.distance(p) - body.half_width_lerp(&hit),
+                    None => f32::INFINITY,
+                },
+                None => body.distance_to_waterline(p),
+            },
+        }
+    }
+
+    pub fn sample_domain_with_bed<F>(
+        &self,
+        body: &WaterBody,
+        p: Vec2,
+        bed_y_fn: F,
+        default_depth: f32,
+    ) -> Option<WaterDomainSample>
+    where
+        F: FnOnce() -> Option<f32>,
+    {
+        if p.x < self.bounds_min.x
+            || p.x > self.bounds_max.x
+            || p.y < self.bounds_min.y
+            || p.y > self.bounds_max.y
+        {
+            return None;
+        }
+        match body.kind {
+            WaterKind::Lake => body.sample_domain_with_bed(p, bed_y_fn, default_depth),
+            WaterKind::River => {
+                let hit = match &self.path {
+                    Some(idx) => idx.nearest_within(&body.stations, p, self.max_hw + 1e-4)?,
+                    None => nearest_on_path(&body.stations, p)?,
+                };
+                body.sample_river_hit(p, hit, bed_y_fn, default_depth, self.cascade_bounds)
             }
         }
     }
@@ -640,6 +1232,18 @@ impl LakeShape {
     pub fn contour(&self, radius: f32, theta: f32) -> f32 {
         radius * self.radius_frac(theta)
     }
+
+    /// Conservative `(min_frac, max_frac)` radial envelope for `radius_frac`,
+    /// avoiding trigonometric calls outside the inner/outer annuli.
+    #[inline]
+    pub fn radius_frac_bounds(&self) -> (f32, f32) {
+        let dev = self.stretch.abs()
+            + self.harmonics[0].1.abs()
+            + self.harmonics[1].1.abs()
+            + self.harmonics[2].1.abs()
+            + self.harmonics[3].1.abs();
+        ((1.0 - dev).max(0.0), 1.0 + dev)
+    }
 }
 
 impl Default for LakeShape {
@@ -654,6 +1258,126 @@ impl Default for LakeShape {
                 (5.0, 0.0, 0.0),
                 (7.0, 0.0, 0.0),
             ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_winding_river() -> WaterBody {
+        let mut stations = Vec::with_capacity(400);
+        let mut surface_y = Vec::with_capacity(400);
+        let mut half_width = Vec::with_capacity(400);
+        let mut depths = Vec::with_capacity(400);
+        for i in 0..400 {
+            let s = i as f32 * 3.0;
+            let x = s - 600.0;
+            let z = (s * 0.015).sin() * 80.0;
+            stations.push(Vec2::new(x, z));
+            surface_y.push(12.0 - s * 0.004);
+            half_width.push(6.0 + 3.0 * (s * 0.03).cos().abs());
+            depths.push(1.8 + (s * 0.02).sin().abs());
+        }
+        WaterBody {
+            kind: WaterKind::River,
+            at: Vec2::ZERO,
+            radius: 0.0,
+            carve_radius: 12.0,
+            hull: 650.0,
+            water_y: 10.0,
+            mirror_reach: 1.0,
+            shape: LakeShape::default(),
+            stations,
+            surface_y,
+            water_width: 14.0,
+            half_width,
+            depths,
+            cascades: vec![CascadeInfo {
+                lip: 120,
+                base: 123,
+                drop: 3.0,
+                waterfall: true,
+                wall: false,
+                top_y: 11.5,
+                bot_y: 8.5,
+            }],
+        }
+    }
+
+    fn sample_lake() -> WaterBody {
+        let at = Vec2::new(42.0, -18.0);
+        WaterBody {
+            kind: WaterKind::Lake,
+            at,
+            radius: 34.0,
+            carve_radius: 52.0,
+            hull: 0.0,
+            water_y: 8.5,
+            mirror_reach: 1.08,
+            shape: LakeShape::new(at),
+            stations: Vec::new(),
+            surface_y: Vec::new(),
+            water_width: 0.0,
+            half_width: Vec::new(),
+            depths: Vec::new(),
+            cascades: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn water_body_index_matches_linear_queries_exactly() {
+        let river = sample_winding_river();
+        let lake = sample_lake();
+        let r_idx = WaterBodyIndex::for_body(&river);
+        let l_idx = WaterBodyIndex::for_body(&lake);
+
+        for iz in -30..=30 {
+            for ix in -60..=60 {
+                let p = Vec2::new(ix as f32 * 9.5, iz as f32 * 4.5);
+                assert_eq!(
+                    r_idx.surface_y_at(&river, p),
+                    river.surface_y_at(p),
+                    "river surface mismatch at {p:?}"
+                );
+                assert_eq!(
+                    r_idx.blend_surface_y(&river, p, 3.0),
+                    river.blend_surface_y(p, 3.0),
+                    "river blend mismatch at {p:?}"
+                );
+                let d_lin = river.distance_to_waterline(p);
+                let d_idx = r_idx.distance_to_waterline(&river, p);
+                assert!(
+                    (d_lin - d_idx).abs() < 1e-4,
+                    "river waterline dist mismatch at {p:?}: {d_lin} vs {d_idx}"
+                );
+                let s_lin = river.sample_domain(p, Some(9.2), 1.5);
+                let s_idx = r_idx.sample_domain_with_bed(&river, p, || Some(9.2), 1.5);
+                match (s_lin, s_idx) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => {
+                        assert!((a.surface_y - b.surface_y).abs() < 1e-5);
+                        assert!((a.depth - b.depth).abs() < 1e-5);
+                        assert!((a.flow - b.flow).length() < 1e-5);
+                        assert!((a.plunge - b.plunge).abs() < 1e-5);
+                    }
+                    _ => panic!("river domain presence mismatch at {p:?}"),
+                }
+
+                let lp = lake.at + p * 0.2;
+                assert_eq!(l_idx.surface_y_at(&lake, lp), lake.surface_y_at(lp));
+                assert_eq!(
+                    l_idx.blend_surface_y(&lake, lp, 2.5),
+                    lake.blend_surface_y(lp, 2.5)
+                );
+                let ls_lin = lake.sample_domain(lp, Some(6.0), 1.5);
+                let ls_idx = l_idx.sample_domain_with_bed(&lake, lp, || Some(6.0), 1.5);
+                assert_eq!(ls_lin.is_some(), ls_idx.is_some());
+                if let (Some(a), Some(b)) = (ls_lin, ls_idx) {
+                    assert!((a.depth - b.depth).abs() < 1e-5);
+                }
+            }
         }
     }
 }

@@ -149,9 +149,10 @@ pub fn sync_water_materials(
 
     let fallback = WaterEnvironment::default();
     let env = env.as_deref().unwrap_or(&fallback);
-    let elapsed = time
-        .as_ref()
-        .map_or(env.time, |t| t.elapsed_secs());
+    // O shader (`active_time`) lê `globals.time` diretamente no GPU quando `w == 0`:
+    // publicar `time.elapsed_secs()` aqui forçava `Assets<WaterMaterial>::iter_mut`
+    // a marcar todo material como modificado TODOS os frames (recriando bind groups).
+    let time_override = if time.is_some() { 0.0 } else { env.time };
     let base_cfg = cfg.as_ref().map(|c| &c.0);
     let wave_amp = base_cfg.map_or(env.wave_amp, |c| c.wave_amp);
     let rain = env.rain.clamp(0.0, 1.0);
@@ -196,24 +197,57 @@ pub fn sync_water_materials(
             Vec4::ZERO
         }
     });
+    let target_sun_dir_day = sun_dir.extend(day);
+    let target_sun_color_glint = glint_color.extend(glint_strength);
+    let target_sky_zenith_rain = zenith.extend(rain);
+    let target_sky_horizon_time = horizon.extend(time_override);
+    let target_wind_params = Vec4::new(wind_x, wind_z, wind_strength, wave_amp);
 
-    for (_id, mat) in materials.iter_mut() {
+    let w_handles = waves.as_ref().map(|w| (&w.wave_tex, &w.domain_tex, &w.obstacle_tex));
+    let near = |a: Vec4, b: Vec4| (a - b).abs().max_element() <= 1e-5;
+
+    let mut dirty_ids: Vec<AssetId<WaterMaterial>> = Vec::new();
+    for (id, mat) in materials.iter() {
+        let p = &mat.extension.params;
+        let params_same = near(p.wave_window, wave_window)
+            && near(p.sun_dir_day, target_sun_dir_day)
+            && near(p.sun_color_glint, target_sun_color_glint)
+            && near(p.sky_zenith_rain, target_sky_zenith_rain)
+            && near(p.sky_horizon_time, target_sky_horizon_time)
+            && near(p.wind_params, target_wind_params);
+        let tex_same = w_handles.is_none_or(|(wt, dt, ot)| {
+            mat.extension.wave_tex == *wt
+                && mat.extension.domain_tex == *dt
+                && mat.extension.obstacle_tex == *ot
+        });
+        if !params_same || !tex_same {
+            dirty_ids.push(id);
+        }
+    }
+    if dirty_ids.is_empty() {
+        return;
+    }
+
+    for id in dirty_ids {
+        let Some(mut mat) = materials.get_mut(id) else {
+            continue;
+        };
         let p = &mut mat.extension.params;
         p.wave_window = wave_window;
-        p.sun_dir_day = sun_dir.extend(day);
-        p.sun_color_glint = glint_color.extend(glint_strength);
-        p.sky_zenith_rain = zenith.extend(rain);
-        p.sky_horizon_time = horizon.extend(elapsed);
-        p.wind_params = Vec4::new(wind_x, wind_z, wind_strength, wave_amp);
-        if let Some(w) = waves.as_ref() {
-            if mat.extension.wave_tex != w.wave_tex {
-                mat.extension.wave_tex = w.wave_tex.clone();
+        p.sun_dir_day = target_sun_dir_day;
+        p.sun_color_glint = target_sun_color_glint;
+        p.sky_zenith_rain = target_sky_zenith_rain;
+        p.sky_horizon_time = target_sky_horizon_time;
+        p.wind_params = target_wind_params;
+        if let Some((wt, dt, ot)) = w_handles {
+            if mat.extension.wave_tex != *wt {
+                mat.extension.wave_tex = wt.clone();
             }
-            if mat.extension.domain_tex != w.domain_tex {
-                mat.extension.domain_tex = w.domain_tex.clone();
+            if mat.extension.domain_tex != *dt {
+                mat.extension.domain_tex = dt.clone();
             }
-            if mat.extension.obstacle_tex != w.obstacle_tex {
-                mat.extension.obstacle_tex = w.obstacle_tex.clone();
+            if mat.extension.obstacle_tex != *ot {
+                mat.extension.obstacle_tex = ot.clone();
             }
         }
     }

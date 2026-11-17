@@ -339,8 +339,11 @@ fn point_inside_closed_segments(p: Vec2, segments: &[[Vec2; 2]]) -> bool {
     (pos_z & 1) == 1 && (neg_z & 1) == 1
 }
 
-/// Evaluates the union (minimum signed distance) over all obstacles overlapping `p`.
-pub fn nearest_obstacle_at(p: Vec2, obstacles: &[WaterObstacle]) -> Option<ObstacleSdfSample> {
+#[inline]
+fn nearest_obstacle_in<'a>(
+    p: Vec2,
+    obstacles: impl Iterator<Item = &'a WaterObstacle>,
+) -> Option<ObstacleSdfSample> {
     let mut best: Option<ObstacleSdfSample> = None;
     for obs in obstacles {
         if p.x < obs.aabb_min.x - OBSTACLE_HALO_M
@@ -360,6 +363,11 @@ pub fn nearest_obstacle_at(p: Vec2, obstacles: &[WaterObstacle]) -> Option<Obsta
     best
 }
 
+/// Evaluates the union (minimum signed distance) over all obstacles overlapping `p`.
+pub fn nearest_obstacle_at(p: Vec2, obstacles: &[WaterObstacle]) -> Option<ObstacleSdfSample> {
+    nearest_obstacle_in(p, obstacles.iter())
+}
+
 #[inline]
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     if (edge1 - edge0).abs() < 1e-6 {
@@ -369,19 +377,14 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Deflects base stream velocity around obstructing boulders, bridge piers, and
-/// submerged walls:
-/// - **Upstream face**: cancels inward normal component and redirects tangentially
-///   around left/right flanks with stagnation slowdown right at the nose.
-/// - **Lateral shoulders**: smooth Venturi acceleration squeezing past flanks.
-/// - **Downstream lee**: sheltered calm pocket & mild inward-curling return eddies.
-pub fn deflect_flow_by_obstacles(
+#[inline]
+fn deflect_flow_in<'a>(
     p: Vec2,
     base_flow: Vec2,
-    obstacles: &[WaterObstacle],
+    obstacles: impl Iterator<Item = &'a WaterObstacle>,
 ) -> Vec2 {
     let speed = base_flow.length();
-    if speed < 1e-4 || obstacles.is_empty() {
+    if speed < 1e-4 {
         return base_flow;
     }
 
@@ -439,7 +442,8 @@ pub fn deflect_flow_by_obstacles(
                     };
                 }
 
-                let nose_stag = smoothstep(-0.65, -0.96, facing) * smoothstep(r * 0.9, 0.0, s.signed_dist);
+                let nose_stag =
+                    smoothstep(-0.65, -0.96, facing) * smoothstep(r * 0.9, 0.0, s.signed_dist);
                 let shoulder = (1.0 - facing * facing).max(0.0)
                     * (-s.signed_dist.max(0.0) / (0.65 * r + 0.30)).exp();
                 cur_flow *= (1.0 - 0.58 * nose_stag) * inside_damp;
@@ -468,14 +472,160 @@ pub fn deflect_flow_by_obstacles(
                     * smoothstep(wake_half_w * 1.35, r * 0.75, abs_lat);
                 wake_curling -= perp_u * (lat_sign * rim_w * along_w * speed * 0.24);
 
-                let reverse_w = smoothstep(r * 1.6, r * 0.35, along)
-                    * smoothstep(r * 0.75, 0.0, abs_lat);
+                let reverse_w =
+                    smoothstep(r * 1.6, r * 0.35, along) * smoothstep(r * 0.75, 0.0, abs_lat);
                 wake_curling -= u * (reverse_w * speed * 0.18);
             }
         }
     }
 
     (cur_flow * best_wake_shelter + wake_curling).clamp_length_max(speed * 1.55)
+}
+
+/// Deflects base stream velocity around obstructing boulders, bridge piers, and
+/// submerged walls:
+/// - **Upstream face**: cancels inward normal component and redirects tangentially
+///   around left/right flanks with stagnation slowdown right at the nose.
+/// - **Lateral shoulders**: smooth Venturi acceleration squeezing past flanks.
+/// - **Downstream lee**: sheltered calm pocket & mild inward-curling return eddies.
+pub fn deflect_flow_by_obstacles(
+    p: Vec2,
+    base_flow: Vec2,
+    obstacles: &[WaterObstacle],
+) -> Vec2 {
+    if obstacles.is_empty() || base_flow.length_squared() < 1e-8 {
+        return base_flow;
+    }
+    deflect_flow_in(p, base_flow, obstacles.iter())
+}
+
+pub const OBSTACLE_GRID_DIM: usize = 16;
+const OBSTACLE_GRID_CELLS: usize = OBSTACLE_GRID_DIM * OBSTACLE_GRID_DIM;
+
+/// Uniform `16x16` CSR spatial index over obstacles overlapping a square domain
+/// window. Zero per-cell heap allocations and preserves ascending obstacle order.
+#[derive(Debug, Clone)]
+pub struct ObstacleSpatialGrid {
+    offsets: [u32; OBSTACLE_GRID_CELLS + 1],
+    counts: [u32; OBSTACLE_GRID_CELLS],
+    indices: Vec<usize>,
+}
+
+impl Default for ObstacleSpatialGrid {
+    fn default() -> Self {
+        Self {
+            offsets: [0; OBSTACLE_GRID_CELLS + 1],
+            counts: [0; OBSTACLE_GRID_CELLS],
+            indices: Vec::new(),
+        }
+    }
+}
+
+impl ObstacleSpatialGrid {
+    pub fn rebuild(&mut self, ox: f32, oz: f32, world_size: f32, obstacles: &[WaterObstacle]) {
+        self.counts.fill(0);
+        if obstacles.is_empty() || world_size <= 0.0 {
+            self.offsets.fill(0);
+            self.indices.clear();
+            return;
+        }
+        let inv_cell = OBSTACLE_GRID_DIM as f32 / world_size;
+        let max_cell = (OBSTACLE_GRID_DIM - 1) as isize;
+
+        for obs in obstacles {
+            let reach = obs.wake_reach_m().max(OBSTACLE_HALO_M);
+            let x0 = (((obs.aabb_min.x - reach - ox) * inv_cell).floor() as isize).clamp(0, max_cell);
+            let x1 = (((obs.aabb_max.x + reach - ox) * inv_cell).floor() as isize).clamp(0, max_cell);
+            let z0 = (((obs.aabb_min.y - reach - oz) * inv_cell).floor() as isize).clamp(0, max_cell);
+            let z1 = (((obs.aabb_max.y + reach - oz) * inv_cell).floor() as isize).clamp(0, max_cell);
+            // Skip obstacles completely outside the active window.
+            if obs.aabb_max.x + reach < ox
+                || obs.aabb_min.x - reach > ox + world_size
+                || obs.aabb_max.y + reach < oz
+                || obs.aabb_min.y - reach > oz + world_size
+            {
+                continue;
+            }
+            for iz in z0..=z1 {
+                let row = iz as usize * OBSTACLE_GRID_DIM;
+                for ix in x0..=x1 {
+                    self.counts[row + ix as usize] += 1;
+                }
+            }
+        }
+
+        let mut total = 0u32;
+        for (i, &c) in self.counts.iter().enumerate() {
+            self.offsets[i] = total;
+            total += c;
+        }
+        self.offsets[OBSTACLE_GRID_CELLS] = total;
+        self.indices.resize(total as usize, 0);
+        self.counts.copy_from_slice(&self.offsets[..OBSTACLE_GRID_CELLS]);
+
+        for (obs_idx, obs) in obstacles.iter().enumerate() {
+            let reach = obs.wake_reach_m().max(OBSTACLE_HALO_M);
+            if obs.aabb_max.x + reach < ox
+                || obs.aabb_min.x - reach > ox + world_size
+                || obs.aabb_max.y + reach < oz
+                || obs.aabb_min.y - reach > oz + world_size
+            {
+                continue;
+            }
+            let x0 = (((obs.aabb_min.x - reach - ox) * inv_cell).floor() as isize).clamp(0, max_cell);
+            let x1 = (((obs.aabb_max.x + reach - ox) * inv_cell).floor() as isize).clamp(0, max_cell);
+            let z0 = (((obs.aabb_min.y - reach - oz) * inv_cell).floor() as isize).clamp(0, max_cell);
+            let z1 = (((obs.aabb_max.y + reach - oz) * inv_cell).floor() as isize).clamp(0, max_cell);
+            for iz in z0..=z1 {
+                let row = iz as usize * OBSTACLE_GRID_DIM;
+                for ix in x0..=x1 {
+                    let cell = row + ix as usize;
+                    let dst = self.counts[cell] as usize;
+                    self.indices[dst] = obs_idx;
+                    self.counts[cell] += 1;
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub fn cell_indices(&self, cx: usize, cz: usize) -> &[usize] {
+        let cell = cz * OBSTACLE_GRID_DIM + cx;
+        let a = self.offsets[cell] as usize;
+        let b = self.offsets[cell + 1] as usize;
+        &self.indices[a..b]
+    }
+
+    #[inline]
+    pub fn deflect_flow_at(
+        &self,
+        cx: usize,
+        cz: usize,
+        p: Vec2,
+        base_flow: Vec2,
+        obstacles: &[WaterObstacle],
+    ) -> Vec2 {
+        let idxs = self.cell_indices(cx, cz);
+        if idxs.is_empty() || base_flow.length_squared() < 1e-8 {
+            return base_flow;
+        }
+        deflect_flow_in(p, base_flow, idxs.iter().map(|&i| &obstacles[i]))
+    }
+
+    #[inline]
+    pub fn nearest_obstacle_at(
+        &self,
+        cx: usize,
+        cz: usize,
+        p: Vec2,
+        obstacles: &[WaterObstacle],
+    ) -> Option<ObstacleSdfSample> {
+        let idxs = self.cell_indices(cx, cz);
+        if idxs.is_empty() {
+            return None;
+        }
+        nearest_obstacle_in(p, idxs.iter().map(|&i| &obstacles[i]))
+    }
 }
 
 /// Finds overlapping water heights near an XZ AABB by probing its interior and
