@@ -62,6 +62,182 @@ pub fn load_bsn_world_in(path: &Path, root_dir: &Path) -> Result<LoadedWorld> {
     Ok(loaded)
 }
 
+/// Os documentos alcançáveis a partir de `path` — o próprio mais os documentos
+/// que referencia (`IsA { source }`, `WorldProp { key: "src" }` e os
+/// `<Include>` dos `.xml` legados), lidos como TEXTO — autoram alguma de
+/// `tags`?
+///
+/// Existe para decidir se vale a pena **parsear** um mundo só para ler
+/// configurações de shader: o parse com resolução de prefabs custa ~1,4 s no
+/// `world.bsn` do Vael e, quando o documento não autora `<Sky>`/`<DayCycle>`/
+/// `<Water>`, o resultado são os defaults. Aqui é uma busca de substring sobre
+/// os bytes (milissegundos).
+///
+/// O `.bsn` é RON do Jackdaw: o tag aparece como `tag: "Sky"` e as referências
+/// como `source: "…/x.bsn"` / `value: "…/x.bsn"`. Seguem-se **todas** as
+/// strings terminadas em `.bsn`/`.xml` — de mais, nunca de menos: seguir um
+/// caminho a mais só custa uns bytes lidos.
+pub fn authors_tags(path: &Path, root_dir: &Path, tags: &[&str]) -> bool {
+    /// O `world.bsn` do Vael alcança ~537 documentos (módulos, 158 prefabs e
+    /// `origin_file`); a 2 048 o tecto só existe para um grafo patológico.
+    const MAX_FILES: usize = 2048;
+    /// Ler mais do que isto já custa mais do que o parse que se quer evitar.
+    const MAX_BYTES: usize = 64 * 1024 * 1024;
+    let mut pending = vec![path.to_path_buf()];
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = Default::default();
+    let mut read = 0usize;
+    while let Some(next) = pending.pop() {
+        let canonical = next.canonicalize().unwrap_or(next);
+        if !seen.insert(canonical.clone()) {
+            continue; // ciclo de includes
+        }
+        if seen.len() > MAX_FILES {
+            return true;
+        }
+        let Ok(bytes) = std::fs::read(&canonical) else {
+            continue;
+        };
+        read += bytes.len();
+        if read > MAX_BYTES {
+            return true;
+        }
+        let dir = canonical.parent().unwrap_or(root_dir);
+        if scan_document(&bytes, tags, &mut pending, dir, root_dir) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Uma passagem sobre o documento: compara os valores de `tag:` com `tags` e
+/// recolhe as referências a outros documentos.
+///
+/// Um só varrimento (e não um por tag) porque o Vael alcança ~64 MB de `.bsn`:
+/// cinco passagens custavam ~1 s em debug, e o objectivo é ser mais barato do
+/// que o parse que se quer evitar.
+fn scan_document(
+    bytes: &[u8],
+    tags: &[&str],
+    pending: &mut Vec<std::path::PathBuf>,
+    dir: &Path,
+    root_dir: &Path,
+) -> bool {
+    // Mundo `.xml` legado: aí o tag é `<Sky>` a sério (o `.bsn` é RON e não
+    // tem tags XML). Só se paga a varredura quando o documento tem marcas XML.
+    if find_from(bytes, 0, b"<world").is_some() || find_from(bytes, 0, b"<Include").is_some() {
+        for tag in tags {
+            let mut needle = Vec::with_capacity(tag.len() + 1);
+            needle.push(b'<');
+            needle.extend_from_slice(tag.as_bytes());
+            if find_from(bytes, 0, &needle).is_some() {
+                return true;
+            }
+        }
+    }
+    let mut at = 0;
+    while let Some(offset) = bytes[at..].iter().position(|b| *b == b'"' || *b == b'\'') {
+        let start = at + offset;
+        let Some(value) = quoted(bytes, start) else {
+            at = start + 1;
+            continue;
+        };
+        // `tag: "X"` — o valor está precedido de `tag` + espaços + `:`.
+        if tags.contains(&value) && preceded_by_tag_key(bytes, start) {
+            return true;
+        }
+        if value.ends_with(".bsn") || value.ends_with(".xml") {
+            pending.push(prefer_bsn(resolve_include_path(value, dir, root_dir)));
+        }
+        at = start + value.len() + 2;
+    }
+    // `.xml` legado: `<Include src="…"/>` (o `.bsn` não tem tags XML).
+    if find_from(bytes, 0, b"<Include").is_some() {
+        let mut cursor = 0;
+        while let Some(offset) = find_from(bytes, cursor, b"<Include") {
+            let end = bytes[offset..]
+                .iter()
+                .position(|b| *b == b'>')
+                .map_or(bytes.len(), |at| offset + at);
+            if let Some(src) = attribute_text(&bytes[offset..end], "src") {
+                pending.push(prefer_bsn(resolve_include_path(&src, dir, root_dir)));
+            }
+            cursor = end.saturating_add(1).max(offset + 1);
+        }
+    }
+    false
+}
+
+/// A string que começa em `at` é o valor de um `tag`? (para trás: espaços, `:`,
+/// espaços, a palavra `tag`).
+fn preceded_by_tag_key(bytes: &[u8], at: usize) -> bool {
+    let mut cursor = at;
+    while matches!(bytes.get(cursor.wrapping_sub(1)), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        cursor -= 1;
+    }
+    if bytes.get(cursor.wrapping_sub(1)) != Some(&b':') {
+        return false;
+    }
+    cursor -= 1;
+    while matches!(bytes.get(cursor.wrapping_sub(1)), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        cursor -= 1;
+    }
+    let key = b"tag";
+    cursor >= key.len() && bytes.get(cursor - key.len()..cursor) == Some(&key[..])
+}
+
+
+
+/// A string entre aspas que começa em `at` (`"…"`, `'…'` ou `#"…"`).
+fn quoted(bytes: &[u8], at: usize) -> Option<&str> {
+    let at = if bytes.get(at) == Some(&b'#') { at + 1 } else { at };
+    let quote = *bytes.get(at)?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let body = &bytes[at + 1..];
+    let end = body.iter().position(|b| *b == quote)?;
+    std::str::from_utf8(&body[..end]).ok()
+}
+
+fn skip_spaces(bytes: &[u8], mut at: usize) -> usize {
+    while matches!(bytes.get(at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        at += 1;
+    }
+    at
+}
+
+fn find_from(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() {
+        return None;
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|offset| from + offset)
+}
+
+/// Valor de `name="…"` (ou `'…'`) dentro de uma tag.
+fn attribute_text(tag: &[u8], name: &str) -> Option<String> {
+    let key = name.as_bytes();
+    let mut at = 0;
+    while let Some(offset) = tag.get(at..).and_then(|rest| {
+        rest.windows(key.len()).position(|w| w == key)
+    }) {
+        let after_key = at + offset + key.len();
+        let rest = &tag[after_key.min(tag.len())..];
+        let rest = rest.strip_prefix(b" =").unwrap_or(rest);
+        let rest = rest.strip_prefix(b"=").unwrap_or(rest).trim_ascii_start();
+        if let Some(quote) = rest.first().copied().filter(|b| *b == b'"' || *b == b'\'') {
+            let body = &rest[1..];
+            if let Some(end) = body.iter().position(|b| *b == quote) {
+                return std::str::from_utf8(&body[..end]).ok().map(str::to_string);
+            }
+        }
+        at = after_key.max(at + 1);
+    }
+    None
+}
+
 /// Memo de [`load_bsn_world_in`]: as últimas [`CAPACITY`] leituras (o
 /// mundo + os autoloads/cenas pequenas que se leem entre as duas leituras
 /// dele), cada uma validada pelas suas fontes.
@@ -938,5 +1114,134 @@ pub(crate) fn set_attr(attrs: &mut Vec<(String, String)>, key: &str, value: Stri
         *current = value;
     } else {
         attrs.push((key.to_string(), value));
+    }
+}
+
+#[cfg(test)]
+mod tag_scan_tests {
+    use super::*;
+
+    /// O `.bsn` é RON: o tag é `tag: "X"` e as referências são strings
+    /// terminadas em `.bsn`. O teste cobre o documento, um include e o
+    /// `IsA { source }` de um prefab.
+    #[test]
+    fn finds_tags_in_the_document_and_through_references() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("main.bsn"),
+            r#"WorldNode { tag: "world", attrs: [] }
+Children [
+    IsA { source: "world/cities/a.bsn", deleted: [] }
+]
+WorldNode { tag: "Include", attrs: [WorldProp { key: "src", value: "world/b.bsn" }] }"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("world/cities")).unwrap();
+        std::fs::write(
+            root.join("world/cities/a.bsn"),
+            r#"WorldNode { tag: "Water", attrs: [] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("world/b.bsn"),
+            r#"WorldNode { tag: "DayCycle", attrs: [] }"#,
+        )
+        .unwrap();
+
+        assert!(
+            authors_tags(&root.join("main.bsn"), root, &["Water"]),
+            "o tag vem do prefab referenciado por IsA"
+        );
+        assert!(
+            authors_tags(&root.join("main.bsn"), root, &["DayCycle"]),
+            "o tag vem do include"
+        );
+        assert!(
+            !authors_tags(&root.join("main.bsn"), root, &["Sky"]),
+            "nenhum documento autora Sky"
+        );
+    }
+
+    #[test]
+    fn a_name_alone_does_not_count() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let root = dir.path();
+        // `SkyModel` é um valor de atributo, não um nó `tag: "Sky"`.
+        std::fs::write(
+            root.join("w.bsn"),
+            r#"WorldNode { tag: "world", attrs: [WorldProp { key: "model", value: "SkyModel" }] }"#,
+        )
+        .unwrap();
+        assert!(!authors_tags(&root.join("w.bsn"), root, &["Sky"]));
+    }
+
+    #[test]
+    fn cycles_and_missing_files_do_not_hang() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let root = dir.path();
+        std::fs::write(root.join("a.bsn"), r#"IsA { source: "b.bsn" }"#).unwrap();
+        std::fs::write(root.join("b.bsn"), r#"IsA { source: "a.bsn" }"#).unwrap();
+        assert!(!authors_tags(&root.join("a.bsn"), root, &["Water"]));
+        assert!(!authors_tags(&root.join("missing.bsn"), root, &["Water"]));
+    }
+
+    /// O `.xml` legado continua legível: `<Include src>` é seguido e o `src`
+    /// sai com os dois estilos de aspas.
+    #[test]
+    fn legacy_xml_includes_are_followed() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("old.xml"),
+            r#"<world><Include  src = 'nested.xml' /></world>"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("nested.xml"), r#"<world><Water level="3"/></world>"#).unwrap();
+        // O `.xml` não tem `tag: "Water"`; o tag XML só é visto no include… e o
+        // scanner procura RON. O que se garante aqui é que o `src` é lido.
+        let tag = br#"<Include src="cities/a.bsn"/>"#;
+        assert_eq!(attribute_text(tag, "src").as_deref(), Some("cities/a.bsn"));
+        assert_eq!(attribute_text(br#"<Include  src = 'x/y.xml' />"#, "src").as_deref(), Some("x/y.xml"));
+        assert_eq!(attribute_text(br#"<Include/>"#, "src"), None);
+        assert!(
+            authors_tags(&root.join("old.xml"), root, &["Water"]),
+            "o mundo XML legado autoram `<Water>` no include"
+        );
+        assert!(!authors_tags(&root.join("old.xml"), root, &["Sky"]));
+    }
+}
+
+#[cfg(test)]
+mod world_scan_tests {
+    use super::*;
+
+    /// Guarda do contrato: se alguém voltar a autorar `<Sky>`/`<DayCycle>`/
+    /// `<Water>`/`<Layer>` no mundo, este teste falha e o parse da cena
+    /// principal (1,4 s) tem de voltar a correr. Corre com
+    /// `VAEL_ROOT=<checkout do Vael>`.
+    #[test]
+    fn the_vael_world_authors_no_shader_tags() {
+        let Some(root) = std::env::var_os("VAEL_ROOT").map(std::path::PathBuf::from) else {
+            eprintln!("VAEL_ROOT ausente — a saltar");
+            return;
+        };
+        let world = root.join("world.bsn");
+        if !world.is_file() {
+            eprintln!("{} ausente — a saltar", world.display());
+            return;
+        }
+        let tags = ["Sky", "DayCycle", "Water", "Layer"];
+        assert!(
+            !authors_tags(&world, &root, &tags),
+            "o mundo voltou a autorar um tag de shader: o parse condicional da \
+             cena principal deixa de ser seguro (ver src/app.rs)"
+        );
+        // Sentinela: o scanner VÊ tags num documento real (senão o teste acima
+        // passaria por o scanner estar cego).
+        assert!(
+            authors_tags(&root.join("scenes/menu.bsn"), &root, &["SceneEntry"]),
+            "o scanner não encontra um tag que existe mesmo — está cego"
+        );
     }
 }

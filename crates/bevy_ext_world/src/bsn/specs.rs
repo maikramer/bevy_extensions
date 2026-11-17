@@ -9,7 +9,7 @@
 use std::any::TypeId;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 use bevy::reflect::{FromReflect, PartialReflect, Reflect, TypePath, TypeRegistry};
@@ -38,6 +38,32 @@ fn registry() -> &'static TypeRegistry {
     })
 }
 
+fn patch_to_bsn_value(patch: &jackdaw_bsn::BsnPatch) -> Option<jackdaw_bsn::BsnValue> {
+    match patch {
+        jackdaw_bsn::BsnPatch::Struct(data) => {
+            Some(jackdaw_bsn::BsnValue::Struct(data.clone()))
+        }
+        jackdaw_bsn::BsnPatch::TupleStruct(data) => {
+            Some(jackdaw_bsn::BsnValue::TupleStruct(data.clone()))
+        }
+        jackdaw_bsn::BsnPatch::Type(tp) => Some(jackdaw_bsn::BsnValue::Type(tp.clone())),
+        _ => None,
+    }
+}
+
+fn read_from_patch<T>(patch: &jackdaw_bsn::BsnPatch) -> Option<T>
+where
+    T: Reflect + FromReflect + Default + TypePath,
+{
+    let value = patch_to_bsn_value(patch)?;
+    let value = normalize_options(&value, TypeId::of::<T>(), registry());
+    let partial = jackdaw_bsn::bsn_value_to_reflect(&value, TypeId::of::<T>(), registry(), None)?;
+    let mut out = T::default();
+    out.try_apply(partial.as_ref()).ok()?;
+    Some(out)
+}
+
+/// Lê um componente tipado do nó (o caminho do load, por `type_path`).
 fn read<T>(ast: &SceneBsnAst, entity: bevy::ecs::entity::Entity) -> Option<T>
 where
     T: Reflect + FromReflect + Default + TypePath,
@@ -59,24 +85,122 @@ fn write_attrs<T: AttrSpec>(spec: &T, attrs: &mut Vec<(String, String)>) {
     }
 }
 
+#[inline]
+fn origin_key(origin: &NodeOrigin) -> (Arc<Path>, Vec<u32>) {
+    (origin.file.clone(), origin.path.clone())
+}
+
+/// Accumulates world-load spec/node/native records and flushes each lock once.
+#[derive(Default)]
+pub(crate) struct SpecsBatch {
+    node_ids: Vec<((Arc<Path>, Vec<u32>), u64)>,
+    specs: Vec<((Arc<Path>, Vec<u32>), Arc<NodeSpecs>)>,
+    native: Vec<((Arc<Path>, Vec<u32>), Option<Arc<Vec<jackdaw_bsn::BsnPatch>>>)>,
+    nodes: Vec<((Arc<Path>, Vec<u32>), Arc<RecordedNode>)>,
+}
+
+impl SpecsBatch {
+    pub(crate) fn record_node_id(&mut self, origin: &NodeOrigin, id: u64) {
+        self.node_ids.push((origin_key(origin), id));
+    }
+
+    pub(crate) fn apply_specs(
+        &mut self,
+        ast: &SceneBsnAst,
+        entity: bevy::ecs::entity::Entity,
+        origin: &NodeOrigin,
+        attrs: &mut Vec<(String, String)>,
+    ) {
+        let specs = extract_node_specs(ast, entity);
+        if specs.is_empty() {
+            return;
+        }
+        write_spec_attrs(&specs, attrs);
+        self.specs.push((origin_key(origin), Arc::new(specs)));
+    }
+
+    pub(crate) fn record_native(
+        &mut self,
+        ast: &SceneBsnAst,
+        entity: bevy::ecs::entity::Entity,
+        origin: &NodeOrigin,
+    ) {
+        let Some(patches) = collect_native_patches(ast, entity) else {
+            return;
+        };
+        let value = if patches.is_empty() {
+            None
+        } else {
+            Some(Arc::new(patches))
+        };
+        self.native.push((origin_key(origin), value));
+    }
+
+    pub(crate) fn record_node(&mut self, origin: &NodeOrigin, node: RecordedNode) {
+        self.nodes.push((origin_key(origin), Arc::new(node)));
+    }
+
+    pub(crate) fn commit(self) {
+        if !self.node_ids.is_empty()
+            && let Ok(mut ids) = NODE_IDS.write()
+        {
+            ids.reserve(self.node_ids.len());
+            for (k, v) in self.node_ids {
+                ids.insert(k, v);
+            }
+        }
+        if !self.specs.is_empty()
+            && let Ok(mut index) = INDEX.write()
+        {
+            index.reserve(self.specs.len());
+            for (k, v) in self.specs {
+                index.insert(k, v);
+            }
+        }
+        if !self.native.is_empty()
+            && let Ok(mut index) = NATIVE.write()
+        {
+            for (k, v) in self.native {
+                match v {
+                    Some(list) => {
+                        index.insert(k, list);
+                    }
+                    None if !index.is_empty() => {
+                        index.remove(&k);
+                    }
+                    None => {}
+                }
+            }
+        }
+        if !self.nodes.is_empty()
+            && let Ok(mut nodes) = NODES.write()
+        {
+            nodes.reserve(self.nodes.len());
+            for (k, v) in self.nodes {
+                nodes.insert(k, v);
+            }
+        }
+    }
+}
+
 /// Specs lidos por nó (ficheiro + caminho do `NodeOrigin`), para o jogo os
 /// anexar às entidades que o spawner do Viber cria (`SceneSource`).
-static INDEX: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), Arc<NodeSpecs>>>> =
+static INDEX: LazyLock<RwLock<HashMap<(Arc<Path>, Vec<u32>), Arc<NodeSpecs>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// `SceneNodeId` (Jackdaw) de cada nó, pela origem — o último load ganha.
-static NODE_IDS: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), u64>>> =
+static NODE_IDS: LazyLock<RwLock<HashMap<(Arc<Path>, Vec<u32>), u64>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub(crate) fn record_node_id(origin: &NodeOrigin, id: u64) {
     if let Ok(mut ids) = NODE_IDS.write() {
-        ids.insert((Path::to_path_buf(&origin.file), origin.path.clone()), id);
+        ids.insert(origin_key(origin), id);
     }
 }
 
 /// Patches de componentes que o loader não consome (o DSL não os conhece):
 /// `AnimationSet`, camera rig, binds de UI, componentes do próprio jogo….
-static NATIVE: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), Arc<Vec<jackdaw_bsn::BsnPatch>>>>> =
+static NATIVE: LazyLock<RwLock<HashMap<(Arc<Path>, Vec<u32>), Arc<Vec<jackdaw_bsn::BsnPatch>>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Tipos que o loader já traduz para o DSL (ou que são estrutura do
@@ -94,21 +218,30 @@ const CONSUMED_PREFIXES: &[&str] = &[
     "bevy_ext_terrain",
 ];
 
+fn collect_native_patches(
+    ast: &SceneBsnAst,
+    entity: bevy::ecs::entity::Entity,
+) -> Option<Vec<jackdaw_bsn::BsnPatch>> {
+    let patches = ast.get_patches(entity)?;
+    Some(
+        patches
+            .0
+            .iter()
+            .filter_map(|&pe| ast.get_patch(pe))
+            .filter(|patch| {
+                jackdaw_bsn::patch_type_path(patch)
+                    .is_some_and(|path| !CONSUMED_PREFIXES.iter().any(|p| path.starts_with(p)))
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 pub(crate) fn record_native(ast: &SceneBsnAst, entity: bevy::ecs::entity::Entity, origin: &NodeOrigin) {
-    let Some(patches) = ast.get_patches(entity) else {
+    let Some(native) = collect_native_patches(ast, entity) else {
         return;
     };
-    let native: Vec<jackdaw_bsn::BsnPatch> = patches
-        .0
-        .iter()
-        .filter_map(|&pe| ast.get_patch(pe))
-        .filter(|patch| {
-            jackdaw_bsn::patch_type_path(patch)
-                .is_some_and(|path| !CONSUMED_PREFIXES.iter().any(|p| path.starts_with(p)))
-        })
-        .cloned()
-        .collect();
-    let key = (Path::to_path_buf(&origin.file), origin.path.clone());
+    let key = origin_key(origin);
     if let Ok(mut index) = NATIVE.write() {
         if native.is_empty() {
             index.remove(&key);
@@ -131,25 +264,18 @@ pub struct RecordedNode {
     pub has_children: bool,
 }
 
-static NODES: LazyLock<RwLock<HashMap<(PathBuf, Vec<u32>), Arc<RecordedNode>>>> =
+static NODES: LazyLock<RwLock<HashMap<(Arc<Path>, Vec<u32>), Arc<RecordedNode>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn record_node(origin: &NodeOrigin, node: RecordedNode) {
     if let Ok(mut nodes) = NODES.write() {
-        nodes.insert(
-            (Path::to_path_buf(&origin.file), origin.path.clone()),
-            Arc::new(node),
-        );
+        nodes.insert(origin_key(origin), Arc::new(node));
     }
 }
 
 /// O nó (tag/atributos) de onde uma entidade veio.
 pub fn node_for(origin: &NodeOrigin) -> Option<Arc<RecordedNode>> {
-    NODES
-        .read()
-        .ok()?
-        .get(&(origin.file.to_path_buf(), origin.path.clone()))
-        .cloned()
+    NODES.read().ok()?.get(&origin_key(origin)).cloned()
 }
 
 /// Filhos directos registados de um nó (mesmo ficheiro, caminho + 1 índice),
@@ -163,14 +289,14 @@ pub fn recorded_children(origin: &NodeOrigin) -> Vec<(NodeOrigin, Arc<RecordedNo
     let mut out: Vec<(NodeOrigin, Arc<RecordedNode>)> = nodes
         .iter()
         .filter(|((file, path), _)| {
-            file.as_path() == origin.file.as_ref()
+            file.as_ref() == origin.file.as_ref()
                 && path.len() == depth + 1
                 && path.starts_with(&origin.path)
         })
         .map(|((file, path), node)| {
             (
                 NodeOrigin {
-                    file: Arc::from(file.as_path()),
+                    file: file.clone(),
                     path: path.clone(),
                 },
                 node.clone(),
@@ -285,11 +411,7 @@ pub fn live_attrs(
 /// Componentes autorados no editor que o DSL não transporta, para o jogo os
 /// aplicar à entidade do nó (`jackdaw_bsn::apply_component_patch`).
 pub fn native_components_for(origin: &NodeOrigin) -> Option<Arc<Vec<jackdaw_bsn::BsnPatch>>> {
-    NATIVE
-        .read()
-        .ok()?
-        .get(&(origin.file.to_path_buf(), origin.path.clone()))
-        .cloned()
+    NATIVE.read().ok()?.get(&origin_key(origin)).cloned()
 }
 
 /// [`record_node_id`] para o jogo (nós criados no editor durante o Play).
@@ -301,42 +423,27 @@ pub fn record_node_id_pub(origin: &NodeOrigin, id: u64) {
 /// se o documento o tinha: é por ele que o editor endereça as edições do
 /// Play (`ControlEvent::NodeComponents`).
 pub fn scene_node_id_for(origin: &NodeOrigin) -> Option<u64> {
-    NODE_IDS
-        .read()
-        .ok()?
-        .get(&(origin.file.to_path_buf(), origin.path.clone()))
-        .copied()
+    NODE_IDS.read().ok()?.get(&origin_key(origin)).copied()
 }
 
 /// Os componentes tipados do nó de onde uma entidade veio, se o documento os
 /// tinha (o último load de cada ficheiro ganha).
 pub fn specs_for(origin: &NodeOrigin) -> Option<Arc<NodeSpecs>> {
-    INDEX
-        .read()
-        .ok()?
-        .get(&(origin.file.to_path_buf(), origin.path.clone()))
-        .cloned()
+    INDEX.read().ok()?.get(&origin_key(origin)).cloned()
 }
 
 fn record(origin: &NodeOrigin, specs: NodeSpecs) {
     if let Ok(mut index) = INDEX.write() {
-        index.insert(
-            (Path::to_path_buf(&origin.file), origin.path.clone()),
-            Arc::new(specs),
-        );
+        index.insert(origin_key(origin), Arc::new(specs));
     }
 }
 
-/// Lê os componentes tipados da entidade, regista-os pela origem do nó e
-/// escreve nos `attrs` os atributos equivalentes (o parser do Viber ainda os
-/// usa como transporte). O componente ganha a um atributo homónimo.
-pub(crate) fn apply_specs(
+/// Lê os componentes tipados da entidade (sem registar nada).
+pub(crate) fn extract_node_specs(
     ast: &SceneBsnAst,
     entity: bevy::ecs::entity::Entity,
-    origin: &NodeOrigin,
-    attrs: &mut Vec<(String, String)>,
-) {
-    let specs = NodeSpecs {
+) -> NodeSpecs {
+    NodeSpecs {
         collider: read::<ColliderSpec>(ast, entity),
         body: read::<BodySpec>(ast, entity),
         destructible: read::<Destructible>(ast, entity),
@@ -356,7 +463,19 @@ pub(crate) fn apply_specs(
         mixer: read::<AudioMixerSpec>(ast, entity),
         music_layer: read::<MusicLayerSpec>(ast, entity),
         biome: read::<BiomeRegionSpec>(ast, entity),
-    };
+    }
+}
+
+/// Lê os componentes tipados da entidade, regista-os pela origem do nó e
+/// escreve nos `attrs` os atributos equivalentes (o parser do Viber ainda os
+/// usa como transporte). O componente ganha a um atributo homónimo.
+pub(crate) fn apply_specs(
+    ast: &SceneBsnAst,
+    entity: bevy::ecs::entity::Entity,
+    origin: &NodeOrigin,
+    attrs: &mut Vec<(String, String)>,
+) {
+    let specs = extract_node_specs(ast, entity);
     if specs.is_empty() {
         return;
     }
