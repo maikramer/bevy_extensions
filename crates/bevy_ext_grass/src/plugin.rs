@@ -600,6 +600,11 @@ fn tag_cameras(
     }
 }
 
+fn grass_debug_enabled() -> bool {
+    static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEBUG.get_or_init(|| std::env::var("GRASS_DEBUG").as_deref() == Ok("1"))
+}
+
 fn update_stats(
     stats: Option<Res<GrassStats>>,
     support: Option<Res<GrassSupport>>,
@@ -607,11 +612,11 @@ fn update_stats(
     mut stats_logged: Local<bool>,
 ) {
     if let Some(stats) = stats {
-        state.blade_count = stats.gpu.total_blades() as usize;
-        if !*stats_logged
-            && stats.gpu.readings > 0
-            && std::env::var("GRASS_DEBUG").as_deref() == Ok("1")
-        {
+        let next_blades = stats.gpu.total_blades() as usize;
+        if state.as_ref().blade_count != next_blades {
+            state.blade_count = next_blades;
+        }
+        if !*stats_logged && stats.gpu.readings > 0 && grass_debug_enabled() {
             *stats_logged = true;
             info!(
                 "bevy_ext_grass: {} talos (perto {}, meio {}, longe {}), {} slices, {} overflows",
@@ -625,16 +630,23 @@ fn update_stats(
         }
     }
     if let Some(support) = support {
-        state.support = *support;
-        if !state.support_logged && !matches!(state.support, GrassSupport::Unknown) {
-            state.support_logged = true;
-            if state.support.is_supported() {
-                info!("bevy_ext_grass: GPU com compute/indirect — relva ativa");
-            } else {
-                warn!(
-                    "bevy_ext_grass: GPU sem suporte para a relva ({:?}); nada será desenhado",
-                    state.support
-                );
+        if support.is_changed() || !state.as_ref().support_logged {
+            if std::mem::discriminant(&state.as_ref().support) != std::mem::discriminant(&*support)
+            {
+                state.support = *support;
+            }
+            if !state.as_ref().support_logged
+                && !matches!(state.as_ref().support, GrassSupport::Unknown)
+            {
+                state.support_logged = true;
+                if state.as_ref().support.is_supported() {
+                    info!("bevy_ext_grass: GPU com compute/indirect — relva ativa");
+                } else {
+                    warn!(
+                        "bevy_ext_grass: GPU sem suporte para a relva ({:?}); nada será desenhado",
+                        state.as_ref().support
+                    );
+                }
             }
         }
     }
@@ -647,6 +659,10 @@ fn despawn_fields(commands: &mut Commands, existing: &Query<Entity, With<GrassFi
 }
 
 fn heights_image(heights: &[f32], texels: UVec2) -> Image {
+    let mut bytes = Vec::with_capacity(heights.len() * 4);
+    for h in heights {
+        bytes.extend_from_slice(&h.to_le_bytes());
+    }
     Image::new(
         Extent3d {
             width: texels.x,
@@ -654,7 +670,7 @@ fn heights_image(heights: &[f32], texels: UVec2) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        heights.iter().flat_map(|h| h.to_le_bytes()).collect(),
+        bytes,
         TextureFormat::R32Float,
         RenderAssetUsages::MAIN_WORLD,
     )

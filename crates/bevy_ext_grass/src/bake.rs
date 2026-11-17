@@ -95,32 +95,83 @@ pub struct FieldData {
 pub fn bake_static(terrain: &dyn GrassTerrain, config: &GrassBakeConfig) -> StaticMaps {
     let world_size = terrain.world_size().max(1.0);
     let dim = (world_size / config.static_cell.max(0.5)).ceil().max(1.0) as u32;
+    let dim_usize = dim as usize;
     let cell = world_size / dim as f32;
     let min = Vec2::splat(-world_size * 0.5);
-    let mut density = vec![0u8; (dim * dim) as usize];
-    let mut biome = vec![0u16; (dim * dim) as usize];
+    let total = dim_usize * dim_usize;
+    let mut density = vec![0u8; total];
+    let mut biome = vec![0u16; total];
     let mut blocked = 0u32;
     let mut empty = 0u32;
     let mut ok = 0u32;
-    for iz in 0..dim {
-        for ix in 0..dim {
-            let p = min + (Vec2::new(ix as f32, iz as f32) + 0.5) * cell;
-            let idx = (iz * dim + ix) as usize;
-            let ground = terrain.height(p.x, p.y);
-            let site = terrain.site(p.x, p.y, ground);
-            biome[idx] = site.biome.0;
-            if site.blocked {
-                blocked += 1;
-                continue;
+
+    let bake_rows = |start_iz: u32, d_slice: &mut [u8], b_slice: &mut [u16]| -> (u32, u32, u32) {
+        let mut l_blocked = 0u32;
+        let mut l_empty = 0u32;
+        let mut l_ok = 0u32;
+        let rows = d_slice.len() / dim_usize;
+        for row in 0..rows {
+            let iz = start_iz + row as u32;
+            let py = min.y + (iz as f32 + 0.5) * cell;
+            let row_off = row * dim_usize;
+            for ix in 0..dim_usize {
+                let px = min.x + (ix as f32 + 0.5) * cell;
+                let idx = row_off + ix;
+                let ground = terrain.height(px, py);
+                let site = terrain.site(px, py, ground);
+                b_slice[idx] = site.biome.0;
+                if site.blocked {
+                    l_blocked += 1;
+                    continue;
+                }
+                if site.coverage <= 0.0 {
+                    l_empty += 1;
+                    continue;
+                }
+                d_slice[idx] = (site.coverage * 255.0).round().clamp(0.0, 255.0) as u8;
+                l_ok += 1;
             }
-            if site.coverage <= 0.0 {
-                empty += 1;
-                continue;
-            }
-            density[idx] = (site.coverage * 255.0).round().clamp(0.0, 255.0) as u8;
-            ok += 1;
         }
+        (l_blocked, l_empty, l_ok)
+    };
+
+    let workers = if total >= 4096 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(dim_usize)
+    } else {
+        1
+    };
+    if workers <= 1 {
+        let (b, e, o) = bake_rows(0, &mut density, &mut biome);
+        blocked = b;
+        empty = e;
+        ok = o;
+    } else {
+        let rows_per_worker = dim_usize.div_ceil(workers);
+        let chunk_elems = rows_per_worker * dim_usize;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for (chunk_idx, (d_chunk, b_chunk)) in density
+                .chunks_mut(chunk_elems)
+                .zip(biome.chunks_mut(chunk_elems))
+                .enumerate()
+            {
+                let start_iz = (chunk_idx * rows_per_worker) as u32;
+                handles.push(scope.spawn(move || bake_rows(start_iz, d_chunk, b_chunk)));
+            }
+            for handle in handles {
+                let (b, e, o) = handle
+                    .join()
+                    .expect("bevy_ext_grass: bake estático entrou em pânico");
+                blocked += b;
+                empty += e;
+                ok += o;
+            }
+        });
     }
+
     info!(
         "bevy_ext_grass: máscara estática {ok}/{} texels a {:.1} m — bloqueados {blocked}, sem cobertura {empty}",
         dim * dim,
@@ -179,11 +230,22 @@ fn bake_field(
         let w = texels.x as usize;
         let h = texels.y as usize;
         let cell = plan.cell(texels);
+        let (sin, cos) = plan.yaw.sin_cos();
+        let local0 = 0.5 * cell - plan.size * 0.5;
+        let origin = Vec2::new(
+            plan.center.x + local0.x * cos + local0.y * sin,
+            plan.center.y - local0.x * sin + local0.y * cos,
+        );
+        let step_x = Vec2::new(cell.x * cos, -cell.x * sin);
+        let step_z = Vec2::new(cell.y * sin, cell.y * cos);
+
         let mut heights = vec![0.0f32; w * h];
-        for iz in 0..texels.y {
-            for ix in 0..texels.x {
-                let world = plan.world_point(plan.local_point(texels, ix, iz));
-                heights[iz as usize * w + ix as usize] = terrain.height(world.x, world.y);
+        for iz in 0..h {
+            let row_base = origin + step_z * iz as f32;
+            let row_off = iz * w;
+            for ix in 0..w {
+                let world = row_base + step_x * ix as f32;
+                heights[row_off + ix] = terrain.height(world.x, world.y);
             }
         }
         let mut mask = vec![0u8; w * h * 2];
@@ -192,9 +254,11 @@ fn bake_field(
         let mut hmin = f32::INFINITY;
         let mut hmax = f32::NEG_INFINITY;
         for iz in 0..h {
+            let row_base = origin + step_z * iz as f32;
+            let row_off = iz * w;
             for ix in 0..w {
-                let idx = iz * w + ix;
-                let world = plan.world_point(plan.local_point(texels, ix as u32, iz as u32));
+                let idx = row_off + ix;
+                let world = row_base + step_x * ix as f32;
                 let Some((static_biome, static_density)) = statics.sample(world) else {
                     continue;
                 };
