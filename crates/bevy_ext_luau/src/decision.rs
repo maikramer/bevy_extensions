@@ -23,7 +23,7 @@ mod imp {
     use std::path::{Component, Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use mlua::{Lua, Table};
@@ -40,11 +40,15 @@ mod imp {
     ];
 
     enum Request {
-        Load(PathBuf),
+        Load {
+            dir: PathBuf,
+            reply: Sender<Response>,
+        },
         Decide {
             id: u32,
             state: Value,
             questions: Map<String, Value>,
+            reply: Sender<Response>,
         },
     }
 
@@ -56,28 +60,53 @@ mod imp {
         },
     }
 
+    /// Serviço partilhado do processo: uma única thread e um único modelo d1
+    /// carregado sob demanda, em vez de 1 thread por cada VM BMS.
+    struct SharedDecisionService {
+        tx: Mutex<Sender<Request>>,
+    }
+
+    static SHARED_DECISION: OnceLock<Result<SharedDecisionService, String>> = OnceLock::new();
+    static SHARED_READY: AtomicBool = AtomicBool::new(false);
+    static SHARED_LOAD_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+    fn shared_error_slot() -> &'static Mutex<Option<String>> {
+        SHARED_LOAD_ERROR.get_or_init(|| Mutex::new(None))
+    }
+
+    fn shared_service() -> mlua::Result<&'static SharedDecisionService> {
+        SHARED_DECISION
+            .get_or_init(|| {
+                let (req_tx, req_rx) = mpsc::channel();
+                std::thread::Builder::new()
+                    .name("celer-decision".into())
+                    .spawn(move || worker(req_rx))
+                    .map_err(|e| format!("viber.decision: worker: {e}"))?;
+                Ok(SharedDecisionService {
+                    tx: Mutex::new(req_tx),
+                })
+            })
+            .as_ref()
+            .map_err(|e| mlua::Error::runtime(e.clone()))
+    }
+
     #[derive(Clone)]
     struct DecisionState {
-        tx: Sender<Request>,
+        reply_tx: Sender<Response>,
         rx: Arc<Mutex<Receiver<Response>>>,
         pending: Arc<Mutex<VecDeque<Response>>>,
         next_id: Arc<AtomicU32>,
-        ready: Arc<AtomicBool>,
-        load_error: Arc<Mutex<Option<String>>>,
     }
 
-    fn worker(
-        rx: Receiver<Request>,
-        tx: Sender<Response>,
-        ready: Arc<AtomicBool>,
-        load_error: Arc<Mutex<Option<String>>>,
-    ) {
+    fn worker(rx: Receiver<Request>) {
         let mut runtime: Option<celer_decision::Runtime> = None;
+        let mut loaded_dir: Option<PathBuf> = None;
         while let Ok(req) = rx.recv() {
             match req {
-                Request::Load(dir) => {
-                    if runtime.is_some() {
-                        let _ = tx.send(Response::Loaded(Ok(())));
+                Request::Load { dir, reply } => {
+                    let canonical = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+                    if runtime.is_some() && loaded_dir.as_ref() == Some(&canonical) {
+                        let _ = reply.send(Response::Loaded(Ok(())));
                         continue;
                     }
                     let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -86,30 +115,31 @@ mod imp {
                     match loaded {
                         Ok(Ok(rt)) => {
                             runtime = Some(rt);
+                            loaded_dir = Some(canonical);
                             // Padrão da casa (bridge/profiler): um mutex
                             // envenenado não pode deixar a worker cega — o
                             // valor por detrás vale mais que o panic.
-                            *load_error
+                            *shared_error_slot()
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                            ready.store(true, Ordering::Release);
-                            let _ = tx.send(Response::Loaded(Ok(())));
+                            SHARED_READY.store(true, Ordering::Release);
+                            let _ = reply.send(Response::Loaded(Ok(())));
                         }
                         Ok(Err(e)) => {
                             let msg = format!("{e:#}");
-                            *load_error
+                            *shared_error_slot()
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                                 Some(msg.clone());
-                            let _ = tx.send(Response::Loaded(Err(msg)));
+                            let _ = reply.send(Response::Loaded(Err(msg)));
                         }
                         Err(_) => {
                             let msg = "viber.decision: panic ao carregar o modelo".to_string();
-                            *load_error
+                            *shared_error_slot()
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                                 Some(msg.clone());
-                            let _ = tx.send(Response::Loaded(Err(msg)));
+                            let _ = reply.send(Response::Loaded(Err(msg)));
                         }
                     }
                 }
@@ -117,6 +147,7 @@ mod imp {
                     id,
                     state,
                     questions,
+                    reply,
                 } => {
                     let result = match runtime.as_mut() {
                         Some(rt) => {
@@ -130,7 +161,7 @@ mod imp {
                         }
                         None => Err("viber.decision: modelo não carregado".to_string()),
                     };
-                    let _ = tx.send(Response::Decided { id, result });
+                    let _ = reply.send(Response::Decided { id, result });
                 }
             }
         }
@@ -316,24 +347,13 @@ mod imp {
     }
 
     pub fn install(lua: &Lua, api: &Table) -> mlua::Result<()> {
-        let (req_tx, req_rx) = mpsc::channel();
         let (res_tx, res_rx) = mpsc::channel();
-        let ready = Arc::new(AtomicBool::new(false));
-        let load_error = Arc::new(Mutex::new(None::<String>));
-
-        let (w_ready, w_err) = (ready.clone(), load_error.clone());
-        std::thread::Builder::new()
-            .name("celer-decision".into())
-            .spawn(move || worker(req_rx, res_tx, w_ready, w_err))
-            .map_err(|e| mlua::Error::runtime(format!("viber.decision: worker: {e}")))?;
 
         lua.set_app_data(DecisionState {
-            tx: req_tx,
+            reply_tx: res_tx,
             rx: Arc::new(Mutex::new(res_rx)),
             pending: Arc::new(Mutex::new(VecDeque::new())),
             next_id: Arc::new(AtomicU32::new(1)),
-            ready,
-            load_error,
         });
 
         let d = lua.create_table()?;
@@ -342,8 +362,8 @@ mod imp {
             "available",
             lua.create_function(|lua, dir: Option<String>| {
                 let Some(dir) = dir else {
-                    let st = state(lua)?;
-                    return Ok(st.ready.load(Ordering::Acquire));
+                    let _ = state(lua)?;
+                    return Ok(SHARED_READY.load(Ordering::Acquire));
                 };
                 let path = resolve_dir(lua, &dir)?;
                 Ok(files_present(&path))
@@ -353,8 +373,11 @@ mod imp {
         d.set(
             "last_error",
             lua.create_function(|lua, ()| {
-                let st = state(lua)?;
-                let e = st.load_error.lock().unwrap().clone();
+                let _ = state(lua)?;
+                let e = shared_error_slot()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 Ok(match e {
                     Some(s) => mlua::Value::String(lua.create_string(s)?),
                     None => mlua::Value::Nil,
@@ -365,8 +388,8 @@ mod imp {
         d.set(
             "ready",
             lua.create_function(|lua, ()| {
-                let st = state(lua)?;
-                Ok(st.ready.load(Ordering::Acquire))
+                let _ = state(lua)?;
+                Ok(SHARED_READY.load(Ordering::Acquire))
             })?,
         )?;
 
@@ -375,9 +398,6 @@ mod imp {
             lua.create_function(|lua, dir: String| {
                 let path = resolve_dir(lua, &dir)?;
                 let st = state(lua)?;
-                if st.ready.load(Ordering::Acquire) {
-                    return Ok((true, mlua::Value::Nil));
-                }
                 if !files_present(&path) {
                     return Ok((
                         false,
@@ -387,9 +407,16 @@ mod imp {
                         ))?),
                     ));
                 }
-                st.tx
-                    .send(Request::Load(path))
+                let svc = shared_service()?;
+                let tx = svc
+                    .tx
+                    .lock()
                     .map_err(|_| mlua::Error::runtime("viber.decision: worker parado"))?;
+                tx.send(Request::Load {
+                    dir: path,
+                    reply: st.reply_tx,
+                })
+                .map_err(|_| mlua::Error::runtime("viber.decision: worker parado"))?;
                 Ok((true, mlua::Value::Nil))
             })?,
         )?;
@@ -398,7 +425,7 @@ mod imp {
             "submit",
             lua.create_function(|lua, (state_v, questions_v): (mlua::Value, mlua::Value)| {
                 let st = state(lua)?;
-                if !st.ready.load(Ordering::Acquire) {
+                if !SHARED_READY.load(Ordering::Acquire) {
                     return Ok((
                         mlua::Value::Nil,
                         mlua::Value::String(
@@ -408,13 +435,18 @@ mod imp {
                 }
                 let (state, questions) = payloads(state_v, questions_v)?;
                 let id = st.next_id.fetch_add(1, Ordering::Relaxed);
-                st.tx
-                    .send(Request::Decide {
-                        id,
-                        state,
-                        questions,
-                    })
+                let svc = shared_service()?;
+                let tx = svc
+                    .tx
+                    .lock()
                     .map_err(|_| mlua::Error::runtime("viber.decision: worker parado"))?;
+                tx.send(Request::Decide {
+                    id,
+                    state,
+                    questions,
+                    reply: st.reply_tx,
+                })
+                .map_err(|_| mlua::Error::runtime("viber.decision: worker parado"))?;
                 Ok((mlua::Value::Integer(id as i64), mlua::Value::Nil))
             })?,
         )?;
@@ -446,7 +478,7 @@ mod imp {
             "decide",
             lua.create_function(|lua, (state_v, questions_v): (mlua::Value, mlua::Value)| {
                 let st = state(lua)?;
-                if !st.ready.load(Ordering::Acquire) {
+                if !SHARED_READY.load(Ordering::Acquire) {
                     return Ok((
                         mlua::Value::Nil,
                         mlua::Value::String(
@@ -456,13 +488,20 @@ mod imp {
                 }
                 let (state, questions) = payloads(state_v, questions_v)?;
                 let id = st.next_id.fetch_add(1, Ordering::Relaxed);
-                st.tx
-                    .send(Request::Decide {
+                let svc = shared_service()?;
+                {
+                    let tx = svc
+                        .tx
+                        .lock()
+                        .map_err(|_| mlua::Error::runtime("viber.decision: worker parado"))?;
+                    tx.send(Request::Decide {
                         id,
                         state,
                         questions,
+                        reply: st.reply_tx,
                     })
                     .map_err(|_| mlua::Error::runtime("viber.decision: worker parado"))?;
+                }
                 let rx = st.rx.lock().unwrap();
                 let deadline = Instant::now() + Duration::from_secs(30);
                 loop {

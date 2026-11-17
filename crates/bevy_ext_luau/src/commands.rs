@@ -80,10 +80,15 @@ pub enum ScriptCommand {
     // ── F4 (percepção/props) ────────────────────────────────────────────
     /// Vira a entidade para olhar um ponto (yaw only) — `viber.face_towards`
     /// / `viber.face_player` (alvo = posição do herói).
-    FaceTowards { entity: Entity, target: Vec3 },
+    FaceTowards {
+        entity: Entity,
+        target: Vec3,
+    },
     /// Destrutível com queda (`break-style: fall`) — tomba na direção
     /// herói→entidade e despawna no fim (`viber.topple`).
-    Topple { entity: Entity },
+    Topple {
+        entity: Entity,
+    },
     /// Reclama uma ação da UI (`viber.own_action("buy")`) — o handler
     /// nativo correspondente cala e a ação chega a Lua via `viber.events()`.
     OwnUiAction(String),
@@ -97,13 +102,23 @@ pub enum ScriptCommand {
     ReleaseSystem(String),
     /// Esconde/mostra uma entidade e a subárvore (`viber.set_visible`) — a
     /// `Visibility` do Bevy propaga aos filhos com Inherited.
-    SetVisible { entity: Entity, visible: bool },
+    SetVisible {
+        entity: Entity,
+        visible: bool,
+    },
     /// Escala uniforme da entidade (`viber.set_scale`, 0.05..20).
-    SetScale { entity: Entity, scale: f32 },
+    SetScale {
+        entity: Entity,
+        scale: f32,
+    },
     /// Pose LOCAL da entidade (`viber.set_pose`). O yaw é
     /// `Quat::from_rotation_y`; a escala fica. Com `own_system("locomotion")`
     /// o herói deixa de andar a pé.
-    SetPose { entity: Entity, pos: Vec3, yaw: f32 },
+    SetPose {
+        entity: Entity,
+        pos: Vec3,
+        yaw: f32,
+    },
     /// Burst de partículas (`viber.burst`) — preset validado contra a
     /// biblioteca publicada (`ScriptHostState::particle_presets`; `sparks`
     /// é o preset de impacto do melee, fora da biblioteca).
@@ -133,10 +148,15 @@ pub enum ScriptCommand {
     },
     /// Acende o flash de impacto na entidade (`viber.hit_flash`) — leitura
     /// visual do golpe, sem dano nem regra de combate.
-    HitFlash { entity: Entity, secs: f32 },
+    HitFlash {
+        entity: Entity,
+        secs: f32,
+    },
     /// Marca a entidade como cadáver (`viber.corpse`): o jogo decide a
     /// morte; a engine só deixa de a animar e, com ragdoll, começa o ragdoll.
-    Corpse { entity: Entity },
+    Corpse {
+        entity: Entity,
+    },
     /// Anexa um GLB a um osso (`viber.attach`) ou remove o slot
     /// (`url = None`, `viber.detach`). Genérico: a engine não sabe o que é
     /// uma arma; só encontra o osso e pendura o prop.
@@ -170,14 +190,27 @@ pub enum ScriptCommand {
     MusicLayer(Option<String>),
     /// Liga/desliga a música de combate (`viber.music.combat`). `boss` promove
     /// para a layer `boss`; `active=false` corta já (sem esperar o hold).
-    MusicCombat { active: bool, boss: bool },
+    MusicCombat {
+        active: bool,
+        boss: bool,
+    },
     /// Duck temporário de um bus (`viber.audio.duck`): `gain` linear durante
     /// `secs` segundos. Expira sozinho.
-    AudioDuck { bus: String, gain: f32, secs: f32 },
+    AudioDuck {
+        bus: String,
+        gain: f32,
+        secs: f32,
+    },
     /// Reverb dos buses de SFX/voz (`viber.audio.reverb`).
-    AudioReverb { preset: String, wet: Option<f32> },
+    AudioReverb {
+        preset: String,
+        wet: Option<f32>,
+    },
     /// Pulso de pós-processo (`viber.punch`): saturação de stops + bloom.
-    Punch { stops: f32, bloom: f32 },
+    Punch {
+        stops: f32,
+        bloom: f32,
+    },
     /// Solavanco direcional da câmara (`viber.kick`).
     CameraKick(Vec3),
     /// `viber.lantern(intensity)` — acende/reforça a lanterna do viajante
@@ -186,22 +219,37 @@ pub enum ScriptCommand {
     /// `viber.bone_offset(bone, rx, ry, rz)` — rotação ADITIVA num osso do
     /// herói, aplicada por cima de qualquer animação (idle/walk/run).
     /// `Quat::IDENTITY` remove a entrada.
-    SetBoneOffset { bone: String, rotation: Quat },
+    SetBoneOffset {
+        bone: String,
+        rotation: Quat,
+    },
     /// Câmara de jogo conduzida por script (`viber.camera_free`). `false`
     /// devolve a pose ao rig de terceira pessoa no frame seguinte.
     CameraFree(bool),
     /// Pose do modo livre (`viber.camera_pose`): olho + ponto olhado.
-    CameraPose { pos: Vec3, look: Vec3 },
+    CameraPose {
+        pos: Vec3,
+        look: Vec3,
+    },
     // ── F6 (IA/combate/cinemática) ───────────────────────────────────────
     /// Dano direto numa entidade (`viber.entity_damage`) — sem i-frames
     /// (esses são do path do player). HP ≤ 0 EMITE `Kill` na aplicação e
     /// NÃO corre o caminho nativo (cadáver/XP/quests são do melee).
-    EntityDamage { entity: Entity, amount: f32 },
+    EntityDamage {
+        entity: Entity,
+        amount: f32,
+    },
     /// Cura (`viber.entity_heal`) — o resultado nunca sai de `[0, max]`.
-    EntityHeal { entity: Entity, amount: f32 },
+    EntityHeal {
+        entity: Entity,
+        amount: f32,
+    },
     /// Redimensiona as vitais (`viber.entity_set_max_hp`); cria o `Health`
     /// se faltar (current = max).
-    EntitySetMaxHp { entity: Entity, max: f32 },
+    EntitySetMaxHp {
+        entity: Entity,
+        max: f32,
+    },
     /// Dano radial (`viber.radial_damage`): entidade por distância ao
     /// centro, com falloff; `skip` exclui o emissor.
     RadialDamage {
@@ -222,18 +270,36 @@ pub enum ScriptCommand {
         shooter: Option<Entity>,
     },
     /// Empurrão no herói (`viber.push_player`): impulso na direção dada.
-    PushPlayer { dir: Vec3, force: f32 },
+    PushPlayer {
+        dir: Vec3,
+        force: f32,
+    },
     /// Knockback numa entidade (`viber.entity_knockback`): impulso cinemático.
-    EntityKnockback { entity: Entity, dir: Vec3, force: f32 },
+    EntityKnockback {
+        entity: Entity,
+        dir: Vec3,
+        force: f32,
+    },
     /// Movimento de script (`viber.move_towards`/`move_by`): vai para
     /// `AiLocomotion` (o consumidor aplica a velocidade — snap no terreno).
-    MoveTowards { entity: Entity, target: Vec3, speed: f32 },
+    MoveTowards {
+        entity: Entity,
+        target: Vec3,
+        speed: f32,
+    },
     /// `viber.fire_projectile(template [, x, y, z])` — projétil de um
     /// `<ProjectileTemplate>` da boca do atirador para `target` (o peito do
     /// herói quando `None`; o consumidor resolve).
-    FireProjectileTemplate { template: String, target: Option<Vec3>, shooter: Option<Entity> },
+    FireProjectileTemplate {
+        template: String,
+        target: Option<Vec3>,
+        shooter: Option<Entity>,
+    },
     /// Velocidade planar direta (`viber.move_by(dx, dz)`, m/s).
-    MoveBy { entity: Entity, velocity: Vec2 },
+    MoveBy {
+        entity: Entity,
+        velocity: Vec2,
+    },
     /// Velocidade base do herói (`viber.set_player_speed`, m/s).
     SetPlayerSpeed(f32),
     /// Nominais de locomoção do rig (`viber.set_locomotion`, m/s) e a taxa
@@ -246,11 +312,20 @@ pub enum ScriptCommand {
     },
     /// `viber.teleport_player(x, y, z [, id])` — o `id` fica fora do raio de
     /// aterragem (um poço/torre não serve de chão a si próprio).
-    TeleportPlayer { pos: Vec3, exclude: Option<Entity> },
+    TeleportPlayer {
+        pos: Vec3,
+        exclude: Option<Entity>,
+    },
     /// Cinemática do mundo (`viber.cinematic(id[, anchor])`).
-    PlayCinematic { id: String, anchor: Option<Entity> },
+    PlayCinematic {
+        id: String,
+        anchor: Option<Entity>,
+    },
     /// Evento de sentidos (`viber.sense`): ruído audível no `SenseBus`.
-    Noise { pos: Vec3, loudness: f32 },
+    Noise {
+        pos: Vec3,
+        loudness: f32,
+    },
     // ── F7 (save/mundo/UI de texto) ─────────────────────────────────────
     /// Pedido de save (`viber.save`/`viber.save_slot`) — o jogo decide
     /// (autosave/slot/legado).
@@ -290,7 +365,10 @@ pub enum ScriptCommand {
         waypoint: Option<(Vec3, String)>,
     },
     /// Prompt de interação de MUNDO (`viber.prompt(key, label)`); vazio limpa.
-    Prompt { key: String, label: String },
+    Prompt {
+        key: String,
+        label: String,
+    },
     /// Idioma ativo (`viber.locale.set(lang)`); a tabela recarrega no frame
     /// seguinte (`Say`/`toast`/UI resolvem as chaves `@…`).
     SetLocale(String),
@@ -426,6 +504,7 @@ pub fn drain_commands(
     mut sfx: Option<MessageWriter<SfxEvent>>,
     mut out: Option<MessageWriter<ScriptCommandMessage>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("luau.commands");
     let _probe = bevy_ext_core::perf_probe::Probe::new("drain_commands"); // `VAEL_PERF_DIAG`
     let shared = crate::globals();
     let mut queue = {
@@ -443,10 +522,7 @@ mod tests {
 
     #[test]
     fn cores_hex_reconhecidas() {
-        assert_eq!(
-            parse_hex_color("#ff8800"),
-            Some([1.0, 136.0 / 255.0, 0.0])
-        );
+        assert_eq!(parse_hex_color("#ff8800"), Some([1.0, 136.0 / 255.0, 0.0]));
         assert_eq!(parse_hex_color("#f80"), Some([1.0, 136.0 / 255.0, 0.0]));
         assert_eq!(parse_hex_color("0xFF8800"), Some([1.0, 136.0 / 255.0, 0.0]));
         assert_eq!(parse_hex_color("#12345"), None);

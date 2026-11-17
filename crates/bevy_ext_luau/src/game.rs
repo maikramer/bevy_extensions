@@ -33,9 +33,10 @@
 //! inteiro no `json_to_game`; sem isto as tabelas de sessão sobreviviam ao
 //! carregar).
 
-use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::SystemTime;
 
 use mlua::{Function, IntoLua, Lua, MultiValue, Table, Value};
 
@@ -83,9 +84,53 @@ pub struct GameStore {
     /// load de save). Os proxies comparam e descartam o overlay de sessão —
     /// no Viber o `json_to_game` limpava a tabela da VM por inteiro.
     pub(crate) generation: u64,
+    /// Versão das chaves planas (`!is_nested_key`): incrementada sempre que
+    /// uma chave persistível muda, entra, sai ou o estado é substituído.
+    flat_version: u64,
 }
 
 impl GameStore {
+    /// Versão actual das chaves planas (`!is_nested_key`).
+    pub fn version(&self) -> u64 {
+        self.flat_version
+    }
+
+    /// Leitura directa de uma chave no store (zero clones).
+    pub fn get(&self, key: &str) -> Option<&GameValue> {
+        self.map.get(key)
+    }
+
+    /// `true` quando o store não tem nenhuma chave.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    fn bump_flat_version(&mut self) {
+        self.flat_version = self.flat_version.wrapping_add(1);
+    }
+
+    fn apply_entry(&mut self, key: String, value: GameValue) -> bool {
+        let flat = !is_nested_key(&key);
+        let changed = match value {
+            GameValue::Null => self.map.remove(&key).is_some(),
+            other => match self.map.get_mut(&key) {
+                Some(slot) if *slot == other => false,
+                Some(slot) => {
+                    *slot = other;
+                    true
+                }
+                None => {
+                    self.map.insert(key, other);
+                    true
+                }
+            },
+        };
+        if changed && flat {
+            self.bump_flat_version();
+        }
+        changed
+    }
+
     /// Enfia um patch (`Null` remove a chave na aplicação).
     pub fn publish_patch(&mut self, patch: Vec<(String, GameValue)>) {
         if !patch.is_empty() {
@@ -98,14 +143,7 @@ impl GameStore {
     pub fn apply_patches(&mut self) {
         while let Some(patch) = self.patches.pop_front() {
             for (key, value) in patch {
-                match value {
-                    GameValue::Null => {
-                        self.map.remove(&key);
-                    }
-                    other => {
-                        self.map.insert(key, other);
-                    }
-                }
+                self.apply_entry(key, value);
             }
         }
     }
@@ -125,6 +163,7 @@ impl GameStore {
     pub fn replace(&mut self, kv: BTreeMap<String, GameValue>) {
         self.map = kv;
         self.generation = self.generation.wrapping_add(1);
+        self.bump_flat_version();
     }
 }
 
@@ -188,9 +227,50 @@ pub fn game_snapshot() -> BTreeMap<String, GameValue> {
         .unwrap_or_default()
 }
 
+/// Versão actual das chaves planas do store do processo (`0` se falhar o lock).
+pub fn game_version() -> u64 {
+    game_store()
+        .read()
+        .map(|store| store.version())
+        .unwrap_or(0)
+}
+
+/// Leitura pontual de uma chave do store do processo (sem clonar o mapa).
+pub fn game_get(key: &str) -> Option<GameValue> {
+    game_store()
+        .read()
+        .ok()
+        .and_then(|store| store.get(key).cloned())
+}
+
+/// Leitura pontual em JSON de uma chave do store do processo.
+pub fn game_get_json(key: &str) -> Option<serde_json::Value> {
+    game_store()
+        .read()
+        .ok()
+        .and_then(|store| store.get(key).map(game_value_to_json))
+}
+
+/// Leitura pontual booleana de uma chave do store do processo.
+pub fn game_get_bool(key: &str) -> Option<bool> {
+    game_store()
+        .read()
+        .ok()
+        .and_then(|store| match store.get(key)? {
+            GameValue::Bool(flag) => Some(*flag),
+            _ => None,
+        })
+}
+
+/// Executa `f` com acesso de leitura ao [`GameStore`] do processo num único lock.
+pub fn with_game_store<R>(f: impl FnOnce(&GameStore) -> R) -> Option<R> {
+    game_store().read().ok().map(|store| f(&store))
+}
+
 /// Sistema: aplica os patches publicados ao store do processo. Corre no
 /// PreUpdate, antes dos scripts lerem `viber.game()`.
 pub fn apply_game_patches() {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("luau.game_patches");
     if let Ok(mut store) = game_store().write() {
         store.apply_patches();
     }
@@ -222,14 +302,11 @@ pub fn game_to_json_process() -> BTreeMap<String, serde_json::Value> {
 
 /// `GameValue` → JSON: integral → `i64`, o resto `f64` (NaN/inf caem — o
 /// `from_f64` do serde devolve None, como no walk da tabela do Viber).
-fn game_value_to_json(value: &GameValue) -> serde_json::Value {
+pub fn game_value_to_json(value: &GameValue) -> serde_json::Value {
     match value {
         GameValue::Bool(flag) => serde_json::Value::Bool(*flag),
         GameValue::Num(number) => {
-            if number.fract() == 0.0
-                && *number >= -(2f64.powi(53))
-                && *number <= 2f64.powi(53)
-            {
+            if number.fract() == 0.0 && *number >= -(2f64.powi(53)) && *number <= 2f64.powi(53) {
                 serde_json::Value::Number(serde_json::Number::from(*number as i64))
             } else {
                 serde_json::Number::from_f64(*number)
@@ -302,10 +379,7 @@ pub fn restore_game_json(kv: &BTreeMap<String, serde_json::Value>) {
 /// por compatibilidade de chamadas — o estado agora vive no STORE do
 /// processo, e a escrita é imediata (o monólito escrevia com `raw_set`
 /// sem fila). `Null` remove a chave; não-primitivos são ignorados.
-pub fn apply_patch(
-    _lua: &Lua,
-    patch: &std::collections::BTreeMap<String, serde_json::Value>,
-) {
+pub fn apply_patch(_lua: &Lua, patch: &std::collections::BTreeMap<String, serde_json::Value>) {
     apply_patch_json(patch);
 }
 
@@ -332,14 +406,7 @@ pub fn apply_patch_json(patch: &std::collections::BTreeMap<String, serde_json::V
         .collect();
     if let Ok(mut store) = game_store().write() {
         for (key, value) in map {
-            match value {
-                GameValue::Null => {
-                    store.map.remove(&key);
-                }
-                other => {
-                    store.map.insert(key, other);
-                }
-            }
+            store.apply_entry(key, value);
         }
     }
 }
@@ -365,6 +432,9 @@ pub fn game_proxy(lua: &Lua) -> mlua::Result<Table> {
     game.call(())
 }
 
+#[derive(Clone)]
+struct GameStoreRef(Arc<RwLock<GameStore>>);
+
 /// Snapshot dos primitivos de `viber.game()` **desta VM** (proxy incluído).
 ///
 /// É o equivalente de [`game_to_json`] pela tabela da VM em vez do store do
@@ -376,6 +446,9 @@ pub fn game_proxy(lua: &Lua) -> mlua::Result<Table> {
 /// Tabelas/funções (overlay de sessão) ficam de fora, como no save; `nil`
 /// entra como `null` (o `GameStore::Null`).
 pub fn game_snapshot_vm(lua: &Lua) -> BTreeMap<String, serde_json::Value> {
+    if let Some(store) = lua.app_data_ref::<GameStoreRef>() {
+        return game_to_json_store(&store.0);
+    }
     let mut out = BTreeMap::new();
     let Ok(game) = game_proxy(lua) else {
         return out;
@@ -413,11 +486,7 @@ pub fn game_snapshot_vm(lua: &Lua) -> BTreeMap<String, serde_json::Value> {
 
 /// `chave`/`valor` Lua → mapa JSON plano. Chaves não-string e valores
 /// não-primitivos (tabelas/funções) ficam de fora.
-fn insert_primitive_json(
-    out: &mut BTreeMap<String, serde_json::Value>,
-    key: Value,
-    value: Value,
-) {
+fn insert_primitive_json(out: &mut BTreeMap<String, serde_json::Value>, key: Value, value: Value) {
     let Value::String(key) = key else {
         return;
     };
@@ -441,11 +510,75 @@ fn insert_primitive_json(
     out.insert(key.to_string(), json);
 }
 
+type FileStamp = (Option<SystemTime>, u64);
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok(), meta.len()))
+}
+
+static SCRIPT_SOURCE_CACHE: OnceLock<RwLock<HashMap<PathBuf, (FileStamp, Arc<str>)>>> =
+    OnceLock::new();
+static JSON_VALUE_CACHE: OnceLock<RwLock<HashMap<PathBuf, (FileStamp, Arc<serde_json::Value>)>>> =
+    OnceLock::new();
+
+fn script_source_cache() -> &'static RwLock<HashMap<PathBuf, (FileStamp, Arc<str>)>> {
+    SCRIPT_SOURCE_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn json_value_cache() -> &'static RwLock<HashMap<PathBuf, (FileStamp, Arc<serde_json::Value>)>> {
+    JSON_VALUE_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn load_cached_script(path: &Path) -> Result<Arc<str>, std::io::Error> {
+    let stamp = file_stamp(path);
+    if let Some(stamp) = stamp
+        && let Ok(cache) = script_source_cache().read()
+        && let Some((cached_stamp, src)) = cache.get(path)
+        && *cached_stamp == stamp
+    {
+        return Ok(src.clone());
+    }
+    let code = std::fs::read_to_string(path)?;
+    let arc: Arc<str> = Arc::from(code);
+    if let Some(stamp) = stamp
+        && let Ok(mut cache) = script_source_cache().write()
+    {
+        cache.insert(path.to_path_buf(), (stamp, arc.clone()));
+    }
+    Ok(arc)
+}
+
+fn load_cached_json(path: &Path) -> Result<Arc<serde_json::Value>, String> {
+    let stamp = file_stamp(path);
+    if let Some(stamp) = stamp
+        && let Ok(cache) = json_value_cache().read()
+        && let Some((cached_stamp, val)) = cache.get(path)
+        && *cached_stamp == stamp
+    {
+        return Ok(val.clone());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let arc = Arc::new(value);
+    if let Some(stamp) = stamp
+        && let Ok(mut cache) = json_value_cache().write()
+    {
+        cache.insert(path.to_path_buf(), (stamp, arc.clone()));
+    }
+    Ok(arc)
+}
+
 /// Tira `path` do cache do `viber.load` (hot-reload de um módulo). Devolve
 /// `true` se estava carregado. Portado do monólito — opera no registry da
 /// VM dada (o host do monólito e os contextos BMS usam a mesma chave
 /// `viber_modules`).
 pub fn evict_module(lua: &Lua, path: &str) -> bool {
+    if let Some(dir) = read_scripts_dir(lua)
+        && let Ok(mut cache) = script_source_cache().write()
+    {
+        cache.remove(&dir.join(path));
+    }
     let Ok(modules) = lua.named_registry_value::<Table>("viber_modules") else {
         return false;
     };
@@ -471,6 +604,7 @@ pub fn reset_game_state_for_tests() {
 /// na tabela `viber`. (exit4/F3: o grupo `game` é um só — o monólito chama
 /// esta instalação pelo shim `viber::luau::game`.)
 pub fn install(lua: &Lua, viber: &Table, store: Arc<RwLock<GameStore>>) -> mlua::Result<()> {
+    lua.set_app_data(GameStoreRef(store.clone()));
     let proxy = build_game_proxy(lua, store)?;
 
     // viber.game() — o MESMO proxy em todas as chamadas (`local game =
@@ -486,7 +620,10 @@ pub fn install(lua: &Lua, viber: &Table, store: Arc<RwLock<GameStore>>) -> mlua:
     // `pairs(proxy)` no Luau não consulta metamétodos (o `for .. in` sim):
     // envolvemos o `pairs` da VM para delegar em `__iter` quando existir.
     // Os restantes pares/tabelas continuam no `pairs` cru.
-    if !lua.named_registry_value::<bool>("viber_pairs_wrapped").unwrap_or(false) {
+    if !lua
+        .named_registry_value::<bool>("viber_pairs_wrapped")
+        .unwrap_or(false)
+    {
         lua.load(
             r#"local rawpairs = pairs
 pairs = function(obj)
@@ -566,7 +703,7 @@ end"#,
                 )
             })?;
             let full = dir.join(&key);
-            let code = std::fs::read_to_string(&full).map_err(|error| {
+            let code = load_cached_script(&full).map_err(|error| {
                 mlua::Error::runtime(format!("viber.load('{path}'): {error}"))
             })?;
             // Env sandbox próprio (mesma forma do chunk de entidade) — o
@@ -576,7 +713,7 @@ end"#,
             mt.set("__index", lua.globals())?;
             env.set_metatable(Some(mt))?;
             let chunk = lua
-                .load(&code)
+                .load(&*code)
                 .set_name(format!("={path}"))
                 .set_environment(env)
                 .into_function()?;
@@ -610,15 +747,13 @@ end"#,
                     "viber.load_json('{path}'): só caminhos relativos à pasta do mundo (sem '..')"
                 )));
             }
-            let scripts =
-                read_scripts_dir(lua).ok_or_else(|| mlua::Error::runtime("viber.load_json sem scripts_dir"))?;
+            let scripts = read_scripts_dir(lua)
+                .ok_or_else(|| mlua::Error::runtime("viber.load_json sem scripts_dir"))?;
             let world = scripts.parent().ok_or_else(|| {
                 mlua::Error::runtime("viber.load_json: scripts/ sem pasta de mundo")
             })?;
             let full = world.join(&path);
-            let text = std::fs::read_to_string(&full)
-                .map_err(|e| mlua::Error::runtime(format!("viber.load_json('{path}'): {e}")))?;
-            let value: serde_json::Value = serde_json::from_str(&text)
+            let value = load_cached_json(&full)
                 .map_err(|e| mlua::Error::runtime(format!("viber.load_json('{path}'): {e}")))?;
             json_to_lua(lua, &value)
         })?,
@@ -669,19 +804,31 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
         "__index",
         // O 1.º argumento do `__index` é a própria tabela — consome-a antes
         // da chave.
-        lua.create_function(move |lua, (_proxy, key): (Table, Value)| -> mlua::Result<Value> {
-            sync_generation(&index_store, &index_gen, &index_overlay);
-            let Value::String(key) = &key else {
-                return Ok(Value::Nil);
-            };
-            let name = key.to_string_lossy();
-            if let Ok(value) = index_overlay.raw_get::<mlua::Value>(name.as_str())
-                && !value.is_nil()
-            {
-                return Ok(value);
-            }
-            read_path(lua, &index_store, name)
-        })?,
+        lua.create_function(
+            move |lua, (_proxy, key): (Table, Value)| -> mlua::Result<Value> {
+                let Value::String(key) = &key else {
+                    return Ok(Value::Nil);
+                };
+                let borrowed = key.to_str().ok();
+                let owned;
+                let name: &str = match &borrowed {
+                    Some(s) => s,
+                    None => {
+                        owned = key.to_string_lossy();
+                        &owned
+                    }
+                };
+                if !index_overlay.is_empty() {
+                    sync_generation(&index_store, &index_gen, &index_overlay);
+                    if let Ok(value) = index_overlay.raw_get::<mlua::Value>(name)
+                        && !value.is_nil()
+                    {
+                        return Ok(value);
+                    }
+                }
+                read_path(lua, &index_store, name)
+            },
+        )?,
     )?;
 
     // __newindex — primitivos e TABELAS escrevem no store partilhado (nil
@@ -693,19 +840,33 @@ fn build_game_proxy(lua: &Lua, store: Arc<RwLock<GameStore>>) -> mlua::Result<Ta
         "__newindex",
         lua.create_function(
             move |_, (_proxy, key, value): (Table, Value, Value)| -> mlua::Result<()> {
-                sync_generation(&newindex_store, &newindex_gen, &newindex_overlay);
                 let Value::String(key) = &key else {
                     return Err(mlua::Error::runtime(
                         "viber.game(): as chaves têm de ser strings",
                     ));
                 };
-                let name = key.to_string_lossy();
-                if matches!(value, Value::Function(_) | Value::UserData(_) | Value::Thread(_)) {
+                let borrowed = key.to_str().ok();
+                let owned;
+                let name: &str = match &borrowed {
+                    Some(s) => s,
+                    None => {
+                        owned = key.to_string_lossy();
+                        &owned
+                    }
+                };
+                if matches!(
+                    value,
+                    Value::Function(_) | Value::UserData(_) | Value::Thread(_)
+                ) {
+                    sync_generation(&newindex_store, &newindex_gen, &newindex_overlay);
                     newindex_overlay.raw_set(name, value)?;
                     return Ok(());
                 }
-                let _ = newindex_overlay.raw_remove(name.as_str());
-                write_path(&newindex_store, &name, &value)
+                if !newindex_overlay.is_empty() {
+                    sync_generation(&newindex_store, &newindex_gen, &newindex_overlay);
+                    let _ = newindex_overlay.raw_remove(name);
+                }
+                write_path(&newindex_store, name, &value)
             },
         )?,
     )?;
@@ -784,33 +945,87 @@ fn decode_segment(lua: &Lua, segment: &str) -> mlua::Result<Value> {
 }
 
 fn child_path(parent: &str, segment: &str) -> String {
-    format!("{parent}{PATH_SEP}{segment}")
+    let mut out = String::with_capacity(parent.len() + segment.len() + 4);
+    out.push_str(parent);
+    out.push(PATH_SEP);
+    out.push_str(segment);
+    out
+}
+
+fn append_child_path(parent: &str, key: &Value) -> Option<String> {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(parent.len() + 24);
+    out.push_str(parent);
+    out.push(PATH_SEP);
+    match key {
+        Value::String(text) => {
+            out.push('s');
+            if let Ok(s) = text.to_str() {
+                out.push_str(&s);
+            } else {
+                out.push_str(&text.to_string_lossy());
+            }
+        }
+        Value::Integer(i) => {
+            out.push('n');
+            let _ = write!(out, "{i}");
+        }
+        Value::Number(n) if n.is_finite() => {
+            out.push('n');
+            if n.fract() == 0.0 && n.abs() < 9.0e15 {
+                let _ = write!(out, "{}", *n as i64);
+            } else {
+                let _ = write!(out, "{n}");
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
 }
 
 /// O caminho é uma tabela partilhada (marcador ou alguma folha por baixo)?
 fn is_table_at(map: &BTreeMap<String, GameValue>, path: &str) -> bool {
-    if map.contains_key(&format!("{path}{TABLE_MARK}")) {
+    let mut probe = String::with_capacity(path.len() + 4);
+    probe.push_str(path);
+    probe.push(TABLE_MARK);
+    if map.contains_key(probe.as_str()) {
         return true;
     }
-    let prefix = format!("{path}{PATH_SEP}");
-    map.range(prefix.clone()..)
-        .next()
-        .is_some_and(|(key, _)| key.starts_with(&prefix))
+    probe.truncate(path.len());
+    probe.push(PATH_SEP);
+    map.range::<str, _>((
+        std::ops::Bound::Included(probe.as_str()),
+        std::ops::Bound::Unbounded,
+    ))
+    .next()
+    .is_some_and(|(key, _)| key.starts_with(probe.as_str()))
 }
 
-/// Remove o valor no caminho e toda a subárvore.
-fn remove_subtree(map: &mut BTreeMap<String, GameValue>, path: &str) {
-    map.remove(path);
-    map.remove(&format!("{path}{TABLE_MARK}"));
-    let prefix = format!("{path}{PATH_SEP}");
+/// Remove o valor no caminho e toda a subárvore. Devolve `true` se removeu
+/// uma chave plana (`!is_nested_key`).
+fn remove_subtree(map: &mut BTreeMap<String, GameValue>, path: &str) -> bool {
+    let mut flat_removed = map.remove(path).is_some() && !is_nested_key(path);
+    let mut probe = String::with_capacity(path.len() + 4);
+    probe.push_str(path);
+    probe.push(TABLE_MARK);
+    map.remove(probe.as_str());
+    probe.truncate(path.len());
+    probe.push(PATH_SEP);
     let doomed: Vec<String> = map
-        .range(prefix.clone()..)
-        .take_while(|(key, _)| key.starts_with(&prefix))
+        .range::<str, _>((
+            std::ops::Bound::Included(probe.as_str()),
+            std::ops::Bound::Unbounded,
+        ))
+        .take_while(|(key, _)| key.starts_with(probe.as_str()))
         .map(|(key, _)| key.clone())
         .collect();
     for key in doomed {
+        if !is_nested_key(&key) {
+            flat_removed = true;
+        }
         map.remove(&key);
     }
+    flat_removed
 }
 
 /// Caminho de um proxy aninhado (`None` = tabela comum).
@@ -824,28 +1039,74 @@ fn proxy_path(table: &Table) -> Option<String> {
 /// são copiadas folha a folha (o mesmo `t` passa a viver no store e a ser
 /// visto por todas as VMs); um proxy copia a subárvore do caminho dele.
 fn write_path(store: &Arc<RwLock<GameStore>>, path: &str, value: &Value) -> mlua::Result<()> {
+    // Via rápida escalar: a maioria das escritas (`playtime_secs`, `hp`,
+    // `enemies[id].x`, `eco_pulled = true`) escreve ou limpa uma única folha
+    // primitiva sem tabela. Evita alocar `Vec`s, `String`s ou tomar write-lock
+    // quando o valor já é idêntico.
+    match value {
+        Value::Table(_) => {}
+        other => {
+            let gv = GameValue::from_lua(other);
+            match gv {
+                None | Some(GameValue::Null) => {
+                    if let Ok(s) = store.read()
+                        && !s.map.contains_key(path)
+                        && !is_table_at(&s.map, path)
+                    {
+                        return Ok(());
+                    }
+                    if let Ok(mut s) = store.write()
+                        && remove_subtree(&mut s.map, path)
+                    {
+                        s.bump_flat_version();
+                    }
+                    return Ok(());
+                }
+                Some(gv) => {
+                    if let Ok(s) = store.read()
+                        && s.map.get(path) == Some(&gv)
+                    {
+                        return Ok(());
+                    }
+                    if let Ok(mut s) = store.write() {
+                        if let Some(slot) = s.map.get_mut(path) {
+                            if *slot != gv {
+                                *slot = gv;
+                                if !is_nested_key(path) {
+                                    s.bump_flat_version();
+                                }
+                            }
+                            return Ok(());
+                        }
+                        if is_table_at(&s.map, path) {
+                            remove_subtree(&mut s.map, path);
+                        }
+                        s.map.insert(path.to_string(), gv);
+                        if !is_nested_key(path) {
+                            s.bump_flat_version();
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     // Recolhe ANTES do lock: ler uma tabela Lua não toca no store, mas um
     // proxy aninhado como valor exige ler o store.
     let mut leaves: Vec<(String, GameValue)> = Vec::new();
     let mut tables: Vec<String> = Vec::new();
     let mut copy_from: Option<String> = None;
-    match value {
-        Value::Table(table) => {
-            if let Some(source) = proxy_path(table) {
-                if source == path {
-                    return Ok(());
-                }
-                copy_from = Some(source);
-            } else {
-                let mut visited = std::collections::HashSet::new();
-                collect_table(table, path, &mut leaves, &mut tables, &mut visited)?;
+    if let Value::Table(table) = value {
+        if let Some(source) = proxy_path(table) {
+            if source == path {
+                return Ok(());
             }
+            copy_from = Some(source);
+        } else {
+            let mut visited = std::collections::HashSet::new();
+            collect_table(table, path, &mut leaves, &mut tables, &mut visited)?;
         }
-        other => match GameValue::from_lua(other) {
-            Some(GameValue::Null) => {}
-            Some(gv) => leaves.push((path.to_string(), gv)),
-            None => {}
-        },
     }
     let Ok(mut s) = store.write() else {
         return Ok(());
@@ -871,12 +1132,19 @@ fn write_path(store: &Arc<RwLock<GameStore>>, path: &str, value: &Value) -> mlua
         }
         None => Vec::new(),
     };
-    remove_subtree(&mut s.map, path);
+    let mut flat_changed = remove_subtree(&mut s.map, path);
     for table_path in tables {
-        s.map.insert(format!("{table_path}{TABLE_MARK}"), GameValue::Bool(true));
+        s.map
+            .insert(format!("{table_path}{TABLE_MARK}"), GameValue::Bool(true));
     }
     for (key, gv) in leaves.into_iter().chain(copied) {
+        if !is_nested_key(&key) {
+            flat_changed = true;
+        }
         s.map.insert(key, gv);
+    }
+    if flat_changed {
+        s.bump_flat_version();
     }
     Ok(())
 }
@@ -920,19 +1188,19 @@ fn collect_table(
 }
 
 /// Lê o caminho: primitivo, proxy aninhado (tabela partilhada) ou nil.
-fn read_path(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: String) -> mlua::Result<Value> {
+fn read_path(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: &str) -> mlua::Result<Value> {
     let (value, table) = {
         let Ok(s) = store.read() else {
             return Ok(Value::Nil);
         };
-        let value = s.map.get(&path).cloned();
-        let table = value.is_none() && is_table_at(&s.map, &path);
+        let value = s.map.get(path).cloned();
+        let table = value.is_none() && is_table_at(&s.map, path);
         (value, table)
     };
     match value {
         Some(GameValue::Null) => Ok(Value::Nil),
         Some(gv) => gv.into_lua(lua),
-        None if table => Ok(Value::Table(nested_proxy(lua, store, path)?)),
+        None if table => Ok(Value::Table(nested_proxy(lua, store, path.to_owned())?)),
         None => Ok(Value::Nil),
     }
 }
@@ -957,7 +1225,10 @@ fn child_keys(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: &str) -> mlua::Re
         out.dedup();
         out
     };
-    segments.iter().map(|segment| decode_segment(lua, segment)).collect()
+    segments
+        .iter()
+        .map(|segment| decode_segment(lua, segment))
+        .collect()
 }
 
 /// Iterador `(k, v)` sobre `keys`, com os valores lidos por `t[k]`.
@@ -1000,12 +1271,14 @@ fn nested_proxy(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: String) -> mlua
     let index_path = path.clone();
     mt.raw_set(
         "__index",
-        lua.create_function(move |lua, (_proxy, key): (Table, Value)| -> mlua::Result<Value> {
-            let Some(segment) = encode_segment(&key) else {
-                return Ok(Value::Nil);
-            };
-            read_path(lua, &index_store, child_path(&index_path, &segment))
-        })?,
+        lua.create_function(
+            move |lua, (_proxy, key): (Table, Value)| -> mlua::Result<Value> {
+                let Some(child) = append_child_path(&index_path, &key) else {
+                    return Ok(Value::Nil);
+                };
+                read_path(lua, &index_store, &child)
+            },
+        )?,
     )?;
 
     let newindex_store = store.clone();
@@ -1014,12 +1287,12 @@ fn nested_proxy(lua: &Lua, store: &Arc<RwLock<GameStore>>, path: String) -> mlua
         "__newindex",
         lua.create_function(
             move |_, (_proxy, key, value): (Table, Value, Value)| -> mlua::Result<()> {
-                let Some(segment) = encode_segment(&key) else {
+                let Some(child) = append_child_path(&newindex_path, &key) else {
                     return Err(mlua::Error::runtime(
                         "viber.game(): chave de tabela partilhada tem de ser string ou número",
                     ));
                 };
-                write_path(&newindex_store, &child_path(&newindex_path, &segment), &value)
+                write_path(&newindex_store, &child, &value)
             },
         )?,
     )?;
@@ -1150,8 +1423,13 @@ mod tests {
             )
             .eval()
             .expect("lê noutra VM");
-        assert_eq!((hp, kind.as_str(), x, dodge, n), (10.0, "slime", 1.0, 3.5, 2));
-        b.load("local e = viber.game().enemies[5]; e.hp = 3").exec().expect("muta");
+        assert_eq!(
+            (hp, kind.as_str(), x, dodge, n),
+            (10.0, "slime", 1.0, 3.5, 2)
+        );
+        b.load("local e = viber.game().enemies[5]; e.hp = 3")
+            .exec()
+            .expect("muta");
         let (hp, count, same): (f64, i64, bool) = a
             .load(
                 "local g = viber.game()
@@ -1163,7 +1441,9 @@ mod tests {
             .expect("vê a mutação");
         assert_eq!((hp, count, same), (3.0, 1, true));
         // Substituir por primitivo apaga a subárvore; nil remove.
-        a.load("viber.game().enemies[5] = nil").exec().expect("remove");
+        a.load("viber.game().enemies[5] = nil")
+            .exec()
+            .expect("remove");
         let gone: bool = b
             .load("return viber.game().enemies[5] == nil and type(viber.game().enemies) == 'table'")
             .eval()
@@ -1172,7 +1452,10 @@ mod tests {
         // Fora do save: só os primitivos de topo.
         a.load("viber.game().gold = 7").exec().expect("gold");
         let json = game_to_json_store(&shared);
-        assert_eq!(json.keys().cloned().collect::<Vec<_>>(), vec!["gold".to_string()]);
+        assert_eq!(
+            json.keys().cloned().collect::<Vec<_>>(),
+            vec!["gold".to_string()]
+        );
     }
 
     #[test]

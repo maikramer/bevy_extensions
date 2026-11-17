@@ -15,6 +15,10 @@ bevy = { workspace = true, features = ["std"] }
 bevy_ext_core = { workspace = true }
 bevy_ext_ui = { workspace = true, optional = true }
 bevy_mod_scripting = { version = "0.24", features = ["luau"] }
+# Os `ScriptContexts` do BMS guardam o `LuaContext` num `parking_lot::Mutex`;
+# os mapas de subscritores/timers nomeiam esse `Arc`, por isso o tipo tem de
+# ser o MESMO (um `std::sync::Mutex` não unifica e o `Arc::downgrade` falha).
+parking_lot = "0.12"
 log = "0.4"
 mlua = { version = "0.12", features = ["luau", "vendored", "send"] }
 serde = { version = "1", features = ["derive"] }

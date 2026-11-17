@@ -501,7 +501,7 @@ aplica pós-frame.
 | `viber.corpse(id?)` | marca a morte (componente `Corpse`): se a entidade tiver `ragdoll="true"`, o ragdoll começa; NÃO despawna nem paga XP/loot — isso é do jogo |
 | `viber.hit_flash(id?, segundos?)` | acende o flash branco de impacto (feedback visual, default 0,16 s) |
 | `viber.entity_knockback(id, dx, dz, força)` | impulso físico horizontal (força em m/s, ex. `0.45 * 6.0`); direção normalizada |
-| `viber.set_player_speed(mult)` | multiplicador da velocidade base do herói (0.1..5); o jogo soma as passivas |
+| `viber.set_player_speed(m/s)` | velocidade ABSOLUTA do herói em m/s (base 4.0; o jogo soma as passivas no valor, ex. `4.0 * stats.speed_mult`). O sprint continua a ser `×1.5` do controller |
 | `viber.clip_duration(nome)` | duração (s) do clip do herói, fuzzy pelo nome normalizado (`nil` se o rig não o tem) |
 | `viber.attach(slot, url [, opts])` | prende um GLB a um osso do rig. `slot` lógico (`"weapon"`, `"helmet"`) substitui o que lá estiver; `opts = {bone="hand_r", id, x, y, z, rx, ry, rz (rad), scale}`. Primitiva genérica (volante, capacete, espada): a engine só encontra o osso |
 | `viber.detach(slot [, id])` | remove o que estiver no slot (default: herói) |

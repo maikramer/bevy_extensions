@@ -527,6 +527,15 @@ pub fn release_snapshot_maps() {
         globals.positions = Default::default();
         globals.names = Default::default();
         globals.named_entities = Default::default();
+        // Os mapas que o publisher reconstrói por frame: sem os largar aqui, o
+        // `Arc::make_mut` do publisher clonava-os todos os frames (hostis, HP,
+        // props, grupos e exports). Mesmo contrato dos três de cima: os
+        // scripts só os leem no `Update`.
+        globals.hp_snapshot = Default::default();
+        globals.props = Default::default();
+        globals.exports = Default::default();
+        globals.hostiles = Default::default();
+        globals.groups = Default::default();
     }
 }
 
@@ -538,6 +547,7 @@ pub fn publish_globals(
     state: Res<ScriptHostState>,
     menus: Option<Res<bevy_ext_core::MenusOpen>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("luau.publish_globals");
     let _probe = bevy_ext_core::perf_probe::Probe::new("publish_globals"); // `VAEL_PERF_DIAG`
     if let Ok(mut globals) = globals().write() {
         globals.time = state.time;
@@ -596,6 +606,7 @@ fn publish_input(
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     actions: Option<Res<bevy_ext_core::input_map::ActionState>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("luau.publish_input");
     let _probe = bevy_ext_core::perf_probe::Probe::new("publish_input"); // `VAEL_PERF_DIAG`
     let mut input = InputSnapshot::default();
     let typing = globals()

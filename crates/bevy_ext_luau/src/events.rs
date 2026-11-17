@@ -14,13 +14,32 @@
 //! tabela ([`script_game_event_to_table`]) é o corpo do `to_table` que o
 //! `bevy_ext_ui::ui::host` tinha junto ao tipo.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use bevy::prelude::*;
-use bevy_mod_scripting::lua::LuaScriptingPlugin;
-use bevy_mod_scripting::core::script::ScriptContexts;
 use bevy_ext_core::scripting::{ScriptEventQueue, ScriptGameEvent};
+use bevy_mod_scripting::core::script::ScriptContexts;
+use bevy_mod_scripting::lua::{LuaContext, LuaScriptingPlugin};
 use mlua::{Lua, Table};
+use parking_lot::Mutex;
+
+/// Marca atómica por VM indicando se `viber.events()` já foi chamado (subscrito).
+#[derive(Clone)]
+struct VmEventsSubscribed(Arc<AtomicBool>);
+
+fn ensure_events_flag(lua: &Lua) -> Arc<AtomicBool> {
+    if let Some(flag) = lua.app_data_ref::<VmEventsSubscribed>() {
+        return flag.0.clone();
+    }
+    let has_subs = lua
+        .named_registry_value::<Table>("viber_events")
+        .is_ok_and(|t| !t.is_empty());
+    let flag = Arc::new(AtomicBool::new(has_subs));
+    lua.set_app_data(VmEventsSubscribed(flag.clone()));
+    flag
+}
 
 /// Transbordo da fila por script: eventos NOVOS são descartados com um aviso
 /// 1× por path — um script que não drena não cria lag na engine.
@@ -91,31 +110,37 @@ pub fn script_game_event_to_table(lua: &Lua, event: &ScriptGameEvent) -> mlua::R
 
 /// Instala `viber.events()` na tabela `viber` de UMA VM.
 pub(crate) fn install(lua: &Lua, api: &Table) -> mlua::Result<()> {
+    ensure_events_flag(lua);
     api.set(
         "events",
         lua.create_function(|lua, ()| {
-            let path = lua
-                .app_data_ref::<ScriptPath>()
-                .map(|path| path.0.clone())
-                .unwrap_or_default();
+            let path_ref = lua.app_data_ref::<ScriptPath>();
+            let path = path_ref.as_ref().map_or("", |p| p.0.as_str());
             let queues: Table = lua.named_registry_value("viber_events")?;
             // 1.ª chamada CRIA a fila (a presença da chave É a subscrição) —
             // erro aqui era o script nunca subscrever e nunca receber nada.
-            let queue: Table = match queues.raw_get::<Table>(path.as_str()) {
+            let queue: Table = match queues.raw_get::<Table>(path) {
                 Ok(q) => q,
                 Err(_) => {
                     let fresh = lua.create_table()?;
-                    queues.raw_set(path.as_str(), fresh.clone())?;
+                    queues.raw_set(path, fresh.clone())?;
+                    if let Some(flag) = lua.app_data_ref::<VmEventsSubscribed>() {
+                        flag.0.store(true, Ordering::Release);
+                    }
                     fresh
                 }
             };
             let count = queue.raw_len();
             let out = lua.create_table()?;
+            if count == 0 {
+                // Fila vazia: não alocar outra tabela para substituir `queue`.
+                return Ok(out);
+            }
             for i in 1..=count {
                 out.raw_set(i, queue.raw_get::<mlua::Value>(i)?)?;
             }
             let fresh = lua.create_table()?;
-            queues.raw_set(path.as_str(), fresh)?;
+            queues.raw_set(path, fresh)?;
             Ok(out)
         })?,
     )?;
@@ -126,11 +151,7 @@ pub(crate) fn install(lua: &Lua, api: &Table) -> mlua::Result<()> {
 /// cada evento vira tabela Lua e entra na fila de cada script subscrito.
 /// Transbordo (cap [`EVENT_QUEUE_CAP`]) descarta o evento NOVO e avisa 1×
 /// por path.
-pub(crate) fn fan_out_vm(
-    lua: &Lua,
-    incoming: &[ScriptGameEvent],
-    dropped: &mut HashSet<String>,
-) {
+pub(crate) fn fan_out_vm(lua: &Lua, incoming: &[ScriptGameEvent], dropped: &mut HashSet<String>) {
     if incoming.is_empty() {
         return;
     }
@@ -175,7 +196,9 @@ pub(crate) fn fan_out_vm(
 pub(crate) fn fan_out_events(
     contexts: Option<Res<ScriptContexts<LuaScriptingPlugin>>>,
     queue: Option<ResMut<ScriptEventQueue>>,
+    mut subs: Local<HashMap<usize, (Weak<Mutex<LuaContext>>, Arc<AtomicBool>)>>,
 ) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("luau.events");
     let Some(mut queue) = queue else {
         return;
     };
@@ -194,17 +217,33 @@ pub(crate) fn fan_out_events(
         return;
     };
     let read = contexts.read();
-    for (_, context) in read.all_residents() {
+    let mut live_contexts = 0usize;
+    for (_, context) in read.first_resident_from_each_context() {
         let Some(available) = context.as_available_context() else {
             continue;
         };
-        // Lock curto por contexto: o corpo é o mesmo `fan_out_vm` do monólito
-        // (a VM tem locks internos próprios, o mutex só protege a entrada).
+        live_contexts += 1;
+        let ptr = Arc::as_ptr(available) as usize;
+        if let Some((weak, flag)) = subs.get(&ptr)
+            && weak.strong_count() > 0
+            && std::ptr::eq(weak.as_ptr(), Arc::as_ptr(available))
+            && !flag.load(Ordering::Acquire)
+        {
+            continue;
+        }
         let Some(guard) = available.try_lock() else {
             continue;
         };
-        // `LuaContext` derefs para `mlua::Lua` (o campo 0 é privado).
-        fan_out_vm(&**guard, incoming, &mut dropped);
+        let lua: &Lua = &**guard;
+        let flag = ensure_events_flag(lua);
+        let has_subs = flag.load(Ordering::Acquire);
+        subs.insert(ptr, (Arc::downgrade(available), flag));
+        if has_subs {
+            fan_out_vm(lua, incoming, &mut dropped);
+        }
+    }
+    if subs.len() > live_contexts + 64 {
+        subs.retain(|_, (weak, _)| weak.strong_count() > 0);
     }
 }
 
@@ -337,9 +376,7 @@ mod tests {
                 item: "moeda".into(),
                 amount: 5,
             },
-            ScriptGameEvent::QuestDone {
-                id: "q1".into(),
-            },
+            ScriptGameEvent::QuestDone { id: "q1".into() },
             ScriptGameEvent::LevelUp { level: 2 },
             ScriptGameEvent::UiAction {
                 name: "n".into(),
