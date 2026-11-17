@@ -151,6 +151,17 @@ impl ModIndex {
         self.bounds
     }
 
+    /// Precomputed bounds of mod `idx`, avoiding virtual `VoxelMod::bounds()` calls.
+    #[inline]
+    pub fn mod_bounds(&self, idx: u32) -> Bounds3 {
+        self.mod_bounds[idx as usize]
+    }
+
+    #[inline]
+    pub fn mod_bounds_slice(&self) -> &[Bounds3] {
+        &self.mod_bounds
+    }
+
     pub fn cell_size(&self) -> f32 {
         self.cell_size
     }
@@ -180,17 +191,60 @@ impl ModIndex {
         &self.cells[cz * self.cols + cx]
     }
 
-    /// Mod indices whose bounds overlap `bounds` in XZ, de-duplicated.
-    pub fn candidates_in(&self, bounds: &Bounds3) -> Vec<u32> {
+    /// True if any mod bucket overlapping `bounds` in XZ is non-empty (zero allocations).
+    pub fn has_candidate_in(&self, bounds: &Bounds3) -> bool {
         if self.is_empty() || !self.bounds.intersects_xz(bounds) {
-            return Vec::new();
+            return false;
         }
         let (x0, z0) = self.cell_of(bounds.min.x, bounds.min.z);
         let (x1, z1) = self.cell_of(bounds.max.x, bounds.max.z);
-        let mut out: Vec<u32> = Vec::new();
         for cz in z0..=z1 {
+            let row = cz * self.cols;
             for cx in x0..=x1 {
-                for &i in &self.cells[cz * self.cols + cx] {
+                if !self.cells[row + cx].is_empty() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Evaluates `pred(mod_idx)` across candidates overlapping `bounds` in XZ,
+    /// short-circuiting on the first `true` with zero allocations.
+    pub fn any_candidate_in<F>(&self, bounds: &Bounds3, mut pred: F) -> bool
+    where
+        F: FnMut(u32) -> bool,
+    {
+        if self.is_empty() || !self.bounds.intersects_xz(bounds) {
+            return false;
+        }
+        let (x0, z0) = self.cell_of(bounds.min.x, bounds.min.z);
+        let (x1, z1) = self.cell_of(bounds.max.x, bounds.max.z);
+        for cz in z0..=z1 {
+            let row = cz * self.cols;
+            for cx in x0..=x1 {
+                for &i in &self.cells[row + cx] {
+                    if pred(i) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Populates `out` with de-duplicated, sorted mod indices overlapping `bounds` in XZ.
+    pub fn candidates_in_into(&self, bounds: &Bounds3, out: &mut Vec<u32>) {
+        out.clear();
+        if self.is_empty() || !self.bounds.intersects_xz(bounds) {
+            return;
+        }
+        let (x0, z0) = self.cell_of(bounds.min.x, bounds.min.z);
+        let (x1, z1) = self.cell_of(bounds.max.x, bounds.max.z);
+        for cz in z0..=z1 {
+            let row = cz * self.cols;
+            for cx in x0..=x1 {
+                for &i in &self.cells[row + cx] {
                     if !out.contains(&i) {
                         out.push(i);
                     }
@@ -199,6 +253,12 @@ impl ModIndex {
         }
         // Deterministic order: two runs of the same world must mesh the same.
         out.sort_unstable();
+    }
+
+    /// Mod indices whose bounds overlap `bounds` in XZ, de-duplicated.
+    pub fn candidates_in(&self, bounds: &Bounds3) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.candidates_in_into(bounds, &mut out);
         out
     }
 
@@ -209,10 +269,10 @@ impl ModIndex {
     /// meshes the transition itself rather than leaving a seam for the
     /// heightfield path to explain.
     pub fn classify(&self, bounds: &Bounds3) -> ChunkClass {
-        if self.candidates_in(bounds).is_empty() {
-            ChunkClass::Flat
-        } else {
+        if self.has_candidate_in(bounds) {
             ChunkClass::Volumetric
+        } else {
+            ChunkClass::Flat
         }
     }
 

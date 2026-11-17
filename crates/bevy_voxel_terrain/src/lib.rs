@@ -34,5 +34,5 @@ pub use mods::{
     OrientedBoxMod, RoundConeMod, VoxelMod,
 };
 pub use transvoxel_mesh::{
-    VOXEL_CHUNK_CELLS, VoxelChunkParams, build_voxel_mesh, transition_sides,
+    VOXEL_CHUNK_CELLS, VoxelChunkParams, build_voxel_mesh, build_voxel_mesh_grid, transition_sides,
 };

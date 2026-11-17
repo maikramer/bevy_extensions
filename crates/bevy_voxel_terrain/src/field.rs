@@ -136,10 +136,11 @@ impl VoxelField {
     pub fn region_state(&self, base: &dyn HeightField, bounds: &Bounds3) -> Option<bool> {
         // Any mod in range and the cheap argument no longer holds: a cave can
         // hollow out rock that the heightfield swears is solid.
-        for &i in self.index.candidates_in(bounds).iter() {
-            if self.mods[i as usize].bounds().intersects(bounds) {
-                return None;
-            }
+        if self
+            .index
+            .any_candidate_in(bounds, |i| self.index.mod_bounds(i).intersects(bounds))
+        {
+            return None;
         }
         let (gmin, gmax) =
             base.range_over(bounds.min.x, bounds.min.z, bounds.max.x, bounds.max.z)?;
@@ -165,12 +166,12 @@ impl VoxelField {
     pub fn density(&self, base: &dyn HeightField, p: Vec3) -> f32 {
         let mut d = p.y - base.sample(p.x, p.z);
         for &i in self.index.candidates_at(p.x, p.z) {
-            let m = &self.mods[i as usize];
             // The bounds gate is not only a speed win: it stops a subtractive
             // mod from eroding the field in a region it does not reach.
-            if !m.bounds().contains(p) {
+            if !self.index.mod_bounds(i).contains(p) {
                 continue;
             }
+            let m = &self.mods[i as usize];
             let md = m.distance(p);
             d = match m.op() {
                 ModOp::Union => d.min(md),
@@ -225,10 +226,10 @@ impl VoxelField {
     fn density_column(&self, ground: f32, candidates: &[u32], p: Vec3) -> f32 {
         let mut d = p.y - ground;
         for &i in candidates {
-            let m = &self.mods[i as usize];
-            if !m.bounds().contains(p) {
+            if !self.index.mod_bounds(i).contains(p) {
                 continue;
             }
+            let m = &self.mods[i as usize];
             let md = m.distance(p);
             d = match m.op() {
                 ModOp::Union => d.min(md),

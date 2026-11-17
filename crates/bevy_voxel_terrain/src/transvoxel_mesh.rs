@@ -22,12 +22,43 @@
 //! As posições saem daqui **relativas à origem da caixa** nos três eixos,
 //! porque é a entidade da caixa que carrega o offset.
 
+use std::cell::RefCell;
+
 use bevy::math::{Vec2, Vec3};
 use transvoxel::prelude::*;
 use transvoxel::structs::grid_point::GridPoint;
 use transvoxel::structs::vertex_index::VertexIndex;
 use transvoxel::traits::data_field::DataField;
 use transvoxel::traits::mesh_builder::MeshBuilder;
+
+use crate::mods::{Bounds3, ModOp, VoxelMod};
+
+thread_local! {
+    static SAMPLES_POOL: RefCell<Vec<Vec<f32>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn borrow_samples(min_cap: usize) -> Vec<f32> {
+    let mut v = SAMPLES_POOL
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    v.clear();
+    if v.capacity() < min_cap {
+        v.reserve(min_cap - v.capacity());
+    }
+    v
+}
+
+fn return_samples(mut v: Vec<f32>) {
+    v.clear();
+    if v.capacity() > 0 && v.capacity() <= 512 * 1024 {
+        SAMPLES_POOL.with(|pool| {
+            let mut p = pool.borrow_mut();
+            if p.len() < 4 {
+                p.push(v);
+            }
+        });
+    }
+}
 
 use crate::mesh::{ChunkMeshData, TintParams, tint_vertex_color};
 
@@ -130,6 +161,7 @@ impl VoxelChunkParams {
 /// aplicava, para o chão não mudar de cor com a troca de algoritmo.
 struct ChunkMeshBuilder<'a> {
     params: &'a VoxelChunkParams,
+    inv_tile: f32,
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
@@ -139,13 +171,19 @@ struct ChunkMeshBuilder<'a> {
 
 impl<'a> ChunkMeshBuilder<'a> {
     fn new(params: &'a VoxelChunkParams) -> Self {
+        let tile = if params.texture_tile_size > 0.0 {
+            params.texture_tile_size
+        } else {
+            1.0
+        };
         Self {
             params,
-            positions: Vec::new(),
-            normals: Vec::new(),
-            uvs: Vec::new(),
-            colors: Vec::new(),
-            indices: Vec::new(),
+            inv_tile: 1.0 / tile,
+            positions: Vec::with_capacity(512),
+            normals: Vec::with_capacity(512),
+            uvs: Vec::with_capacity(512),
+            colors: Vec::with_capacity(512),
+            indices: Vec::with_capacity(1536),
         }
     }
 
@@ -193,17 +231,12 @@ impl MeshBuilder<f32, f32> for ChunkMeshBuilder<'_> {
         let normal = (-grad).try_normalize().unwrap_or(Vec3::Y);
 
         let local = world - self.params.origin;
-        let tile = if self.params.texture_tile_size > 0.0 {
-            self.params.texture_tile_size
-        } else {
-            1.0
-        };
 
         let index = self.positions.len();
         self.positions.push(local.to_array());
         self.normals.push(normal.to_array());
         self.uvs
-            .push(Vec2::new(world.x / tile, world.z / tile).to_array());
+            .push(Vec2::new(world.x * self.inv_tile, world.z * self.inv_tile).to_array());
         // Mesmo tint de altura/declive do mesher do heightfield, para as duas
         // superfícies lerem como uma só. Com o blend de layers o R passa a ser
         // wall-space (dado que o fragment lê) e o A o fator de cliff, tal como
@@ -253,7 +286,7 @@ impl MeshBuilder<f32, f32> for ChunkMeshBuilder<'_> {
 struct LatticeField<'a> {
     density: &'a dyn Fn(Vec3) -> f32,
     base: Vec3,
-    cell: f32,
+    inv_cell: f32,
     cells: usize,
     /// `-density` no lattice expandido `(-1..=cells+1)³` (`pts = cells + 3`),
     /// em ordem x-rápido → y → z. Inclui a margem de 1 célula para que os
@@ -263,10 +296,17 @@ struct LatticeField<'a> {
     has_sign_change: bool,
 }
 
+impl Drop for LatticeField<'_> {
+    fn drop(&mut self) {
+        let buf = std::mem::take(&mut self.samples);
+        return_samples(buf);
+    }
+}
+
 impl<'a> LatticeField<'a> {
     fn new(density: &'a dyn Fn(Vec3) -> f32, base: Vec3, cell: f32, cells: usize) -> Self {
         let pts = cells + 3;
-        let mut samples = Vec::with_capacity(pts * pts * pts);
+        let mut samples = borrow_samples(pts * pts * pts);
         let mut has_pos = false;
         let mut has_neg = false;
         for iz in 0..pts {
@@ -289,7 +329,107 @@ impl<'a> LatticeField<'a> {
         Self {
             density,
             base,
-            cell,
+            inv_cell: 1.0 / cell,
+            cells,
+            samples,
+            has_sign_change: has_pos && has_neg,
+        }
+    }
+
+    fn from_grid_and_mods(
+        ground_xz: &[f32],
+        mods: &[(&dyn VoxelMod, Bounds3)],
+        fallback: &'a dyn Fn(Vec3) -> f32,
+        base: Vec3,
+        cell: f32,
+        cells: usize,
+    ) -> Self {
+        let pts = cells + 3;
+        debug_assert_eq!(ground_xz.len(), pts * pts);
+        let mut samples = borrow_samples(pts * pts * pts);
+        let mut has_pos = false;
+        let mut has_neg = false;
+
+        if mods.is_empty() {
+            for iz in 0..pts {
+                let z_row = &ground_xz[iz * pts..(iz + 1) * pts];
+                for iy in 0..pts {
+                    let y = base.y + (iy as isize - 1) as f32 * cell;
+                    for &g in z_row {
+                        let v = g - y;
+                        if v > 0.0 {
+                            has_pos = true;
+                        } else {
+                            has_neg = true;
+                        }
+                        samples.push(v);
+                    }
+                }
+            }
+        } else {
+            let mut z_mods: Vec<usize> = Vec::with_capacity(mods.len());
+            let mut zy_mods: Vec<usize> = Vec::with_capacity(mods.len());
+            for iz in 0..pts {
+                let z = base.z + (iz as isize - 1) as f32 * cell;
+                let z_row = &ground_xz[iz * pts..(iz + 1) * pts];
+                z_mods.clear();
+                for (mi, (_, b)) in mods.iter().enumerate() {
+                    if z >= b.min.z && z <= b.max.z {
+                        z_mods.push(mi);
+                    }
+                }
+                for iy in 0..pts {
+                    let y = base.y + (iy as isize - 1) as f32 * cell;
+                    zy_mods.clear();
+                    for &mi in &z_mods {
+                        let b = &mods[mi].1;
+                        if y >= b.min.y && y <= b.max.y {
+                            zy_mods.push(mi);
+                        }
+                    }
+                    if zy_mods.is_empty() {
+                        for &g in z_row {
+                            let v = g - y;
+                            if v > 0.0 {
+                                has_pos = true;
+                            } else {
+                                has_neg = true;
+                            }
+                            samples.push(v);
+                        }
+                    } else {
+                        for (ix, &g) in z_row.iter().enumerate() {
+                            let x = base.x + (ix as isize - 1) as f32 * cell;
+                            let mut d = y - g;
+                            let p = Vec3::new(x, y, z);
+                            for &mi in &zy_mods {
+                                let (m, b) = &mods[mi];
+                                if x < b.min.x || x > b.max.x {
+                                    continue;
+                                }
+                                let md = m.distance(p);
+                                d = match m.op() {
+                                    ModOp::Union => d.min(md),
+                                    ModOp::Subtract => d.max(-md),
+                                };
+                            }
+                            let v = -d;
+                            if v > 0.0 {
+                                has_pos = true;
+                            } else {
+                                has_neg = true;
+                            }
+                            samples.push(v);
+                        }
+                    }
+                }
+            }
+        }
+
+        Self {
+            density: fallback,
+            base,
+            inv_cell: 1.0 / cell,
             cells,
             samples,
             has_sign_change: has_pos && has_neg,
@@ -298,8 +438,9 @@ impl<'a> LatticeField<'a> {
 
     /// Índice do lattice expandido (`-1..=cells+1` → `0..cells+3`), ou `None`
     /// se cair entre pontos (meias-células das faces de transição).
+    #[inline]
     fn lattice_index(&self, v: f32, base: f32) -> Option<usize> {
-        let f = (v - base) / self.cell;
+        let f = (v - base) * self.inv_cell;
         let i = f.round();
         // Tolerância relativa à célula: as posições vêm de
         // `base + size * (index/subdivisions)`, com o erro de vírgula
@@ -312,6 +453,7 @@ impl<'a> LatticeField<'a> {
 }
 
 impl DataField<f32, f32> for LatticeField<'_> {
+    #[inline]
     fn get_data(&self, x: f32, y: f32, z: f32) -> f32 {
         if let (Some(ix), Some(iy), Some(iz)) = (
             self.lattice_index(x, self.base.x),
@@ -369,6 +511,63 @@ pub fn build_voxel_mesh(
         // transição: um paredão a cortar o horizonte em toda a banda de LOD, e
         // o frame de 10 ms a passar a 25 ms de overdraw. Coberto por
         // `test_a_transition_face_keeps_a_flat_plane_flat`.
+        FieldCaching::CacheNothing,
+        block,
+        transition_sides(params.transitions),
+        0.0f32,
+        ChunkMeshBuilder::new(params),
+    );
+    builder.finish()
+}
+
+/// Optimized counterpart of [`build_voxel_mesh`] for terrain columns with a
+/// pre-sampled `(cells + 3)²` ground heightfield `ground_xz` and precomputed
+/// mod bounding boxes. Skips 3D sampling entirely for flat uniform boxes and
+/// avoids per-sample closures/virtual `bounds()` dispatch.
+pub fn build_voxel_mesh_grid(
+    ground_xz: &[f32],
+    mods: &[(&dyn VoxelMod, Bounds3)],
+    fallback_density: &dyn Fn(Vec3) -> f32,
+    params: &VoxelChunkParams,
+) -> Option<ChunkMeshData> {
+    if params.cells == 0 || !(params.voxel_size.is_finite() && params.voxel_size > 0.0) {
+        return None;
+    }
+    let cell = params.voxel_size;
+    let has_transitions = params.transitions.iter().any(|&t| t);
+    if mods.is_empty() {
+        let mut gmin = f32::INFINITY;
+        let mut gmax = f32::NEG_INFINITY;
+        for &g in ground_xz {
+            gmin = gmin.min(g);
+            gmax = gmax.max(g);
+        }
+        let y_lo = params.origin.y - cell;
+        let y_hi = params.origin.y + (params.cells as f32 + 1.0) * cell;
+        let margin = if has_transitions { cell } else { 0.0 };
+        if y_lo > gmax + margin || y_hi < gmin - margin {
+            return None;
+        }
+    }
+
+    let block = Block::new(
+        [params.origin.x, params.origin.y, params.origin.z],
+        params.extent(),
+        params.cells,
+    );
+    let field = LatticeField::from_grid_and_mods(
+        ground_xz,
+        mods,
+        fallback_density,
+        params.origin,
+        cell,
+        params.cells,
+    );
+    if !field.has_sign_change && !has_transitions {
+        return None;
+    }
+    let builder = extract_from_field(
+        &field,
         FieldCaching::CacheNothing,
         block,
         transition_sides(params.transitions),
