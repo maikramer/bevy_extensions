@@ -20,7 +20,7 @@ use bevy::time::Virtual;
 use bevy::window::{CursorMoved, PrimaryWindow};
 use bevy_ext_bridge_protocol::{
     METHOD_CLICK, METHOD_FRAME_STATS, METHOD_HITCHES, METHOD_KEY, METHOD_MEMORY, METHOD_MOVE,
-    METHOD_PAUSE, METHOD_PING, METHOD_PLAY, METHOD_STEP, METHOD_TEXT, METHOD_TREE,
+    METHOD_PAUSE, METHOD_PERF, METHOD_PING, METHOD_PLAY, METHOD_STEP, METHOD_TEXT, METHOD_TREE,
 };
 use serde::{Serialize};
 use serde_json::{Value, json};
@@ -206,6 +206,7 @@ impl Plugin for BridgeToolsPlugin {
 }
 
 fn record_frame(time: Res<Time>, mut stats: ResMut<FrameStats>) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("bridge.record_frame");
     stats.push(time.delta_secs(), time.elapsed_secs_f64());
 }
 
@@ -214,6 +215,7 @@ fn register_methods(app: &mut App) {
     register(app, METHOD_FRAME_STATS, frame_stats);
     register(app, METHOD_HITCHES, hitches);
     register(app, METHOD_MEMORY, memory);
+    register(app, METHOD_PERF, perf);
     register(app, METHOD_TREE, tree);
     // Sem `vael-tools/logs`: o ring próprio de logs ainda não existe e um
     // stub `[]` MASCARAVA o `viber.logs` legado (que tem layer real) — o
@@ -274,6 +276,28 @@ fn hitches(_params: In<Option<Value>>, stats: Res<FrameStats>) -> BrpResult {
 
 fn memory(_params: In<Option<Value>>) -> BrpResult {
     Ok(memory_snapshot())
+}
+
+/// `vael-tools/perf` — ms/chamada por sistema (`bevy_ext_core::perf_probe`).
+///
+/// `{"reset": true}` zera os acumuladores antes de ler (janela limpa). É a
+/// atribuição que a tab rica não tem: os shims `timed` das crates são
+/// pass-through, por isso só as âncoras de schedule aparecem lá.
+fn perf(params: In<Option<Value>>) -> BrpResult {
+    let reset = params
+        .0
+        .as_ref()
+        .and_then(|params| params.get("reset"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if reset {
+        bevy_ext_core::perf_probe::reset();
+    }
+    let systems: Vec<Value> = bevy_ext_core::perf_probe::snapshot()
+        .into_iter()
+        .map(|(system, ms, calls)| json!({ "system": system, "ms": ms, "calls": calls }))
+        .collect();
+    Ok(json!({ "systems": systems }))
 }
 
 fn memory_snapshot() -> Value {
@@ -397,6 +421,7 @@ fn pause(
 }
 
 fn finish_step(mut step: ResMut<FrameStep>, mut time: ResMut<Time<Virtual>>) {
+    let _probe = bevy_ext_core::perf_probe::Probe::new("bridge.finish_step");
     if step.remaining == 0 {
         return;
     }
@@ -1002,5 +1027,32 @@ mod tests {
         assert_eq!(keycode_for_char(' ').0, KeyCode::Space);
         assert_eq!(keycode_for_char('-').0, KeyCode::Minus);
         assert_eq!(keycode_for_char('?').0, KeyCode::Unidentified(NativeKeyCode::Unidentified));
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    /// O handler devolve a tabela dos probes e o `reset` limpa-a.
+    #[test]
+    fn perf_lists_the_probe_table() {
+        bevy_ext_core::perf_probe::reset();
+        {
+            let _slow = bevy_ext_core::perf_probe::Probe::new("test.table_slow");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        {
+            let _fast = bevy_ext_core::perf_probe::Probe::new("test.table_fast");
+        }
+        let value = perf(In(Some(json!({})))).expect("responde");
+        let rows = value["systems"].as_array().expect("systems");
+        assert_eq!(rows.len(), 2, "{value}");
+        assert_eq!(rows[0]["system"], "test.table_slow");
+        assert!(rows[0]["ms"].as_f64().unwrap_or(0.0) >= 1.0);
+        assert_eq!(rows[0]["calls"], 1);
+
+        let value = perf(In(Some(json!({ "reset": true })))).expect("responde");
+        assert!(value["systems"].as_array().unwrap().is_empty(), "{value}");
     }
 }

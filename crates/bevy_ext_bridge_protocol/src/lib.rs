@@ -32,6 +32,8 @@ pub const METHOD_BURST_STATUS: &str = "vael-tools/burst_status";
 pub const METHOD_FRAME_STATS: &str = "vael-tools/frame_stats";
 pub const METHOD_HITCHES: &str = "vael-tools/hitches";
 pub const METHOD_MEMORY: &str = "vael-tools/memory";
+/// Tabela por sistema dos probes (`bevy_ext_core::perf_probe`).
+pub const METHOD_PERF: &str = "vael-tools/perf";
 pub const METHOD_TIMINGS: &str = "vael-tools/timings";
 pub const METHOD_TRACE_START: &str = "vael-tools/trace_start";
 pub const METHOD_TRACE_STOP: &str = "vael-tools/trace_stop";
