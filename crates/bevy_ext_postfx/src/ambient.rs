@@ -88,7 +88,7 @@ pub fn biome_fog_system(
     biomes: Option<Res<crate::env::BiomeRegions>>,
     scene: Option<Res<bevy_ext_core::InteriorSceneConfig>>,
     mut current: ResMut<CurrentBiome>,
-    mut cameras: Query<Entity, With<Camera3d>>,
+    mut cameras: Query<(Entity, Option<&mut DistanceFog>), With<Camera3d>>,
     mut commands: Commands,
     mut toasts: MessageWriter<ScriptToast>,
     // Estado suavizado da transição de bioma (mult, tint, peso do tint).
@@ -239,9 +239,41 @@ pub fn biome_fog_system(
         // é o perfil que dá "camadas" em vez de um véu uniforme.
         falloff: FogFalloff::ExponentialSquared { density },
     };
-    for camera in &mut cameras {
-        commands.entity(camera).insert(fog.clone());
+    for (camera, cur_fog) in &mut cameras {
+        match cur_fog {
+            Some(mut existing) => {
+                if !distance_fog_close(existing.as_ref(), &fog) {
+                    *existing = fog.clone();
+                }
+            }
+            None => {
+                commands.entity(camera).insert(fog.clone());
+            }
+        }
     }
+}
+
+fn distance_fog_close(a: &DistanceFog, b: &DistanceFog) -> bool {
+    let df = match (&a.falloff, &b.falloff) {
+        (
+            FogFalloff::ExponentialSquared { density: da },
+            FogFalloff::ExponentialSquared { density: db },
+        ) => (da - db).abs() <= 1e-6,
+        _ => false,
+    };
+    if !df || (a.directional_light_exponent - b.directional_light_exponent).abs() > 1e-3 {
+        return false;
+    }
+    let ac = a.color.to_linear();
+    let bc = b.color.to_linear();
+    let ad = a.directional_light_color.to_linear();
+    let bd = b.directional_light_color.to_linear();
+    (ac.red - bc.red).abs() <= 1e-4
+        && (ac.green - bc.green).abs() <= 1e-4
+        && (ac.blue - bc.blue).abs() <= 1e-4
+        && (ad.red - bd.red).abs() <= 1e-4
+        && (ad.green - bd.green).abs() <= 1e-4
+        && (ad.blue - bd.blue).abs() <= 1e-4
 }
 
 pub use crate::env::point_in_polygon;

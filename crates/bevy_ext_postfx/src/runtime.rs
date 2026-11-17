@@ -2712,28 +2712,36 @@ fn drive_postfx(
     // (senão é "o dia com o brilho baixado") e o bloom sobe onde há fontes
     // quentes — fogueiras à noite, glare do sol rasante. O reforço nocturno
     // ([`NIGHT_BLOOM_INTENSITY`]) é o LOOP C: halo nas chamas/poças.
-    state.target_ev100 = ev100_for_exposure_multiplier(
+    let next_target_ev100 = ev100_for_exposure_multiplier(
         BASE_EV100,
         exposure_mult * atmosphere.exposure_scale.max(0.05),
     );
     let night = atmosphere.night.clamp(0.0, 1.0);
-    state.target_bloom =
+    let next_target_bloom =
         (bloom + atmosphere.bloom_boost + NIGHT_BLOOM_INTENSITY * night).clamp(0.0, MAX_BLOOM);
+    if (state.as_ref().target_ev100 - next_target_ev100).abs() > 1e-5 {
+        state.target_ev100 = next_target_ev100;
+    }
+    if (state.as_ref().target_bloom - next_target_bloom).abs() > 1e-5 {
+        state.target_bloom = next_target_bloom;
+    }
 
     let t = (time.delta_secs() * BLEND_RATE).clamp(0.0, 1.0);
     // O kick de juice decai SEMPRE (mesmo com o alvo de bioma atingido) —
     // é um flash transitório, não um estado.
-    if state.kick > 0.0 {
+    if state.as_ref().kick > 0.0 {
         state.kick = decay_kick(state.kick, time.delta_secs());
     }
     // Early-out quando o alvo já foi atingido: sem isto a escrita por frame
     // mantinha `Bloom`/`Exposure` em `Changed` para sempre (mundo estático
     // re-disparava dependências desnecessariamente).
-    if (state.target_ev100 - state.ev100).abs() > 1e-4 {
-        state.ev100 += (state.target_ev100 - state.ev100) * t;
+    if (state.as_ref().target_ev100 - state.as_ref().ev100).abs() > 1e-4 {
+        let delta = (state.target_ev100 - state.ev100) * t;
+        state.ev100 += delta;
     }
-    if (state.target_bloom - state.bloom).abs() > 1e-4 {
-        state.bloom += (state.target_bloom - state.bloom) * t;
+    if (state.as_ref().target_bloom - state.as_ref().bloom).abs() > 1e-4 {
+        let delta = (state.target_bloom - state.bloom) * t;
+        state.bloom += delta;
     }
     // `VIBER_NO_BLOOM=1`: o componente fica (o filtro `Without<Bloom>` do
     // attach depende dele), mas a intensidade vai a zero todos os frames.
@@ -2781,31 +2789,35 @@ fn drive_postfx(
         // A câmara pode não ter ColorGrading (inserido pelo attach com o
         // resto do pós; defensivo se alguém a spawnar à mão).
         if let Some(mut grading) = grading {
-            let g = &mut grading.global;
-            // Filtro ND da noite (ver [`grade_night_exposure_offset`]): o
-            // auto-exposure SOMA a sua compensação a este campo no passe de
-            // render — o desvio entra como base estável.
             let night_offset = grade_night_exposure_offset(night);
-            if g.exposure != night_offset {
-                g.exposure = night_offset;
-            }
-            if g.temperature != temperature {
-                g.temperature = temperature;
-            }
-            if g.post_saturation != saturation {
-                g.post_saturation = saturation;
-            }
-            // **Lift da noite a 0 (2026-10-21).** Era `night * 0.06` — um
-            // offset ADITIVO em linear aplicado a TODAS as secções. Numa cena
-            // nocturna (valores ~0,005..0,05) somar 0,06 é mais do que
-            // duplicar os pretos e cobre tudo — chão, paredes e até as poças
-            // de luz — com um véu CINZENTO (relato: "não é escuridão, até as
-            // luzes ficam acinzentadas"). O toe do TonyMcMapface e o fill do
-            // ambiente já levantam as sombras; o lift só desaturava.
             let lift = 0.0;
-            for section in grading.all_sections_mut() {
-                if section.lift != lift {
-                    section.lift = lift;
+            // Read immutably FIRST so unchanged frames do not mark `ColorGrading` Changed.
+            let (global_dirty, sections_dirty) = {
+                let grading_ref = grading.as_ref();
+                let g = &grading_ref.global;
+                let global_dirty = g.exposure != night_offset
+                    || g.temperature != temperature
+                    || g.post_saturation != saturation;
+                let sections_dirty = grading_ref.all_sections().any(|section| section.lift != lift);
+                (global_dirty, sections_dirty)
+            };
+            if global_dirty {
+                let g = &mut grading.global;
+                if g.exposure != night_offset {
+                    g.exposure = night_offset;
+                }
+                if g.temperature != temperature {
+                    g.temperature = temperature;
+                }
+                if g.post_saturation != saturation {
+                    g.post_saturation = saturation;
+                }
+            }
+            if sections_dirty {
+                for section in grading.all_sections_mut() {
+                    if section.lift != lift {
+                        section.lift = lift;
+                    }
                 }
             }
         }
@@ -2848,9 +2860,8 @@ fn drive_dof_focus(
     // Numa cinemática o foco é o que a CÂMARA olha (o herói pode estar a 1 km
     // — com o foco nele o plano inteiro saía desfocado); nos cortes salta.
     let scene_focus = cinematic.and_then(|c| c.0);
-    // Câmaras despawnadas não voltam: poda o histórico (a lista é minúscula).
-    let live: Vec<Entity> = cameras.iter_mut().map(|(entity, _, _)| entity).collect();
-    focus.retain(|entity, _| live.contains(entity));
+    // Câmaras despawnadas não voltam: poda o histórico (zero heap alloc).
+    focus.retain(|entity, _| cameras.contains(*entity));
     for (entity, camera_tf, mut dof) in &mut cameras {
         let (target, snap) = match scene_focus {
             Some((distance, cut)) => (distance, cut),
@@ -3116,49 +3127,41 @@ fn drive_fog_texture(
     players: Query<&GlobalTransform, With<Player>>,
     mut volumes: Query<&mut FogVolume, With<CinematicFogVolume>>,
 ) {
+    if fx_off("VOLUMETRICS") {
+        return;
+    }
+    let golden_haze = atmosphere.golden * 0.06;
+    let day_att =
+        FOG_VOLUME_NIGHT_ATTENUATION + (1.0 - FOG_VOLUME_NIGHT_ATTENUATION) * atmosphere.day;
+    let mut density = FOG_VOLUME_DENSITY * day_att + golden_haze;
+    if let (Some(biomes), Ok(player)) = (biomes.as_deref(), players.single()) {
+        let pos = player.translation();
+        if biomes.list.iter().any(|b| {
+            b.id.contains("swamp") && crate::env::point_in_polygon(pos.x, pos.z, &b.polygon)
+        }) {
+            density += FOG_VOLUME_SWAMP_BONUS * day_att;
+        }
+    }
     let (wind_x, wind_z) = weather
         .as_deref()
         .map(|w| (w.wind[0], w.wind[1]))
         .unwrap_or((0.7, 0.25));
+    let speed = 0.004 * time.delta_secs();
     for mut volume in &mut volumes {
-        // Scroll lento na direcção do vento (UV/s × força 0.004).
-        let speed = 0.004 * time.delta_secs();
-        // O sampler é REPEAT: manter o offset em [0,1) é visualmente igual e
-        // impede o acumulador de crescer sem limite (a partir de ~512 o passo
-        // por frame fica abaixo do ULP do f32 e o scroll CONGELA em sessões
-        // longas; a 0,0028 UV/s isso chega em ~50 h de uptime).
-        volume.density_texture_offset.x =
-            (volume.density_texture_offset.x + wind_x * speed).rem_euclid(1.0);
-        volume.density_texture_offset.z =
-            (volume.density_texture_offset.z + wind_z * speed).rem_euclid(1.0);
-        // Engrossa à alvorada/crepúsculo e no pântano; meio-dia limpo. A base
-        // é a MESMA do spawn ([`FOG_VOLUME_DENSITY`]) — escrever aqui um
-        // literal tornava o valor do spawn letra morta.
-        //
-        // ESCALA COM O DIA ([`FOG_VOLUME_NIGHT_ATTENUATION`]): o volume
-        // existe para os god-rays, que são um efeito de SOL. À noite a luz
-        // direcional NÃO o acende (o `light_attenuation` do bevy é
-        // `exp(−densidade × raio do AABB × (abs+scat))` ≈ 0 com estes
-        // números) e ele só soma o véu — encobre a distância sem dar nada em
-        // troca. Medido no `qa-raster` de noite com chuva: sem o volume o
-        // contraste da cena sobe ~50 % (sd 3.2 → 4.8) e o frame clareia;
-        // no pântano (que leva o bónus) o véu era o pior do mundo.
-        let golden_haze = atmosphere.golden * 0.06;
-        let day_att =
-            FOG_VOLUME_NIGHT_ATTENUATION + (1.0 - FOG_VOLUME_NIGHT_ATTENUATION) * atmosphere.day;
-        let mut density = FOG_VOLUME_DENSITY * day_att + golden_haze;
-        if let (Some(biomes), Ok(player)) = (biomes.as_deref(), players.single()) {
-            let pos = player.translation();
-            if biomes.list.iter().any(|b| {
-                b.id.contains("swamp") && crate::env::point_in_polygon(pos.x, pos.z, &b.polygon)
-            }) {
-                density += FOG_VOLUME_SWAMP_BONUS * day_att;
-            }
+        let cur_density = volume.as_ref().density_factor;
+        if density <= 0.0 && cur_density == 0.0 {
+            continue;
         }
         // Só escreve quando muda (o componente em `Changed` por frame faz o
         // passe re-preparar o volume à toa).
-        if (volume.density_factor - density).abs() > 1e-6 {
+        if (cur_density - density).abs() > 1e-6 {
             volume.density_factor = density;
+        }
+        if density > 0.0 && speed > 0.0 && (wind_x != 0.0 || wind_z != 0.0) {
+            volume.density_texture_offset.x =
+                (volume.density_texture_offset.x + wind_x * speed).rem_euclid(1.0);
+            volume.density_texture_offset.z =
+                (volume.density_texture_offset.z + wind_z * speed).rem_euclid(1.0);
         }
     }
 }
@@ -3170,13 +3173,16 @@ fn follow_fog_volume(
     players: Query<&GlobalTransform, With<Player>>,
     mut volumes: Query<&mut Transform, With<CinematicFogVolume>>,
 ) {
+    if fx_off("VOLUMETRICS") {
+        return;
+    }
     let Ok(player) = players.single() else {
         return;
     };
     let p = player.translation();
+    let target = Vec3::new(p.x, p.y + 50.0, p.z);
     for mut volume in &mut volumes {
-        let target = Vec3::new(p.x, p.y + 50.0, p.z);
-        if volume.translation != target {
+        if volume.as_ref().translation != target {
             volume.translation = target;
         }
     }
