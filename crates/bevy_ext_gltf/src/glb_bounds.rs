@@ -55,7 +55,8 @@ pub fn read(path: &Path) -> Option<GlbBounds> {
 pub fn read_json_chunk(path: &Path) -> Option<GlbBounds> {
     use std::io::Read as _;
 
-    const HEADER_LEN: usize = 20;
+    /// Cabeçalho do contentor + cabeçalho do primeiro chunk.
+    const HEADER_LEN: usize = crate::glb::HEADER_LEN + crate::glb::CHUNK_HEADER_LEN;
     /// Um chunk JSON maior que isto é quase de certeza um ficheiro corrompido;
     /// recusar a alocação evita um OOM num preview.
     const MAX_JSON_LEN: usize = 256 * 1024 * 1024;
@@ -63,31 +64,29 @@ pub fn read_json_chunk(path: &Path) -> Option<GlbBounds> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut header = [0u8; HEADER_LEN];
     file.read_exact(&mut header).ok()?;
-    if &header[0..4] != b"glTF" {
+    if u32::from_le_bytes(header[0..4].try_into().ok()?) != crate::glb::MAGIC {
         return None;
     }
-    let json_len = u32::from_le_bytes([header[12], header[13], header[14], header[15]]) as usize;
+    // O chunk JSON é o primeiro; o tipo (0x4E4F534A) fica depois do len.
+    let kind = u32::from_le_bytes(header[16..20].try_into().ok()?);
+    if kind != crate::glb::CHUNK_JSON {
+        return None;
+    }
+    let json_len = u32::from_le_bytes(header[12..16].try_into().ok()?) as usize;
     if json_len == 0 || json_len > MAX_JSON_LEN {
         return None;
     }
-    let mut bytes = vec![0u8; HEADER_LEN + json_len];
-    bytes[..HEADER_LEN].copy_from_slice(&header);
-    file.read_exact(&mut bytes[HEADER_LEN..]).ok()?;
-    read_bytes(&bytes)
+    let mut json = vec![0u8; json_len];
+    file.read_exact(&mut json).ok()?;
+    let doc: Value = serde_json::from_slice(&json).ok()?;
+    scene_bounds(&doc)
 }
 
 /// Variante para bytes já em memória (testes e o audit, que lê o ficheiro
 /// uma vez por referência).
 pub fn read_bytes(bytes: &[u8]) -> Option<GlbBounds> {
-    const GLB_MAGIC: &[u8; 4] = b"glTF";
-    if bytes.len() < 20 || &bytes[0..4] != GLB_MAGIC {
-        return None;
-    }
-    let json_len = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-    // O chunk JSON é o primeiro; o tipo (`0x4E4F534A`) fica depois do len.
-    let json_end = 20usize.checked_add(json_len)?;
-    let json = std::str::from_utf8(bytes.get(20..json_end)?).ok()?;
-    let doc: Value = serde_json::from_str(json).ok()?;
+    let chunks = crate::glb::parse(bytes).ok()?;
+    let doc: Value = crate::glb::parse_json(chunks.json).ok()?;
     scene_bounds(&doc)
 }
 

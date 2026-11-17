@@ -1,12 +1,6 @@
-# TRANSITÓRIO (TODO(viber-exit)): versão divergida da família (0.1.0) porque o
-# monólito `viber` ainda dep esta família do checkout irmão
-# `../bevy_extensions` à 0.1.0 — dois pacotes path com o mesmo (nome,
-# versão) colidem no lockfile do workspace. Voltar a
-# `version.workspace = true` quando o `viber` apontar para os members
-# deste workspace.
 [package]
 name = "bevy_ext_gltf"
-version = "0.1.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "GLB decoder for Bevy with EXT_meshopt_compression, KHR_mesh_quantization and KHR_texture_basisu"
@@ -22,6 +16,9 @@ categories = ["game-development", "rendering"]
 default = ["bounds", "textures"]
 bounds = []
 textures = []
+# O decoder anterior à passagem única, guardado como oráculo byte-a-byte para o
+# teste de paridade e para o A/B do `decode_bench`. Nenhuma app o liga.
+legacy = []
 
 [dependencies]
 bevy = { workspace = true, features = [
