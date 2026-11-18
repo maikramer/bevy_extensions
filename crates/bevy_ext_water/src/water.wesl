@@ -573,12 +573,10 @@ fn fragment(
     {
         let raw_depth = prepass_depth(in.position, 0u);
         if raw_depth > 0.0001 {
-            let bed_vz = -vt::depth_ndc_to_view_z(raw_depth);
-            let water_vz = -vt::depth_ndc_to_view_z(in.position.z);
             let ndc = vt::frag_coord_to_ndc(in.position);
             let sample_world = vt::position_ndc_to_world(vec3<f32>(ndc.xy, raw_depth));
             bed_world = sample_world;
-            ray_thickness = clamp(max(bed_vz - water_vz, 0.0), 0.0, MAX_PATH);
+            ray_thickness = clamp(dot(world - sample_world, to_cam), 0.0, MAX_PATH);
             vert_depth = max(world.y - sample_world.y, 0.0);
             if is_waterfall {
                 ray_thickness = clamp(ray_thickness, 0.18, 0.95);
@@ -659,10 +657,10 @@ fn fragment(
                 let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
                 let obs_impact = max(-dot(flow, obs_n), 0.0);
                 let obs_graze = abs(dot(flow, obs_t));
-                let bow_mask = smoothstep(-0.08, 0.08, obs_dist) * smoothstep(1.35, 0.05, obs_dist);
+                let bow_mask = smoothstep(-0.08, 0.08, obs_dist) * (1.0 - smoothstep(0.05, 1.35, obs_dist));
                 let bow_wave = cos(obs_dist * 12.5 - t * (3.2 + obs_impact * 1.4))
                     * bow_mask * clamp(obs_impact * 0.35, 0.0, 0.55);
-                let v_band = smoothstep(-0.04, 0.10, obs_dist) * smoothstep(2.40, 0.12, obs_dist);
+                let v_band = smoothstep(-0.04, 0.10, obs_dist) * (1.0 - smoothstep(0.12, 2.40, obs_dist));
                 let wake_phase = dot(world.xz, f_dir) * 4.8 - abs(dot(world.xz, f_perp)) * 3.6 - t * (4.6 + flow_speed * 1.2);
                 let v_ripples = sin(wake_phase) * v_band * clamp(obs_graze * 0.24, 0.0, 0.38);
                 obs_eddy_grad = (obs_n * bow_wave + (obs_n * 0.6 + obs_t * 0.45) * v_ripples) * smoothstep(0.01, 0.10, vert_depth);
@@ -739,7 +737,7 @@ fn fragment(
     let bubble_coarse = value_noise(world.xz * 6.8 - flow_eff * (t * 0.50) + vec2<f32>(t * 0.19, -t * 0.15));
     let bubble_fine = value_noise(world.xz * 15.5 - flow_eff * (t * 0.72) + vec2<f32>(-t * 0.27, t * 0.23));
     let foam_lace = clamp(web_hi * smoothstep(0.32, 0.78, bubble_coarse) + smoothstep(0.68, 0.94, bubble_fine) * 0.55, 0.0, 1.0);
-    let shore_zone = smoothstep(0.58, 0.08, baked_depth);
+    let shore_zone = 1.0 - smoothstep(0.08, 0.58, baked_depth);
     let contact_foam_band = (1.0 - smoothstep(0.008, 0.068, vert_depth)) * smoothstep(0.0, 0.014, vert_depth);
     let shore_agitation = 0.28 + 0.72 * smoothstep(0.0, 0.08, abs(wave_crest_h) + flow_speed * 0.22);
     let contact_foam = contact_foam_band * shore_zone * foam_lace * shore_agitation;
@@ -753,8 +751,8 @@ fn fragment(
         let obs_t = vec2<f32>(-obs_n.y, obs_n.x);
         let obs_impact = max(-dot(flow, obs_n), 0.0);
         let obs_graze = abs(dot(flow, obs_t));
-        let collar = smoothstep(-0.06, 0.03, obs_dist) * smoothstep(0.62, 0.04, obs_dist);
-        let flank_tail = smoothstep(0.0, 0.06, obs_dist) * smoothstep(1.45, 0.10, obs_dist);
+        let collar = smoothstep(-0.06, 0.03, obs_dist) * (1.0 - smoothstep(0.04, 0.62, obs_dist));
+        let flank_tail = smoothstep(0.0, 0.06, obs_dist) * (1.0 - smoothstep(0.10, 1.45, obs_dist));
         let bow_froth = collar * smoothstep(0.18, 1.25, obs_impact) * (0.45 + 0.55 * foam_lace);
         let peel_froth = flank_tail * smoothstep(0.42, 1.75, obs_graze) * 0.52 * foam_lace;
         let obs_wet = smoothstep(0.0, 0.025, vert_depth);
@@ -764,9 +762,31 @@ fn fragment(
     let splash_mask = smoothstep(0.18, 0.78, inter_foam);
     let splash_bubbles = clamp(foam_lace * 0.95 + smoothstep(0.62, 0.95, inter_foam) * smoothstep(0.66, 0.92, bubble_fine) * 0.35, 0.0, 1.0);
     let splash_foam = splash_mask * splash_bubbles;
+    // Shallow, fast water folds into short standing riffles. The crests stay
+    // over the bed while flecks travel through them in the deflected current.
+    let detail_vis = (1.0 - smoothstep(28.0, 76.0, cam_dist)) * select(0.0, 1.0, is_front && !is_waterfall);
+    let froude = flow_eff_speed * inverseSqrt(9.81 * max(baked_depth, 0.08));
+    let riffle_zone = detail_vis * smoothstep(0.25, 0.78, froude) * smoothstep(0.12, 0.38, baked_depth);
+    var riffle = 0.0;
+    if riffle_zone > 0.001 {
+        let dir = flow_eff / max(flow_eff_speed, 0.001);
+        let phase = dot(world.xz, dir) * 4.2 + 4.8 * value_noise(world.xz * 0.68);
+        let crest = smoothstep(0.58, 0.96, cos(phase + 0.35 * sin(t * 1.6)));
+        riffle = riffle_zone * crest * (0.18 + 0.68 * foam_lace);
+    }
+    // Wind laps against calm banks in broken arcs that climb the depth
+    // contours. Use bed depth so a wader cannot generate a false shoreline.
+    let bank_zone = detail_vis * shore_zone * (1.0 - smoothstep(0.12, 0.65, flow_speed));
+    var lap = 0.0;
+    if bank_zone > 0.001 {
+        let bank_noise = value_noise(world.xz * 0.48);
+        let beat = baked_depth * 19.0 + t * 2.1 + 2.8 * bank_noise;
+        lap = bank_zone * smoothstep(0.04, 0.15, baked_depth) * smoothstep(0.70, 0.98, cos(beat))
+            * smoothstep(0.24, 0.74, bank_noise) * (0.16 + 0.42 * foam_lace);
+    }
     let rapid_t = smoothstep(2.0, 3.6, flow_eff_speed) * foam_lace;
     let fall_streaks = select(0.0, 0.48 + 0.44 * fbm(vec2<f32>(world.x * 2.2 + world.z * 2.2, world.y * 0.9 + t * 5.2), vec2<f32>(0.0, t * 2.0)), is_waterfall);
-    let foam = clamp((contact_foam * 0.65 + bank_shear_foam * 0.58 + obs_collide_foam * 0.65 + crest_whitecap + splash_foam * 0.82 + rapid_t * 0.65 + fall_streaks) * mask, 0.0, 0.84);
+    let foam = clamp((contact_foam * 0.65 + bank_shear_foam * 0.58 + obs_collide_foam * 0.65 + crest_whitecap + splash_foam * 0.82 + rapid_t * 0.65 + fall_streaks + riffle + lap) * mask, 0.0, 0.84);
 
     // Pass 1 transmission multiplier (`AlphaMode::Multiply`, pass_mode < 0.5).
     let pass1_mul = clamp(

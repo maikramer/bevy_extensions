@@ -441,6 +441,11 @@ fn wave_env(env: Option<&WaterEnvironment>, time: f32) -> WaveEnv {
     }
 }
 
+#[cfg(feature = "avian")]
+type IntegratedHere = Without<avian::AvianFloating>;
+#[cfg(not(feature = "avian"))]
+type IntegratedHere = ();
+
 /// Integrates every [`FloatingBody`] and mirrors the result into [`WaterKinematics`].
 #[allow(clippy::type_complexity)]
 fn step_floating_bodies<S: WaterSource>(
@@ -454,7 +459,7 @@ fn step_floating_bodies<S: WaterSource>(
         &FloatingBody,
         &mut FloatState,
         Option<&mut WaterKinematics>,
-    )>,
+    ), IntegratedHere>,
 ) {
     let Some(source) = source else {
         return;

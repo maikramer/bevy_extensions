@@ -119,7 +119,7 @@ fn step_sim(
     let grad_depth = vec2<f32>(d_xp - d_xm, d_zp - d_zm) * 0.5;
     let shore_slope = length(grad_depth);
     let shore_prox = clamp(
-        max(1.0 - smoothstep(0.02, 0.72, min_nb_depth), smoothstep(0.46, 0.06, depth_m)),
+        max(1.0 - smoothstep(0.02, 0.72, min_nb_depth), (1.0 - smoothstep(0.06, 0.46, depth_m))),
         0.0,
         1.0,
     );
@@ -203,7 +203,7 @@ fn step_sim(
     let depth_speed = clamp(sqrt(depth_m / 0.85), 0.22, 1.0);
     let shallow_bed_drag = (1.0 - smoothstep(0.05, 0.62, depth_m)) * 1.95;
     let bank_friction = shore_prox * (1.25 + min(shore_slope, 1.5) * 0.95);
-    let obs_wall_band = obs_has * smoothstep(0.48, 0.02, obs_dist) * smoothstep(-0.14, 0.02, obs_dist);
+    let obs_wall_band = obs_has * (1.0 - smoothstep(0.02, 0.48, obs_dist)) * smoothstep(-0.14, 0.02, obs_dist);
     let obs_friction = obs_wall_band * 1.45;
     let alpha = 0.34 + shallow_bed_drag + bank_friction + obs_friction + (1.0 - wet) * 5.2 + edge_sponge * 10.0;
 
@@ -214,8 +214,8 @@ fn step_sim(
 
     // Bow wave pile-up & shoulder capillary radiation where stream hits solid obstacles.
     if obs_has > 0.5 && wet > 0.04 && (obs_impact > 0.06 || obs_graze > 0.14) {
-        let bow_band = smoothstep(-0.10, 0.08, obs_dist) * smoothstep(1.35, 0.10, obs_dist);
-        let graze_band = smoothstep(-0.08, 0.06, obs_dist) * smoothstep(0.95, 0.08, obs_dist);
+        let bow_band = smoothstep(-0.10, 0.08, obs_dist) * (1.0 - smoothstep(0.10, 1.35, obs_dist));
+        let graze_band = smoothstep(-0.08, 0.06, obs_dist) * (1.0 - smoothstep(0.08, 0.95, obs_dist));
         let bow_pulse = 0.55 + 0.45 * sin(dot(world_xz, obs_t) * 3.4 - time * 5.2);
         let graze_pulse = cos(dot(world_xz, obs_n) * 4.4 + time * 4.8);
         h_next += (bow_band * obs_impact * bow_pulse + graze_band * obs_graze * 0.28 * graze_pulse)
@@ -270,7 +270,7 @@ fn step_sim(
             let along = dot(rel, dir);
             let across = abs(dot(rel, perp));
             let wake_band = exp(-pow(across / max(radius * 0.42, 0.18), 2.0))
-                * smoothstep(radius * 0.55, -radius * 0.15, along)
+                * (1.0 - smoothstep(-radius * 0.15, radius * 0.55, along))
                 * exp(-max(-along, 0.0) / max(radius * 1.25, 0.4));
             let bow_lip = exp(-r2_bow / max(radius * radius * 0.18, 0.04)) * 0.35;
             impulse_foam += imp.params.z * (wake_band * 0.72 + bow_lip) * dt * 5.2;
@@ -313,7 +313,7 @@ fn step_sim(
         * clamp((v_vert * 0.85 + sqrt(flow_sq) * 0.32 - 0.28) * 0.55, 0.0, 0.42)
         * dt
         * 5.5;
-    let obs_collar = obs_has * smoothstep(-0.14, 0.06, obs_dist) * smoothstep(0.85, 0.08, obs_dist);
+    let obs_collar = obs_has * smoothstep(-0.14, 0.06, obs_dist) * (1.0 - smoothstep(0.08, 0.85, obs_dist));
     let obs_bow_foam = obs_collar * smoothstep(0.16, 1.10, obs_impact)
         * (0.58 + 0.42 * sin(dot(world_xz, obs_t) * 4.5 + time * 4.0));
     let obs_shear_foam = obs_collar * smoothstep(0.40, 1.60, obs_graze) * 0.48;
