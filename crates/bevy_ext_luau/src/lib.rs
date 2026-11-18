@@ -716,21 +716,35 @@ fn build_nearby(
             None => return Ok(out),
         },
     };
-    let mut found: Vec<(f32, i64, &str, Vec3)> = g
-        .names
+    let cap = limit.unwrap_or(16).min(64);
+    if cap == 0 {
+        return Ok(out);
+    }
+    // Percorre posições contíguas e só procura o nome de quem está no raio.
+    let mut found: Vec<_> = g
+        .positions
         .iter()
-        .filter_map(|(bits, name)| {
-            if center == NearbyCenter::SelfEntity && Some(*bits) == own {
+        .filter_map(|(&bits, &pos)| {
+            if center == NearbyCenter::SelfEntity && Some(bits) == own {
                 return None;
             }
-            let pos = *g.positions.get(bits)?;
-            let d = pos.distance(origin);
-            (d <= radius).then_some((d, *bits, name.as_str(), pos))
+            let distance = pos.distance(origin);
+            if distance <= radius {
+                Some((distance, bits, g.names.get(&bits)?.as_str(), pos))
+            } else {
+                None
+            }
         })
         .collect();
-    found.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let cap = limit.unwrap_or(16).min(64);
-    for (i, (distance, bits, name, pos)) in found.into_iter().take(cap).enumerate() {
+    let by_distance = |a: &(f32, i64, &str, Vec3), b: &(f32, i64, &str, Vec3)| {
+        a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1))
+    };
+    if found.len() > cap {
+        found.select_nth_unstable_by(cap, by_distance);
+        found.truncate(cap);
+    }
+    found.sort_unstable_by(by_distance);
+    for (i, (distance, bits, name, pos)) in found.into_iter().enumerate() {
         let t = lua.create_table()?;
         t.raw_set("id", bits)?;
         t.raw_set("name", name)?;
@@ -1196,24 +1210,31 @@ fn install_viber_api_with(
     )?;
 
     // viber.play_clip(nome [, opts]) — clip de ação no rig (opts:
-    // {speed = 1.0, id = bits, lock = false}). Sem `id` a integração
+    // {speed = 1.0, id = bits, lock = false, blend = segundos, duration = segundos}). Sem `id` a integração
     // resolve para a entidade do script.
     let clip_globals = globals.clone();
     viber.set(
         "play_clip",
         lua.create_function(move |lua, (name, opts): (String, Option<mlua::Table>)| {
-            let (speed, id, lock) = match opts {
+            let (speed, id, lock, blend, duration) = match opts {
                 Some(t) => (
                     t.raw_get::<f32>("speed").ok().unwrap_or(1.0),
                     t.raw_get::<i64>("id").ok(),
                     t.raw_get::<bool>("lock").ok().unwrap_or(false),
+                    t.raw_get::<Option<f32>>("blend")?,
+                    t.raw_get::<Option<f32>>("duration")?,
                 ),
-                None => (1.0, None, false),
+                None => (1.0, None, false, None, None),
             };
             if !speed.is_finite() || speed <= 0.0 {
                 return Err(mlua::Error::runtime(
                     "viber.play_clip: speed tem de ser finito e > 0",
                 ));
+            }
+            if blend.is_some_and(|s| std::time::Duration::try_from_secs_f32(s).is_err())
+                || duration.is_some_and(|s| !s.is_finite() || s <= 0.0)
+            {
+                return Err(mlua::Error::runtime("viber.play_clip: blend >= 0 e duration > 0, em segundos finitos"));
             }
             let entity = match id {
                 Some(bits) => Some(commands::entity_from_id(bits)?),
@@ -1221,7 +1242,7 @@ fn install_viber_api_with(
             };
             push_command(
                 &clip_globals,
-                commands::ScriptCommand::Gesture { entity, name, speed, lock },
+                commands::ScriptCommand::Gesture { entity, name, speed, lock, blend, duration },
             );
             Ok(())
         })?,
@@ -1346,6 +1367,8 @@ fn install_viber_api_with(
                     name,
                     speed: 1.0,
                     lock: false,
+                    blend: None,
+                    duration: None,
                 },
             );
             Ok(())
@@ -3581,11 +3604,12 @@ mod tests {
         // comando drena SEM contexto — a entidade tem de viajar nele).
         let own = Entity::try_from_bits(42u64).expect("entidade");
         lua.set_app_data(ScriptEntity(Some(own)));
-        lua.load("viber.play_clip('mine', { speed = 1.4 })")
+        lua.load("viber.play_clip('mine', { speed = 1.4, blend = 0.08, duration = 0.7 })")
             .exec()
             .expect("clip");
         match globals.write().expect("globals").commands.pop_front().expect("comando") {
-            commands::ScriptCommand::Gesture { entity, name, speed, lock } => {
+            commands::ScriptCommand::Gesture { entity, name, speed, lock, blend, duration } => {
+                assert_eq!((blend, duration), (Some(0.08), Some(0.7)));
                 assert_eq!(name, "mine");
                 assert_eq!((speed, lock), (1.4, false));
                 assert_eq!(entity, Some(own));
@@ -4121,7 +4145,7 @@ mod tests {
         lua.set_app_data(ScriptEntity(Some(own)));
         lua.load("viber.gesture('foldarms')").exec().expect("gesto");
         match globals.write().expect("globals").commands.pop_front().expect("comando") {
-            commands::ScriptCommand::Gesture { entity, name, speed, lock } => {
+            commands::ScriptCommand::Gesture { entity, name, speed, lock, .. } => {
                 assert_eq!(name, "foldarms");
                 assert_eq!((entity, speed, lock), (Some(own), 1.0, false));
             }
@@ -4430,6 +4454,15 @@ mod tests {
             .expect("player_nearby");
         assert_eq!((pcount, pid), (1, 11));
 
+        // Um vizinho sem nome não ocupa o limite; empates ordenam pelo id.
+        {
+            let mut g = globals.write().expect("globals");
+            std::sync::Arc::make_mut(&mut g.positions).insert(3, Vec3::ZERO);
+            std::sync::Arc::make_mut(&mut g.positions).insert(4, Vec3::X);
+            std::sync::Arc::make_mut(&mut g.names).insert(4, "erva".into());
+        }
+        let nearest: i64 = lua.load("return viber.nearby(5, 1)[1].id").eval().expect("vizinho");
+        assert_eq!(nearest, 4);
         // Limite capado e raio inválido é erro.
         let capped: usize = lua
             .load("return #viber.nearby(5.0, 1)")

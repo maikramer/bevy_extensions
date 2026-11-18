@@ -32,6 +32,9 @@ pub enum ScriptCommand {
         entity: Option<Entity>,
         name: String,
         speed: f32,
+        /// Optional authored playback length and cross-fade, in seconds.
+        duration: Option<f32>,
+        blend: Option<f32>,
         /// `play_clip(..., { lock = true })`: segura a última pose.
         lock: bool,
     },

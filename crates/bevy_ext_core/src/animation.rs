@@ -45,11 +45,13 @@ pub enum AnimState {
     /// A boiar/tear água, parado. Substitui Jump/Fall enquanto o herói está
     /// submerso até ao peito.
     SwimIdle,
+    /// Seated rowing, phase driven by the boat.
+    Row,
 }
 
 impl AnimState {
     /// Todos os estados, na ordem de [`Self::index`].
-    pub const ALL: [AnimState; 7] = [
+    pub const ALL: [AnimState; 8] = [
         AnimState::Idle,
         AnimState::Walk,
         AnimState::Run,
@@ -57,6 +59,7 @@ impl AnimState {
         AnimState::Fall,
         AnimState::Swim,
         AnimState::SwimIdle,
+        AnimState::Row,
     ];
 
     /// Índice estável do estado — a chave da LUT de nodes do
@@ -70,6 +73,7 @@ impl AnimState {
             AnimState::Fall => 4,
             AnimState::Swim => 5,
             AnimState::SwimIdle => 6,
+            AnimState::Row => 7,
         }
     }
 
@@ -86,6 +90,7 @@ impl AnimState {
             AnimState::Jump => &["jump", "jumpup", "jumpstart"],
             AnimState::Fall => &["fall", "falling", "jumpair", "jump"],
             AnimState::Swim => &["swim", "swimfwd", "swimforward", "swimfast"],
+            AnimState::Row => &["row", "rowing"],
             AnimState::SwimIdle => &["swimidle", "tread", "treadwater", "float"],
         }
     }
@@ -102,6 +107,7 @@ impl AnimState {
             AnimState::Jump => &[AnimState::Fall, AnimState::Idle],
             AnimState::Fall => &[AnimState::Jump, AnimState::Idle],
             AnimState::Swim => &[AnimState::SwimIdle, AnimState::Walk, AnimState::Idle],
+            AnimState::Row => &[AnimState::Idle],
             AnimState::SwimIdle => &[AnimState::Swim, AnimState::Idle],
         }
     }

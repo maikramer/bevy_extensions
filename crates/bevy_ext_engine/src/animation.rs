@@ -1098,10 +1098,7 @@ pub fn drive_player_animation(
         }
         let blended = animator.locomotion.is_some()
             && !animator.is_busy()
-            && !matches!(
-                state,
-                AnimState::Jump | AnimState::Fall | AnimState::Swim | AnimState::SwimIdle
-            );
+            && matches!(state, AnimState::Idle | AnimState::Walk | AnimState::Run);
         if let Ok(handle) = handles.get(animator.player) {
             let weights = locomotion_weights(animator.speed, gates, speeds);
             drive_locomotion_blend(
@@ -1123,7 +1120,7 @@ pub fn drive_player_animation(
         // no-op silencioso). Não interrompe one-shots em curso (um swing a
         // terminar tem prioridade sobre o "poussada") e não toca a histerese
         // — o `play_state` acima já fez a passagem de locomoção.
-        if is_landing(was_airborne, hero.grounded)
+        if state != AnimState::Row && is_landing(was_airborne, hero.grounded)
             && !animator.is_busy()
             && let Some(node) = animator.node_matching(|n| n == "jumpland")
         {
@@ -1160,6 +1157,8 @@ pub fn root_motion_delta(previous: Vec3, current: Vec3) -> Vec3 {
 /// [`PENDING_GESTURE_SECS`] pelo `CharacterAnimator` e toca nessa altura.
 #[derive(Component, Debug, Clone)]
 pub struct PendingGesture {
+    /// Playback length requested by the script (seconds), resolved once the rig binds.
+    pub duration: Option<f32>,
     pub name: String,
     pub speed: f32,
     pub lock: bool,
@@ -1171,6 +1170,13 @@ pub struct PendingGesture {
 /// Quanto tempo um gesto espera pelo rig: um aceno 3 s depois ainda lê como
 /// resposta; mais do que isso já não.
 pub const PENDING_GESTURE_SECS: f32 = 3.0;
+
+/// Fit the model's actual clip to the authored gameplay beat when requested.
+pub fn gesture_speed(speed: f32, clip_secs: f32, duration: Option<f32>) -> f32 {
+    duration.map(|secs| clip_secs / secs)
+        .filter(|rate| rate.is_finite() && *rate > 0.05)
+        .unwrap_or(speed)
+}
 
 /// Toca os gestos em espera cujo rig já ligou; larga os velhos.
 pub fn play_pending_gestures(
@@ -1202,18 +1208,8 @@ pub fn play_pending_gestures(
             .blend
             .map(Duration::from_secs_f32)
             .unwrap_or(Duration::from_millis(250));
-        if (gesture.speed - 1.0).abs() < 1e-3 {
-            play_action(&mut animator, &mut players, node, blend, gesture.lock);
-        } else {
-            play_action_scaled(
-                &mut animator,
-                &mut players,
-                node,
-                blend,
-                gesture.lock,
-                gesture.speed,
-            );
-        }
+        let speed = gesture_speed(gesture.speed, animator.duration_of(node), gesture.duration);
+        play_action_scaled(&mut animator, &mut players, node, blend, gesture.lock, speed);
     }
 }
 
