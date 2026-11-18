@@ -220,7 +220,7 @@ pub fn cut_wall_bands(spec: &CutSpec, grid: &dyn HeightField, texel: f32) -> Vec
             stations: crest_stations,
             drop_normal,
             ceil_y: top_y.clone(),
-        top_y,
+            top_y,
             bot_y,
             width,
             arc,

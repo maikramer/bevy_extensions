@@ -896,7 +896,12 @@ impl bevy::app::Plugin for TerrainFeaturesPlugin {
                     // sítios faz o Bevy ficar com a versão SEM `timed` e o
                     // sistema desaparece do profiler (ver `ambient.rs`).
                     timed(Group::Terrain, super::layer_material::terrain_rain_wetness),
+                    timed(Group::Terrain, super::ground::simulate_snow),
                 ),
+            )
+            .add_systems(
+                bevy::app::PostUpdate,
+                timed(Group::Terrain, super::ground::publish_ground),
             );
     }
 }
@@ -1472,7 +1477,7 @@ pub fn bootstrap(world: &mut World) {
     for (i, band) in cliff_bands.iter().enumerate() {
         voxel_mods.extend(band.clone().into_mods(&format!("cliff:{i}")));
     }
-    for cave in pending.features.caves.iter().chain(&seeded.caves) {
+    for cave in pending.features.caves.iter().chain(&seeded.caves).filter(|c| !(c.open_ends && c.mouth_lift)) {
         voxel_mods.extend(cave.build(&grid));
     }
     for arch in pending.features.arches.iter().chain(&seeded.arches) {
@@ -1503,6 +1508,11 @@ pub fn bootstrap(world: &mut World) {
     }
     // Fendas de spill das cachoeiras de parede (rio × cliff).
     voxel_mods.extend(spill_mods);
+    // The reserved walking passage cuts through every underlying cliff and
+    // plateau wall, including the return ramp at the far end.
+    for cave in pending.features.caves.iter().chain(&seeded.caves).filter(|c| c.open_ends && c.mouth_lift) {
+        voxel_mods.extend(cave.build(&grid));
+    }
     if !voxel_mods.is_empty() {
         info!(
             "terrain: {} cliff(s) + {} cave(s) + {} arch(es) + {} bridge(s) + {} bank wall(s) + \
@@ -1919,6 +1929,7 @@ fn spawn_terrain_material(
     // isto um subconjunto autoral lia a posição como índice de slot e pintava
     // texturas trocadas. As texturas do pool resolvem contra o
     // `terrain_textures_dir` do config.yaml do jogo (docs/ASSETS.md).
+    let ground_tex = super::ground::ensure_textures(world, images);
     let game_config = world
         .get_resource::<crate::host::TerrainWorldAssets>()
         .cloned()
@@ -2089,6 +2100,9 @@ fn spawn_terrain_material(
         splat1: planes[1].clone(),
         splat2: planes[2].clone(),
         splat3: planes[3].clone(),
+        snow: ground_tex.snow,
+        trail: ground_tex.trail_neutral,
+        cloud: ground_tex.cloud_neutral,
         params: chunk_params,
     });
     // Albedo no material desde já (é o que destrava o desenho). Detalhe só
@@ -2268,7 +2282,13 @@ fn spawn_water(
     }
     let (wave_tex, domain_tex, obstacle_tex) = world
         .get_resource::<super::water_waves::WaterWaveWorld>()
-        .map(|w| (w.wave_tex.clone(), w.domain_tex.clone(), w.obstacle_tex.clone()))
+        .map(|w| {
+            (
+                w.wave_tex.clone(),
+                w.domain_tex.clone(),
+                w.obstacle_tex.clone(),
+            )
+        })
         .unwrap_or_else(|| {
             let h = images.add(super::water_waves::make_wave_rgba16f_image(1, 1, false));
             (h.clone(), h.clone(), h)
@@ -2855,7 +2875,10 @@ fn padded_water_aabb(positions: &[[f32; 3]]) -> Option<bevy::camera::primitives:
     // Folga horizontal/vertical para deslocamento Gerstner e ondas interativas
     // sem culling prematuro nas bordas do ecrã.
     let pad = Vec3::new(0.6, 1.5, 0.6);
-    Some(bevy::camera::primitives::Aabb::from_min_max(min - pad, max + pad))
+    Some(bevy::camera::primitives::Aabb::from_min_max(
+        min - pad,
+        max + pad,
+    ))
 }
 
 /// Loads a PNG heightmap (8-bit grayscale is upscaled to the full 16-bit

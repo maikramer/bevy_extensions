@@ -77,6 +77,38 @@ impl Default for GrassTint {
     }
 }
 
+/// Cobertura de neve 0..1 por id de bioma (índice = id; acima de 7 ignora-se).
+///
+/// O campo mistura [`GrassTint`] com o branco da neve. 0 deixa a tinta do dia.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct GrassBiomeSnow {
+    pub cover: [f32; 8],
+}
+
+impl GrassBiomeSnow {
+    #[must_use]
+    pub fn of(&self, biome: u16) -> f32 {
+        self.cover.get(biome as usize).copied().unwrap_or(0.0)
+    }
+}
+
+/// Tinta do campo com neve. `cover == 0` devolve `day` igual.
+#[must_use]
+pub fn grass_snow_tint(day: [f32; 3], cover: f32) -> [f32; 3] {
+    let k = cover.clamp(0.0, 1.0);
+    if k <= 0.0 {
+        return day;
+    }
+    const SNOW: [f32; 3] = [0.80, 0.83, 0.88];
+    let luma = (day[0] + day[1] + day[2]) / 3.0;
+    let mut out = [0.0; 3];
+    for i in 0..3 {
+        let white = SNOW[i] * luma.max(day[i]);
+        out[i] = day[i] * (1.0 - k) + white * k;
+    }
+    out
+}
+
 /// Estado público (loading/QA/profiler) + estado interno do bake.
 #[derive(Resource, Default)]
 pub struct GrassState {
@@ -207,6 +239,7 @@ impl Plugin for GrassPlugin {
         app.init_resource::<GrassSettings>()
             .init_resource::<GrassState>()
             .init_resource::<GrassTint>()
+            .init_resource::<GrassBiomeSnow>()
             .init_resource::<GrassStyleRegistry>()
             .init_resource::<GrassSettingsSpecValue>()
             .init_resource::<GrassStyleSpecSet>()
@@ -299,9 +332,8 @@ fn sync_settings_spec(
 ) {
     // Só quando os specs mudam: aplicar em todos os frames desfaria o toggle
     // do profiler (que escreve `GrassSettings.enabled`).
-    let dirty = changed.iter().next().is_some()
-        || removed.read().next().is_some()
-        || resource.is_changed();
+    let dirty =
+        changed.iter().next().is_some() || removed.read().next().is_some() || resource.is_changed();
     if !dirty {
         return;
     }
@@ -475,6 +507,7 @@ fn poll_bake(
     provider: Option<Res<GrassProvider>>,
     settings: Res<GrassSettings>,
     tint: Res<GrassTint>,
+    biome_snow: Option<Res<GrassBiomeSnow>>,
     mut state: ResMut<GrassState>,
     mut images: ResMut<Assets<Image>>,
     mut styles: ResMut<Assets<GrassStyle>>,
@@ -503,7 +536,11 @@ fn poll_bake(
         commands.entity(entity).despawn();
     }
 
-    let tint_color = Color::linear_rgb(tint.0[0], tint.0[1], tint.0[2]);
+    let snow = biome_snow.as_deref().copied().unwrap_or_default();
+    let tint_color = |biome: u16| {
+        let rgb = grass_snow_tint(tint.0, snow.of(biome));
+        Color::linear_rgb(rgb[0], rgb[1], rgb[2])
+    };
     let mut assets = Vec::with_capacity(out.fields.len());
     for data in out.fields {
         let biome = data.plan.biome.0;
@@ -534,7 +571,7 @@ fn poll_bake(
                 density_map: Some(mask.clone()),
             },
             GrassFieldOverrides {
-                tint: Some(tint_color),
+                tint: Some(tint_color(biome)),
                 wind_scale,
                 ..default()
             },
@@ -561,15 +598,18 @@ fn poll_bake(
 fn apply_field_overrides(
     settings: Res<GrassSettings>,
     tint: Res<GrassTint>,
+    biome_snow: Option<Res<GrassBiomeSnow>>,
     registry: Res<GrassStyleRegistry>,
     mut fields: Query<(&GrassFieldEntity, &mut GrassFieldOverrides)>,
 ) {
-    if !settings.is_changed() && !tint.is_changed() && !registry.is_changed() {
+    let snow_changed = biome_snow.as_ref().is_some_and(|snow| snow.is_changed());
+    if !settings.is_changed() && !tint.is_changed() && !registry.is_changed() && !snow_changed {
         return;
     }
-    let color = Color::linear_rgb(tint.0[0], tint.0[1], tint.0[2]);
+    let snow = biome_snow.as_deref().copied().unwrap_or_default();
     for (field, mut overrides) in &mut fields {
-        overrides.tint = Some(color);
+        let rgb = grass_snow_tint(tint.0, snow.of(field.biome));
+        overrides.tint = Some(Color::linear_rgb(rgb[0], rgb[1], rgb[2]));
         overrides.wind_scale = registry.wind_scale(field.biome) * settings.wind_scale;
     }
 }
@@ -719,5 +759,12 @@ mod tests {
         assert_eq!(bg.instance_capacity, 1234);
         assert_eq!(bg.max_chunk_slices, 99);
         assert!((bg.density_scale - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_snow_keeps_the_day_tint() {
+        let day = [0.32, 0.5, 0.8];
+        assert_eq!(grass_snow_tint(day, 0.0), day);
+        assert_eq!(grass_snow_tint([1.0, 1.0, 1.0], 1.0), [0.80, 0.83, 0.88]);
     }
 }

@@ -649,16 +649,14 @@ impl VoxelMod for CliffFaceMod {
         let steps = (w / TERRACE_TREAD).round().clamp(2.0, 8.0);
         let face_taper = smoothstep(0.0, 0.12, v) * (1.0 - smoothstep(0.86, 1.0, v));
         let fracture = cliff_face_fracture(p) * (w * 0.045).clamp(0.14, 0.42) * face_taper;
-        let off = w
-            * profile_offset(
-                v,
-                self.profile,
-                steps,
-                self.arc,
-                self.seed,
-                self.column.as_ref(),
-            )
-            + fracture;
+        let off = w * profile_offset(
+            v,
+            self.profile,
+            steps,
+            self.arc,
+            self.seed,
+            self.column.as_ref(),
+        ) + fracture;
 
         // Intersection of half-spaces: inside the wedge when every term is
         // negative. Beyond the face, above the toe, below the crest, within

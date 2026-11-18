@@ -87,26 +87,26 @@ const CONFIG_END: &str = "// === END WORLD CONFIG ===";
 // 1. **O slab tem de caber TODOS os descritores do material.** Cada par
 //    `#[texture]`/`#[sampler]` contribui uma entrada para as binding arrays
 //    do slab, e o LAYOUT declara essas arrays com este count. Este material
-//    tem 69 pares (13 camadas × 5 mapas + 4 splats) ≈ 58 descritores únicos
-//    depois do dedup de handles repetidos. Com `limit(8)` o layout declarava
-//    arrays de 8, o wgpu recusava o `create_bind_group` ("Binding count
-//    declared with at most 8 items, but 58 items were provided") e a app
-//    SAÍA no arranque (Validation RenderError — crash 2026-10-16).
+//    tem 72 pares (13 camadas × 5 mapas + 4 splats + neve/rastos/nuvem).
+//    Com `limit(8)` o layout declarava arrays de 8, o wgpu recusava o
+//    `create_bind_group` ("Binding count declared with at most 8 items, but
+//    58 items were provided") e a app SAÍA no arranque (Validation
+//    RenderError — crash 2026-10-16).
 // 2. **`samplers × limit` tem de caber no cap do device.** `bindless_supported`
 //    exige `max_binding_array_sampler_elements_per_shader_stage ≥
-//    sampler_bindings × limit`; com o Auto (2048) o produto (69 × 2048 =
-//    141 312) passava o cap observado (~131 072) e o material caía SEM
-//    aviso para o layout não-bindless — terreno cinzento-azulado (e o
-//    SIGSEGV NVIDIA do aviso abaixo à espreita). `128` dá 69 × 128 = 8 832
-//    elementos, 14× abaixo do cap, e 128 ≥ 69 descritores com folga.
+//    sampler_bindings × limit`; com o Auto (2048) o produto (72 × 2048)
+//    passava o cap observado (~131 072) e o material caía SEM aviso para o
+//    layout não-bindless — terreno cinzento-azulado (e o SIGSEGV NVIDIA do
+//    aviso abaixo à espreita). `128` dá 72 × 128 = 9 216 elementos, bem
+//    abaixo do cap, e 128 ≥ 72 descritores com folga.
 // Há UM material no mundo inteiro: uma slab chega. Guarda de regressão:
 // `test_bindless_slab_limit_holds_the_whole_material` (abaixo).
-#[bindless(limit(128), index_table(range(0..139)))]
+#[bindless(limit(128), index_table(range(0..145)))]
 pub struct TerrainChunkMaterial {
     // Tabela de índices bindless (a ORDEM é a do WGSL, que a lê como
     // `array<u32>`): albedo 1–26, normal 27–52, height 53–78, AO 79–104,
     // rough 105–130 (camada `i` em `base + 2i`, sampler em `+1`), planos
-    // splat 131–138.
+    // splat 131–138, neve 139–140, rastos 141–142, sombra de nuvem 143–144.
     #[texture(1)]
     #[sampler(2)]
     pub albedo0: Handle<Image>,
@@ -314,6 +314,18 @@ pub struct TerrainChunkMaterial {
     #[texture(137)]
     #[sampler(138)]
     pub splat3: Handle<Image>,
+    /// Cobertura de neve 0..1 (R8). Flag em `params.snow.w`.
+    #[texture(139)]
+    #[sampler(140)]
+    pub snow: Handle<Image>,
+    /// Campo de rastos `(h, ocupação, ∂h/∂x, ∂h/∂z)`. Flag em `params.trail.w`.
+    #[texture(141)]
+    #[sampler(142)]
+    pub trail: Handle<Image>,
+    /// Transmitância das nuvens no R. Flag em `params.cloud_b.w`.
+    #[texture(143)]
+    #[sampler(144)]
+    pub cloud: Handle<Image>,
     pub params: TerrainChunkParams,
 }
 
@@ -438,6 +450,12 @@ impl bevy::pbr::Material for TerrainChunkMaterial {
         "shaders/terrain_chunk.wesl".into()
     }
 
+    // O vertex levanta o chão pela neve (só para cima: o prepass e as
+    // sombras ficam com o chão nu, que está sempre por baixo).
+    fn vertex_shader() -> ShaderRef {
+        "shaders/terrain_chunk.wesl".into()
+    }
+
     // Voxel wall shells carry sub-voxel thin sheets (a carved void passing a
     // few centimetres under the natural terrain) whose averaged vertices
     // yield a handful of inward-wound triangles along the sheet line; with
@@ -478,6 +496,20 @@ pub struct TerrainChunkParams {
     pub walls_a: Vec4,
     /// `x` = rock_darken, `y` = streaks, `z` = moss, `w` = chuva (0..1).
     pub walls_b: Vec4,
+    /// `xy` canto mínimo da janela de neve (m), `z` lado da célula (m),
+    /// `w` = 1 quando o manto desenha.
+    pub snow: Vec4,
+    /// `x` profundidade de referência fora da janela (m), `y` escala da
+    /// codificação (`d = v² · y`), `z` ganho do levantamento do chão.
+    pub snow_b: Vec4,
+    /// `xy` centro da janela de rastos, `z` lado do texel (m), `w` = 1 desenha.
+    pub trail: Vec4,
+    /// `x` texels de lado, `y` molhado 0..1 (lama).
+    pub trail_b: Vec4,
+    /// `xy` canto mínimo do mapa de sombra, `z` lado (m), `w` transmitância média.
+    pub cloud: Vec4,
+    /// `xyz` direção para a luz, `w` = 1 quando a sombra desenha.
+    pub cloud_b: Vec4,
 }
 
 /// Fonte do mapa de roughness de um slot do pool (inventário ESTÁTICO — o
@@ -540,6 +572,13 @@ impl TerrainChunkParams {
                 cfg.strata_strength,
             ),
             walls_b: Vec4::new(cfg.rock_darken, cfg.streaks, cfg.moss, 0.0),
+            // w = 0: neve, rastos e sombra de nuvem desligados até o publisher.
+            snow: Vec4::ZERO,
+            snow_b: Vec4::ZERO,
+            trail: Vec4::ZERO,
+            trail_b: Vec4::ZERO,
+            cloud: Vec4::ZERO,
+            cloud_b: Vec4::ZERO,
         }
     }
 }
@@ -917,8 +956,8 @@ mod tests {
     fn test_chunk_material_stays_bindless() {
         let source = include_str!("layer_material.rs");
         assert!(
-            source.contains("#[bindless(limit(128), index_table(range(0..139)))]"),
-            "TerrainChunkMaterial tem de continuar bindless (139 entradas: data + 69 pares)"
+            source.contains("#[bindless(limit(128), index_table(range(0..145)))]"),
+            "TerrainChunkMaterial tem de continuar bindless (145 entradas: data + 72 pares)"
         );
         assert!(
             source.contains("#[data(0, TerrainChunkParams, binding_array(10))]"),
@@ -954,12 +993,12 @@ mod tests {
         );
         // A tabela do WGSL tem de bater certo com o número de pares do material.
         assert!(
-            wgsl.contains("e: array<u32, 138>"),
-            "138 entradas texture/sampler"
+            wgsl.contains("e: array<u32, 144>"),
+            "144 entradas texture/sampler"
         );
         // Agulha em duas metades (escrita inteira casaria com este teste).
         let pairs = source.matches(&format!("    #[{}(", "sampler")).count();
-        assert_eq!(pairs, 69, "13 camadas × 5 mapas + 4 planos splat");
+        assert_eq!(pairs, 72, "13 camadas × 5 mapas + 4 splats + neve/rastos/nuvem");
     }
 
     /// REGRESSÃO do crash de arranque (2026-10-16): `limit(8)` declarava as

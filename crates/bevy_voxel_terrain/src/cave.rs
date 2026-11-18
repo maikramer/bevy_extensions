@@ -19,10 +19,10 @@
 //! tube breaks out of the hillside and the cave is enterable. A cave at a
 //! constant depth is sealed rock with a hole inside it that nobody can reach.
 
-use bevy::math::{Vec2, Vec3};
+use bevy::math::{Vec2, Vec3, Vec3Swizzles};
 
 use super::mods::{
-    CapsuleMod, CragMod, EllipsoidMod, HalfEllipsoidMod, ModOp, RoundConeMod, VoxelMod,
+    Bounds3, CapsuleMod, CragMod, EllipsoidMod, HalfEllipsoidMod, ModOp, RoundConeMod, VoxelMod,
 };
 use crate::HeightField;
 use crate::paths::{chaikin_smooth, resample};
@@ -133,6 +133,96 @@ pub struct CaveSpec {
     /// bowl to jump out of. Requires a mound (or a real hillside) to fill the
     /// rock around the lifted tube.
     pub mouth_lift: bool,
+}
+
+/// Arched passage with a broad, graded walking surface. Sample in the
+/// horizontal plane so the tread stays level across the tunnel on a slope.
+#[derive(Debug)]
+struct WalkableBore {
+    label: String,
+    a: Vec3,
+    b: Vec3,
+    ra: f32,
+    rb: f32,
+    previous_floor: Vec3,
+    next_floor: Vec3,
+}
+
+impl VoxelMod for WalkableBore {
+    fn distance(&self, p: Vec3) -> f32 {
+        let axis = self.b.xz() - self.a.xz();
+        let along = (p.xz() - self.a.xz()).dot(axis) / axis.length_squared().max(1e-8);
+        let t = along.clamp(0.0, 1.0);
+        let centre = self.a.lerp(self.b, t);
+        let radius = self.ra + (self.rb - self.ra) * t;
+        let side = p.xz().distance(centre.xz());
+        let y = p.y - centre.y;
+        let arch = Vec2::new(side, if y < 0.0 { y * 0.78 } else { y }).length() - radius;
+        // Each round join borrows the adjoining ramp's grade. Extending the
+        // current grade through a change of slope gouges a dip below the tread.
+        let start = self.a - Vec3::Y * self.ra;
+        let end = self.b - Vec3::Y * self.rb;
+        let floor = if along < 0.0 {
+            segment_floor(self.previous_floor, start, p.xz())
+        } else if along > 1.0 {
+            segment_floor(end, self.next_floor, p.xz())
+        } else {
+            start.y + t * (end.y - start.y)
+        };
+        arch.max(floor - p.y)
+    }
+
+    fn bounds(&self) -> Bounds3 {
+        Bounds3::from_corners(self.a, self.b).expanded(self.ra.max(self.rb) / 0.78)
+    }
+    fn op(&self) -> ModOp {
+        ModOp::Subtract
+    }
+    fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+/// Rooms and chimneys can cut across the sloping main passage. Preserve its
+/// tread there, allowing the room to descend gently away from the centreline.
+#[derive(Debug)]
+struct GradedExcavation {
+    shape: Box<dyn VoxelMod>,
+    tread: Vec<(Vec3, Vec3)>,
+}
+
+impl VoxelMod for GradedExcavation {
+    fn distance(&self, p: Vec3) -> f32 {
+        let space = self.shape.distance(p);
+        let mut nearest = f32::INFINITY;
+        let mut floor = f32::NEG_INFINITY;
+        for &(a, b) in &self.tread {
+            let axis = b.xz() - a.xz();
+            let t = ((p.xz() - a.xz()).dot(axis) / axis.length_squared().max(1e-8)).clamp(0., 1.);
+            let foot = a.lerp(b, t);
+            let d = foot.xz().distance_squared(p.xz());
+            if d < nearest {
+                nearest = d;
+                floor = foot.y;
+            }
+        }
+        space.max(floor - (nearest.sqrt() - 1.25).max(0.) * 0.45 - p.y)
+    }
+    fn bounds(&self) -> Bounds3 {
+        self.shape.bounds()
+    }
+    fn op(&self) -> ModOp {
+        ModOp::Subtract
+    }
+    fn label(&self) -> &str {
+        self.shape.label()
+    }
+}
+
+fn segment_floor(a: Vec3, b: Vec3, p: Vec2) -> f32 {
+    let axis = b.xz() - a.xz();
+    let t = ((p - a.xz()).dot(axis) / axis.length_squared().max(1e-8)).clamp(0.0, 1.0);
+    a.y + (b.y - a.y) * t
 }
 
 impl Default for CaveSpec {
@@ -251,9 +341,47 @@ impl CaveSpec {
         let Some(ts) = arc_fractions(&stations) else {
             return Vec::new();
         };
-        let centre = |i: usize| -> Vec3 {
-            let p = stations[i];
-            Vec3::new(p.x, base.sample(p.x, p.y) - self.depth_at(ts[i]), p.y)
+        let walkable = self.mouth_lift && self.open_ends;
+        let ground_at = |i: usize| base.sample(stations[i].x, stations[i].y);
+        let first_y = ground_at(0);
+        let last_y = ground_at(stations.len() - 1);
+        let length: f32 = stations.windows(2).map(|p| p[0].distance(p[1])).sum();
+        let grade = 0.65f32.max((last_y - first_y).abs() / length);
+        let floors: Vec<Vec3> = stations
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let t = ts[i];
+                let rim = first_y + (last_y - first_y) * t;
+                // A climbable tunnel grades between the two surveyed mouths.
+                // A rock outcrop overhead should change the roof thickness,
+                // never introduce a step in a player's route.
+                let floor = if walkable {
+                    (rim - self.depth_at(t) - self.radius_at(t))
+                        .max(first_y - grade * length * t)
+                        .max(last_y - grade * length * (1. - t))
+                } else {
+                    ground_at(i) - self.depth_at(t) - self.radius_at(t)
+                };
+                Vec3::new(p.x, floor, p.y)
+            })
+            .collect();
+        let centre = |i: usize| floors[i] + Vec3::Y * self.radius_at(ts[i]);
+        let excavate = |shape: Box<dyn VoxelMod>| -> Box<dyn VoxelMod> {
+            if !walkable {
+                return shape;
+            }
+            let area = shape.bounds().expanded(self.radius_max());
+            let tread = floors
+                .windows(2)
+                .filter(|p| Bounds3::from_corners(p[0], p[1]).intersects_xz(&area))
+                .map(|p| (p[0], p[1]))
+                .collect::<Vec<_>>();
+            if tread.is_empty() {
+                shape
+            } else {
+                Box::new(GradedExcavation { shape, tread })
+            }
         };
 
         let mut mods: Vec<Box<dyn VoxelMod>> = Vec::with_capacity(stations.len() + 2);
@@ -295,16 +423,13 @@ impl CaveSpec {
                         + inward * (r_mound * (0.28 + 0.08 * side * asym))
                         + lateral * (side * r_mound * 0.68);
                     let wing_g = base.sample(wing_xy.x, wing_xy.y).min(ground);
-                    let wing_face = (outward + Vec3::new(lateral.x * side * 0.22, 0.32, lateral.y * side * 0.22))
-                        .normalize_or_zero();
+                    let wing_face = (outward
+                        + Vec3::new(lateral.x * side * 0.22, 0.32, lateral.y * side * 0.22))
+                    .normalize_or_zero();
                     mods.push(Box::new(HalfEllipsoidMod::new(
                         format!("{label}:{tag}:{end}"),
                         Vec3::new(wing_xy.x, wing_g, wing_xy.y),
-                        Vec3::new(
-                            r_mound * r_mul,
-                            self.mound_height * h_mul,
-                            r_mound * r_mul,
-                        ),
+                        Vec3::new(r_mound * r_mul, self.mound_height * h_mul, r_mound * r_mul),
                         wing_face,
                         (r_mound * 0.09).clamp(0.65, 1.5),
                     )));
@@ -315,7 +440,18 @@ impl CaveSpec {
             let (ra, rb) = (self.radius_at(ts[i]), self.radius_at(ts[i + 1]));
             // A constant tube stays a capsule — same mod, same numbers, so a
             // world authored before the profile existed meshes bit for bit.
-            if (ra - rb).abs() <= 1e-4 {
+            if self.mouth_lift && self.open_ends {
+                let floor = |j: usize| floors[j];
+                mods.push(Box::new(WalkableBore {
+                    label: format!("{label}:{i}"),
+                    a: centre(i),
+                    b: centre(i + 1),
+                    ra,
+                    rb,
+                    previous_floor: floor(i.saturating_sub(1)),
+                    next_floor: floor((i + 2).min(stations.len() - 1)),
+                }));
+            } else if (ra - rb).abs() <= 1e-4 {
                 mods.push(Box::new(CapsuleMod::new(
                     format!("{label}:{i}"),
                     centre(i),
@@ -335,6 +471,38 @@ impl CaveSpec {
             }
         }
 
+        if walkable {
+            // On an uphill approach the mound can leave a steep sill outside
+            // the mouth. Cut a rising apron from undisturbed ground into the
+            // first ramp segment, leaving level approaches as authored.
+            let last = stations.len() - 1;
+            for (end, inside) in [(0, 1), (last, last - 1)] {
+                let radius = self.radius_at(ts[end]);
+                let outward = (stations[end] - stations[inside]).normalize_or_zero();
+                let run = 2.25 * radius;
+                let edge = stations[end] + run * outward;
+                let outer = Vec3::new(edge.x, base.sample(edge.x, edge.y), edge.y);
+                if floors[end].y - outer.y <= run * 0.22 {
+                    continue;
+                }
+                let inner_radius = self.radius_at(ts[inside]);
+                let next = if end == 0 {
+                    (inside + 1).min(last)
+                } else {
+                    inside.saturating_sub(1)
+                };
+                mods.push(Box::new(WalkableBore {
+                    label: format!("{label}:apron:{end}"),
+                    a: outer + Vec3::Y * radius,
+                    b: centre(inside),
+                    ra: radius,
+                    rb: inner_radius,
+                    previous_floor: outer,
+                    next_floor: floors[next],
+                }));
+            }
+        }
+
         for (i, room) in self.chambers.iter().enumerate() {
             if room.radius <= 0.0 || room.height <= 0.0 {
                 continue;
@@ -345,13 +513,13 @@ impl CaveSpec {
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("{label}:chamber:{i}"));
-            mods.push(Box::new(EllipsoidMod::new(
+            mods.push(excavate(Box::new(EllipsoidMod::new(
                 name,
                 Vec3::new(room.at.x, ground - depth, room.at.y),
                 Vec3::new(room.radius, room.height * 0.5, room.radius),
                 0.0,
                 ModOp::Subtract,
-            )));
+            ))));
         }
 
         for (i, shaft) in self.shafts.iter().enumerate() {
@@ -367,13 +535,13 @@ impl CaveSpec {
             // Overshoot the surface: a chimney that stops exactly at ground
             // level leaves a skin of rock over it at the mesher's resolution,
             // and the shaft is a sealed pipe nobody can see into.
-            mods.push(Box::new(CapsuleMod::new(
+            mods.push(excavate(Box::new(CapsuleMod::new(
                 name,
                 Vec3::new(shaft.at.x, ground - depth, shaft.at.y),
                 Vec3::new(shaft.at.x, ground + SHAFT_OVERSHOOT, shaft.at.y),
                 shaft.radius,
                 ModOp::Subtract,
-            )));
+            ))));
         }
 
         // Ombro e beira do arco: blocos rochosos ruidosos DEPOIS dos tubos
@@ -411,9 +579,8 @@ impl CaveSpec {
                 )));
                 for (side, s) in [("a", -1.0f32), ("b", 1.0f32)] {
                     let h_shift = s * asym * r * 0.16;
-                    let p = mouth
-                        + inward * (r * (0.44 - s * asym * 0.12))
-                        + lateral * (s * r * 1.02);
+                    let p =
+                        mouth + inward * (r * (0.44 - s * asym * 0.12)) + lateral * (s * r * 1.02);
                     mods.push(Box::new(CragMod::new(
                         format!("{label}:rim:{end}:{side}"),
                         Vec3::new(p.x, ground + r * 1.18 + h_shift, p.y),
@@ -422,9 +589,8 @@ impl CaveSpec {
                         rim_noise * 0.85,
                         ModOp::Union,
                     )));
-                    let foot = mouth
-                        + inward * (r * (0.28 + s * asym * 0.10))
-                        + lateral * (s * r * 1.28);
+                    let foot =
+                        mouth + inward * (r * (0.28 + s * asym * 0.10)) + lateral * (s * r * 1.28);
                     mods.push(Box::new(CragMod::new(
                         format!("{label}:rim:{end}:{side}_jamb"),
                         Vec3::new(foot.x, ground + r * 0.38, foot.y),
@@ -717,6 +883,43 @@ mod tests {
             density(&mods, &base, Vec3::new(-34.0, 4.0, 0.0)) < 0.0,
             "o monte devia dar teto ao túnel"
         );
+    }
+
+    #[test]
+    fn traversable_bore_has_headroom_and_a_continuous_two_metre_lane() {
+        let base = Flat(0.0);
+        let mut cave = spec();
+        cave.mouth_lift = true;
+        cave.mouth_fraction = 0.5;
+        cave.chambers.push(CaveChamberSpec {
+            at: Vec2::new(-15., 1.),
+            depth: Some(9.0),
+            radius: 8.0,
+            height: 8.0,
+            ..Default::default()
+        });
+        cave.shafts.push(CaveShaftSpec {
+            at: Vec2::new(10., -1.),
+            depth: Some(12.0),
+            ..Default::default()
+        });
+        let mods = cave.build(&base);
+        for step in 0..=160 {
+            let x = -40.0 + step as f32 * 0.5;
+            let floor = -cave.depth_at((x + 40.0) / 80.0) - 3.0;
+            for z in [-1.0, 0.0, 1.0] {
+                for h in [0.12, 1.0, 2.1] {
+                    assert!(
+                        density(&mods, &base, Vec3::new(x, floor + h, z)) > 0.0,
+                        "no clearance at {x},{z}"
+                    );
+                }
+                assert!(
+                    density(&mods, &base, Vec3::new(x, floor - 0.22, z)) < 0.0,
+                    "no footing at {x},{z}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -7,8 +7,8 @@
 //! os corpos (`WaterBodied`).
 
 pub use bevy_ext_water::fx::{
-    DEFAULT_SWIMMER_RADIUS, ImpactImpulse, Ripple, RippleAssets, SplashPreset, WaterBodied,
-    WaterContact, WaterDepthZone, WADE_ENTER_DEPTH, WADE_EXIT_DEPTH, classify_depth_zone,
+    DEFAULT_SWIMMER_RADIUS, ImpactImpulse, Ripple, RippleAssets, SplashPreset, WADE_ENTER_DEPTH,
+    WADE_EXIT_DEPTH, WaterBodied, WaterContact, WaterDepthZone, classify_depth_zone,
     compute_entry_impulse, compute_wake_impulse, ripple_alpha, ripple_mesh, ripple_radius,
     splash_count, swept_entry_xz,
 };
@@ -22,8 +22,8 @@ pub struct WaterFxPlugin;
 
 impl Plugin for WaterFxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(
-            bevy_ext_water::WaterFxPlugin::<crate::runtime::TerrainRuntime>::default(),
-        );
+        app.add_plugins(bevy_ext_water::WaterFxPlugin::<
+            crate::runtime::TerrainRuntime,
+        >::default());
     }
 }

@@ -256,6 +256,43 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
             paving_specs.push(paved);
         }
     }
+    // Junctions are part of the paving mesh. Reuse the widest arm's
+    // surface so shared cells, UVs and priority follow the road itself.
+    let mut ends = std::collections::BTreeMap::<(i32, i32), Vec<(usize, Vec2, f32)>>::new();
+    for (i, spec) in paving_specs.iter().enumerate() {
+        if let Some(crate::paving::PavingShape::Run {
+            stations,
+            half_width,
+        }) = spec.shapes.first()
+        {
+            for j in [0, stations.len() - 1] {
+                let p = stations[j];
+                let key = (p * 100.0).round().as_ivec2();
+                ends.entry((key.x, key.y))
+                    .or_default()
+                    .push((i, p, half_width[j]));
+            }
+        }
+    }
+    for arms in ends.values().filter(|arms| arms.len() >= 3) {
+        let &(owner, at, _) = arms
+            .iter()
+            .max_by(|a, b| {
+                paving_specs[a.0]
+                    .style
+                    .priority
+                    .cmp(&paving_specs[b.0].style.priority)
+                    .then_with(|| a.2.total_cmp(&b.2))
+            })
+            .expect("junction has at least three arms");
+        let radius = arms.iter().map(|arm| arm.2).fold(0.0, f32::max);
+        // Stamp after all arms so a later narrow street of another material
+        // cannot take cells back from the junction. Plazas still paint last.
+        paving_specs.push(PavingSpec {
+            shapes: vec![crate::paving::PavingShape::Disc { at, radius }],
+            ..paving_specs[owner].clone()
+        });
+    }
     for decal in &features.decals {
         if let Some(paved) = PavingSpec::from_decal(decal) {
             paving_specs.push(paved);
@@ -780,7 +817,9 @@ mod tests {
             "e a superfície vem da treliça"
         );
         // 4 m of road on a 2 m lattice: two cell rows around z = 24.
-        let w = (-8..8).filter(|i| result.paving.covers(Vec2::new(*i as f32 * 2.0 + 1.0, 24.0))).count();
+        let w = (-8..8)
+            .filter(|i| result.paving.covers(Vec2::new(*i as f32 * 2.0 + 1.0, 24.0)))
+            .count();
         assert!(w >= 2, "largura pavimentada {w}");
     }
 

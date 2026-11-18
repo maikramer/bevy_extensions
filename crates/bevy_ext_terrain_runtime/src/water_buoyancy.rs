@@ -5,8 +5,8 @@
 //! Barcos costumam usá-lo diretamente (`step_float` para assentar no spawn).
 
 pub use bevy_ext_water::buoyancy::{
-    FLOAT_GRAVITY, FloatForces, FloatSample, FloatState, FloatingBody, HULL_COLUMNS, MAX_SUBSTEPS,
-    MAX_SUBSTEP, MAX_TILT, WATER_DENSITY, hydrostatic_forces, step_float,
+    FLOAT_GRAVITY, FloatForces, FloatSample, FloatState, FloatingBody, HULL_COLUMNS, MAX_SUBSTEP,
+    MAX_SUBSTEPS, MAX_TILT, WATER_DENSITY, hydrostatic_forces, step_float,
 };
 
 use bevy::prelude::*;
@@ -18,8 +18,8 @@ pub struct WaterBuoyancyPlugin;
 
 impl Plugin for WaterBuoyancyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(
-            bevy_ext_water::WaterBuoyancyPlugin::<crate::runtime::TerrainRuntime>::default(),
-        );
+        app.add_plugins(bevy_ext_water::WaterBuoyancyPlugin::<
+            crate::runtime::TerrainRuntime,
+        >::default());
     }
 }

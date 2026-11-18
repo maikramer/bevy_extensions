@@ -122,7 +122,7 @@ pub fn river_banks(
             stations,
             drop_normal,
             ceil_y: top_y.clone(),
-        top_y,
+            top_y,
             bot_y,
             width,
             arc,

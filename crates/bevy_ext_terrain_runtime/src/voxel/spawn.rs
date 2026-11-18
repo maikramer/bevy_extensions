@@ -16,7 +16,7 @@ use super::super::runtime::{ChunkLayerMap, ChunkMaterialHandle};
 use super::super::spec::TerrainSpec;
 use super::field::VoxelField;
 use super::mods::Bounds3;
-use super::transvoxel_mesh::{VOXEL_CHUNK_CELLS, VoxelChunkParams, build_voxel_mesh};
+use super::transvoxel_mesh::{VOXEL_CHUNK_CELLS, VoxelChunkParams, build_voxel_mesh_grid};
 
 /// A meshed box of the voxel field.
 #[derive(Debug, Component, Reflect)]
@@ -369,11 +369,15 @@ pub fn build_box_mesh(
     let pad = Vec3::splat(cell * 1.5);
     let expanded = Bounds3::from_corners(b.origin - pad, b.origin + Vec3::splat(b.extent) + pad);
     let all_mods = field.mods();
-    let box_mods: Vec<u32> = field
+    let box_mods: Vec<_> = field
         .index()
         .candidates_in(&expanded)
         .into_iter()
-        .filter(|&i| all_mods[i as usize].bounds().intersects(&expanded))
+        .filter_map(|i| {
+            let modifier = all_mods[i as usize].as_ref();
+            let bounds = modifier.bounds();
+            bounds.intersects(&expanded).then_some((modifier, bounds))
+        })
         .collect();
 
     let sample_ground = |x: f32, z: f32| -> f32 {
@@ -399,9 +403,8 @@ pub fn build_box_mesh(
 
     let density = |p: Vec3| -> f32 {
         let mut d = p.y - sample_ground(p.x, p.z);
-        for &i in &box_mods {
-            let m = &all_mods[i as usize];
-            if !m.bounds().contains(p) {
+        for (m, bounds) in &box_mods {
+            if !bounds.contains(p) {
                 continue;
             }
             let md = m.distance(p);
@@ -412,7 +415,7 @@ pub fn build_box_mesh(
         }
         d
     };
-    build_voxel_mesh(&density, &params)
+    build_voxel_mesh_grid(&ground_xz, &box_mods, &density, &params)
 }
 
 /// Spawna a entidade de UMA caixa voxel (filha da coluna). `visible = false`

@@ -341,21 +341,45 @@ pub fn ground_decal_mesh(grid: &BrushGrid, spec: &GroundDecalSpec) -> ChunkMeshD
     push(spec.at.x, spec.at.y, 1.0);
 
     // Ring vertices. `rim` is the wobbled ellipse point for this angle; core
-    // rings scale it toward the hub, feather rings push it outward along the
-    // same radial by `feather` meters in total.
+    // rings scale it toward the hub. Feather rings expand it in world metres.
+    let rim: Vec<Vec2> = (0..segments)
+        .map(|k| {
+            let angle = k as f32 * std::f32::consts::TAU / segments as f32;
+            Vec2::new(hx * angle.cos(), hz * angle.sin())
+                * (1.0 + noise * rim_wobble(spec.seed, angle))
+        })
+        .collect();
+    let mut normals: Vec<Vec2> = (0..segments)
+        .map(|k| {
+            let tangent = rim[(k + 1) % segments] - rim[(k + segments - 1) % segments];
+            Vec2::new(tangent.y, -tangent.x).normalize_or_zero()
+        })
+        .collect();
+    // Normal offsets preserve the width on the long sides of a trail.
+    // A tight concavity can turn an offset triangle inside out. In that
+    // case expand radially, which preserves winding for a star-shaped rim.
+    if feather > 0.0
+        && (0..segments).any(|k| {
+            let n = (k + 1) % segments;
+            let outer_k = rim[k] + feather * normals[k];
+            let outer_n = rim[n] + feather * normals[n];
+            (rim[n] - rim[k]).perp_dot(outer_n - rim[k]) >= 0.0
+                || (outer_n - rim[k]).perp_dot(outer_k - rim[k]) >= 0.0
+        })
+    {
+        normals
+            .iter_mut()
+            .zip(&rim)
+            .for_each(|(n, p)| *n = p.normalize_or_zero());
+    }
     for j in 1..=rings {
-        for k in 0..segments {
-            let angle = (k as f32) / (segments as f32) * std::f32::consts::TAU;
-            let (dx, dz) = (angle.cos(), angle.sin());
-            let wobble = 1.0 + noise * rim_wobble(spec.seed, angle);
-            let rim = Vec2::new(dx * hx, dz * hz) * wobble;
-            let rim_len = rim.length().max(1e-4);
+        for (&rim, &outward) in rim.iter().zip(&normals) {
             let (offset, alpha) = if j <= core_rings {
                 let t = (j as f32) / (core_rings as f32);
                 (rim * t, 1.0)
             } else {
                 let f = ((j - core_rings) as f32) / (feather_rings as f32);
-                (rim * (1.0 + f * feather / rim_len), 1.0 - smootherstep01(f))
+                (rim + outward * (f * feather), 1.0 - smootherstep01(f))
             };
             push(spec.at.x + offset.x, spec.at.y + offset.y, alpha);
         }
@@ -464,6 +488,39 @@ mod tests {
             (max - 1.0).abs() < 1e-6,
             "core alpha should be 1, got {max}"
         );
+    }
+
+    #[test]
+    fn an_elongated_decal_keeps_its_feather_width_and_faces_up() {
+        let grid = test_grid();
+        for noise in [0.0, 0.12, 0.75] {
+            let spec = GroundDecalSpec {
+                half_extent: Vec2::new(18., 2.),
+                noise,
+                feather: 2.5,
+                ..spec()
+            };
+            let mesh = ground_decal_mesh(&grid, &spec);
+            for tri in mesh.indices.chunks_exact(3) {
+                let p = |i: u32| {
+                    let [x, _, z] = mesh.positions[i as usize];
+                    Vec2::new(x, z)
+                };
+                assert!((p(tri[1]) - p(tri[0])).perp_dot(p(tri[2]) - p(tri[0])) < 0.);
+            }
+            if noise == 0.0 {
+                let n = mesh.colors.iter().filter(|c| c[3] == 0.).count();
+                let k = n / 8;
+                let xz = |i: usize| {
+                    let [x, _, z] = mesh.positions[i];
+                    Vec2::new(x, z)
+                };
+                let last = mesh.positions.len() - n + k;
+                let core = xz(last - FEATHER_RINGS * n);
+                let outward = (core / spec.half_extent.powf(2.)).normalize();
+                assert!((xz(last) - core).dot(outward) > spec.feather - 0.01);
+            }
+        }
     }
 
     /// No feather ⇒ no feather rings, and the rim stays opaque.

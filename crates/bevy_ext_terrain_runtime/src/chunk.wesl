@@ -20,7 +20,9 @@
 // índice seguinte). Sem bindless o terreno desenha a cor plana das camadas
 // (este shader só lê texturas pelas binding arrays).
 
-import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::render::forward_io::{Vertex, VertexOutput, FragmentOutput, decompress_vertex};
+import bevy_pbr::render::mesh_functions;
+import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::view;
 // Pipeline PBR REAL: `apply_pbr_lighting` traz o sol direcional (com as
 // cascades de sombra — o chão passa a receber as sombras das árvores/props),
@@ -67,6 +69,12 @@ const B_HEIGHT: u32 = 53u;
 const B_AO: u32 = 79u;
 const B_ROUGH: u32 = 105u;
 const B_SPLAT: u32 = 131u;
+const B_SNOW: u32 = 139u;
+const B_TRAIL: u32 = 141u;
+const B_CLOUD: u32 = 143u;
+const SNOW_CELLS: f32 = 256.0;
+const SNOW_ALBEDO: vec3<f32> = vec3<f32>(0.80, 0.83, 0.88);
+const SNOW_ROUGH: f32 = 0.9;
 
 // Tabela de estilo, indexada pelo SLOT DO POOL (0..13). `world`: xy = canto
 // (-X,-Z) do splat, z = lado em metros, w = slot da rocha das paredes.
@@ -82,14 +90,27 @@ struct TerrainChunkParams {
     // walls_b = rock_darken, streaks, moss, chuva.
     walls_a: vec4<f32>,
     walls_b: vec4<f32>,
+    // snow = origem.xy, lado da célula, flag.
+    // trail = centro.xy, lado do texel, flag.
+    // trail_b = texels, molhado.
+    // cloud = origem.xy, lado, transmitância média.
+    // cloud_b = direção da luz.xyz, flag.
+    snow: vec4<f32>,
+    // snow_b = profundidade de referência fora da janela, escala da
+    // codificação (d = v² · y), ganho do levantamento.
+    snow_b: vec4<f32>,
+    trail: vec4<f32>,
+    trail_b: vec4<f32>,
+    cloud: vec4<f32>,
+    cloud_b: vec4<f32>,
 };
 
 @if(BINDLESS) {
-// Uma entrada por material: o índice dos dados e as 138 entradas texture/
-// sampler na ORDEM das bindings 1..138.
+// Uma entrada por material: o índice dos dados e as 144 entradas texture/
+// sampler na ORDEM das bindings 1..144.
 struct TerrainChunkBindings {
     material: u32,
-    e: array<u32, 138>,
+    e: array<u32, 144>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<storage> material_indices: array<TerrainChunkBindings>;
@@ -146,9 +167,9 @@ fn terrain_params(slot: u32) -> TerrainChunkParams {
 fn map_sample(slot: u32, b: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     @if(BINDLESS) {
     // Indexar o storage DIRETAMENTE. `let idx = material_indices[slot]`
-    // carregava a struct inteira (139 u32) para um valor e o índice dinâmico
+    // carregava a struct inteira (145 u32) para um valor e o índice dinâmico
     // `idx.e[b]` obrigava o naga a despejá-la numa variável local — uma
-    // cópia de 556 B por amostra, ~40 amostras desenroladas.
+    // cópia de 580 B por amostra, ~40 amostras desenroladas.
     return textureSampleGrad(
         bindless_textures_2d[material_indices[slot].e[b - 1u]],
         bindless_samplers_filtering[material_indices[slot].e[b]],
@@ -198,6 +219,253 @@ fn anti_tile(v: vec2<f32>) -> vec2<f32> {
         ANTI_TILE_COS * v.x - ANTI_TILE_SIN * v.y,
         ANTI_TILE_SIN * v.x + ANTI_TILE_COS * v.y,
     ) * ANTI_TILE_SCALE;
+}
+
+fn hermite(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Neve que assenta na face. Parede (normal_y baixo) fica quase seca.
+// Igual a `ground::facing_snow`.
+fn facing_snow(coverage: f32, normal_y: f32) -> f32 {
+    let lo = 0.85 - 0.6 * coverage;
+    return coverage * hermite(lo, lo + 0.2, normal_y);
+}
+
+// (0.25 + 0.75 T) / (0.25 + 0.75 T̄). Igual a `ground::cloud_shadow_ratio`.
+fn cloud_shadow_ratio(t: f32, mean_t: f32) -> f32 {
+    let here = 0.25 + 0.75 * t;
+    let lights = max(0.25 + 0.75 * mean_t, 0.01);
+    return clamp(here / lights, 0.0, 4.0);
+}
+
+// ── Neve volumétrica ─────────────────────────────────────────────────────
+// O manto chega como profundidade (m) por célula de 2 m, codificada em R8
+// (`ground::encode_depth`). O vertex levanta o chão por ela (só para cima)
+// e o fragment pinta a neve, o relevo de vento e as pegadas (POM do campo de
+// rastos do `bevy_elements`, portado de `trails::surface`).
+
+/// Amostra sem gradientes (legal no vertex e em fluxo não-uniforme).
+fn map_level(slot: u32, b: u32, uv: vec2<f32>) -> vec4<f32> {
+    @if(BINDLESS) {
+    return textureSampleLevel(
+        bindless_textures_2d[material_indices[slot].e[b - 1u]],
+        bindless_samplers_filtering[material_indices[slot].e[b]],
+        uv,
+        0.0,
+    );
+    } @else {
+    return vec4<f32>(0.0);
+    }
+}
+
+/// Profundidade do manto em `xz`, m. Junto à borda da janela funde com a
+/// referência (o pack de um plano aberto), que vale também fora dela.
+fn snow_depth_at(slot: u32, params: TerrainChunkParams, xz: vec2<f32>) -> f32 {
+    if (params.snow.w < 0.5) {
+        return 0.0;
+    }
+    let span = max(params.snow.z * SNOW_CELLS, 1e-3);
+    let uv = (xz - params.snow.xy) / span;
+    let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+    let inside_k = hermite(0.0, 0.06, edge);
+    var d = params.snow_b.x;
+    if (inside_k > 0.0) {
+        let v = map_level(slot, B_SNOW, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0))).r;
+        d = mix(params.snow_b.x, v * v * params.snow_b.y, inside_k);
+    }
+    return d;
+}
+
+/// Superfície do manto: a profundidade com ondulação de vento (dunas de
+/// ~3 m e cristas de ~0,8 m) proporcional a ela.
+fn snow_relief(xz: vec2<f32>, depth: f32) -> f32 {
+    if (depth <= 0.0) {
+        return 0.0;
+    }
+    let dune = vnoise(xz * 0.31 + vec2<f32>(17.3, 5.1)) - 0.5;
+    let ripple = vnoise(vec2<f32>(xz.x * 1.25 + xz.y * 0.4, xz.y * 1.25 - xz.x * 0.4)) - 0.5;
+    return depth * max(1.0 + 0.45 * dune + 0.16 * ripple, 0.0);
+}
+
+/// Quanto uma face aceita o levantamento: chão sim, parede não.
+fn snow_lift_weight(normal_y: f32) -> f32 {
+    return hermite(0.35, 0.75, normal_y);
+}
+
+fn snow_surface(slot: u32, params: TerrainChunkParams, xz: vec2<f32>) -> f32 {
+    return snow_relief(xz, snow_depth_at(slot, params, xz));
+}
+
+// Pegadas: o raio de vista contra o campo de rastos (`bevy_elements`
+// `trails::surface::trail_march`, MIT/Apache, simplificado: sem a 2.ª
+// passagem B-spline). `window` = (texel m, texels, 1, limite de |h|).
+struct TrailHit {
+    xz: vec2<f32>,
+    h: f32,
+    grad: vec2<f32>,
+    open: f32,
+    lit: f32,
+}
+
+fn trail_at(slot: u32, xz: vec2<f32>, window: vec4<f32>) -> vec4<f32> {
+    return map_level(slot, B_TRAIL, xz / (window.x * window.y));
+}
+
+fn trail_march(
+    slot: u32,
+    window: vec4<f32>,
+    p: vec3<f32>,
+    eye: vec3<f32>,
+    slope: vec2<f32>,
+    l: vec3<f32>,
+    fade: f32,
+) -> TrailHit {
+    var hit: TrailHit;
+    hit.xz = p.xz;
+    hit.h = 0.0;
+    hit.grad = vec2<f32>(0.0);
+    hit.open = 1.0;
+    hit.lit = 1.0;
+    let v = normalize(p - eye);
+    let rise = v.y - dot(slope, v.xz);
+    if (rise > -1.0e-3 || fade <= 0.0) {
+        return hit;
+    }
+    let along = max(length(v.xz), 1.0e-3);
+    let t0 = -min(0.1 / -rise, 2.5 / along);
+    let t1 = min(window.w / -rise, 2.5 / along);
+    let occupied = max(
+        trail_at(slot, p.xz, window).y,
+        max(trail_at(slot, p.xz + v.xz * t0, window).y, trail_at(slot, p.xz + v.xz * t1, window).y),
+    );
+    if (occupied < 1.0e-3) {
+        return hit;
+    }
+    let n = i32(clamp(ceil((t1 - t0) * along / window.x), 8.0, 64.0));
+    var lo = t0;
+    var hi = t1;
+    var lo_gap = 0.1;
+    var hi_gap = 0.0;
+    var crossed = false;
+    for (var i = 1; i <= n; i += 1) {
+        let t = mix(t0, t1, f32(i) / f32(n));
+        let gap = rise * t - trail_at(slot, p.xz + v.xz * t, window).x * fade;
+        if (gap <= 0.0) {
+            hi = t;
+            hi_gap = gap;
+            crossed = true;
+            break;
+        }
+        lo = t;
+        lo_gap = gap;
+    }
+    if (!crossed) {
+        let s = trail_at(slot, p.xz, window) * fade;
+        hit.h = s.x;
+        hit.grad = s.zw;
+        return hit;
+    }
+    for (var k = 0; k < 5; k += 1) {
+        let mid = 0.5 * (lo + hi);
+        let gap = rise * mid - trail_at(slot, p.xz + v.xz * mid, window).x * fade;
+        if (gap <= 0.0) {
+            hi = mid;
+            hi_gap = gap;
+        } else {
+            lo = mid;
+            lo_gap = gap;
+        }
+    }
+    let t_hit = mix(lo, hi, clamp(lo_gap / max(lo_gap - hi_gap, 1.0e-6), 0.0, 1.0));
+    hit.xz = p.xz + v.xz * t_hit;
+    let s = trail_at(slot, hit.xz, window) * fade;
+    hit.h = s.x;
+    let e = vec2<f32>(window.x, 0.0);
+    hit.grad = fade * vec2<f32>(
+        trail_at(slot, hit.xz + e.xy, window).x - trail_at(slot, hit.xz - e.xy, window).x,
+        trail_at(slot, hit.xz + e.yx, window).x - trail_at(slot, hit.xz - e.yx, window).x,
+    ) / (2.0 * window.x);
+    let r = 0.12;
+    var ring = 0.0;
+    ring += trail_at(slot, hit.xz + vec2<f32>(r, 0.0), window).x;
+    ring += trail_at(slot, hit.xz - vec2<f32>(r, 0.0), window).x;
+    ring += trail_at(slot, hit.xz + vec2<f32>(0.0, r), window).x;
+    ring += trail_at(slot, hit.xz - vec2<f32>(0.0, r), window).x;
+    hit.open = 1.0 - 0.6 * clamp((0.25 * ring * fade - hit.h) / 0.25, 0.0, 1.0);
+    if (l.y > 0.02) {
+        let l_rise = max(l.y - dot(slope, l.xz), 0.02);
+        let reach = min((0.1 - hit.h) / l_rise, 1.5);
+        let du = max(window.x / max(length(l.xz), 1.0e-3), 1.5 / 24.0);
+        let ns = i32(clamp(ceil(reach / du), 1.0, 24.0));
+        var shadow = 0.0;
+        for (var k = 1; k <= ns; k += 1) {
+            let u = du * f32(k);
+            let blocker = trail_at(slot, hit.xz + l.xz * u, window).x * fade;
+            let ray = hit.h + l_rise * u;
+            shadow = max(shadow, smoothstep(0.0, 1.0, (blocker - ray) / (0.01 + 0.25 * u)));
+        }
+        hit.lit = 1.0 - clamp(shadow, 0.0, 1.0);
+    }
+    return hit;
+}
+
+@vertex
+fn vertex(vertex_in: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    let v = decompress_vertex(vertex_in, vertex_in.instance_index);
+    let world_from_local = mesh_functions::get_world_from_local(vertex_in.instance_index);
+    var wn = mesh_functions::mesh_normal_local_to_world(v.normal, vertex_in.instance_index);
+    var wp = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(v.position, 1.0));
+
+    @if(BINDLESS)
+    let slot = mesh[vertex_in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    @else
+    let slot = 0u;
+    let params = terrain_params(slot);
+    if (params.snow.w > 0.5 && params.snow_b.z > 0.0) {
+        let up = snow_lift_weight(normalize(wn).y);
+        if (up > 0.0) {
+            let xz = wp.xz;
+            let lift = snow_surface(slot, params, xz);
+            if (lift > 1.0e-4) {
+                // A normal da superfície da neve por diferenças centrais.
+                let e = 0.6;
+                let gx = (snow_surface(slot, params, xz + vec2<f32>(e, 0.0))
+                    - snow_surface(slot, params, xz - vec2<f32>(e, 0.0))) / (2.0 * e);
+                let gz = (snow_surface(slot, params, xz + vec2<f32>(0.0, e))
+                    - snow_surface(slot, params, xz - vec2<f32>(0.0, e))) / (2.0 * e);
+                wp = vec4<f32>(wp.x, wp.y + lift * up * params.snow_b.z, wp.z, wp.w);
+                let k = up * params.snow_b.z * hermite(0.0, 0.05, lift);
+                wn = normalize(normalize(wn) - vec3<f32>(gx, 0.0, gz) * k);
+            }
+        }
+    }
+
+    out.world_normal = wn;
+    out.world_position = wp;
+    out.position = position_world_to_clip(wp.xyz);
+    @if(VERTEX_UVS_A)
+    out.uv = v.uv;
+    @if(VERTEX_UVS_B)
+    out.uv_b = v.uv_b;
+    @if(VERTEX_TANGENTS)
+    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(
+        world_from_local,
+        v.tangent,
+        vertex_in.instance_index,
+    );
+    @if(VERTEX_COLORS)
+    out.color = v.color;
+    @if(VERTEX_OUTPUT_INSTANCE_INDEX)
+    out.instance_index = vertex_in.instance_index;
+    @if(VISIBILITY_RANGE_DITHER)
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
+        vertex_in.instance_index,
+        world_from_local[3],
+    );
+    return out;
 }
 
 @fragment
@@ -579,7 +847,93 @@ fn fragment(
     // e aquece o chão (sun_drive + daycycle_drive) e o tint compunha-se
     // duas vezes. `sun_dir`/`day_tint` continuam no uniform por compatibilidade
     // de layout (e para o `viber.debug.ground{...}`) mas já não são lidos.
-    let n = normalize(mix(normalize(n_detail + shore_n_offset), wall_n, clamp(tri_mix, 0.0, 1.0)));
+    var n = normalize(mix(normalize(n_detail + shore_n_offset), wall_n, clamp(tri_mix, 0.0, 1.0)));
+
+    // Manto e rastos. Flag a 0: não se amostra e o albedo fica o de hoje.
+    var snow_k = 0.0;
+    var snow_d = 0.0;
+    var pressed = 0.0;
+    var trail_open = 1.0;
+    var trail_lit = 1.0;
+    var snow_cav = 0.0;
+    let geo_n = normalize(normal);
+    if (params.snow.w > 0.5) {
+        let depth = snow_depth_at(slot, params, world.xz);
+        snow_d = snow_relief(world.xz, depth);
+        // Depressões do relevo (vale de duna) mais azuis: sob luz difusa é a
+        // pista que mostra o volume.
+        snow_cav = clamp((depth - snow_d) / max(depth, 0.02) * 2.2, 0.0, 1.0);
+        // Manto fino rompe em manchas: o limiar segue um ruído de ~1 m.
+        let patchy = 0.55 + 0.6 * vnoise(world.xz * 0.9 + vec2<f32>(3.7, 11.2))
+            + 0.25 * vnoise(world.xz * 3.3);
+        let cover = hermite(0.0, 1.0, snow_d / 0.035 * patchy);
+        snow_k = facing_snow(cover, geo_n.y);
+        if (snow_k > 0.001 && view_dist < 90.0) {
+            // Relevo fino por pixel (as cristas de vento são menores que a
+            // malha): diferenças centrais da superfície.
+            let e = 0.18;
+            let gx = (snow_relief(world.xz + vec2<f32>(e, 0.0), depth)
+                - snow_relief(world.xz - vec2<f32>(e, 0.0), depth)) / (2.0 * e);
+            let gz = (snow_relief(world.xz + vec2<f32>(0.0, e), depth)
+                - snow_relief(world.xz - vec2<f32>(0.0, e), depth)) / (2.0 * e);
+            let fine = normalize(geo_n - vec3<f32>(gx, 0.0, gz) * hermite(90.0, 30.0, view_dist));
+            n = normalize(mix(n, fine, snow_k));
+        } else if (snow_k > 0.001) {
+            n = normalize(mix(n, geo_n, snow_k));
+        }
+    }
+    if (params.trail.w > 0.5 && params.trail_b.x > 1.0) {
+        let texel = params.trail.z;
+        let texels = params.trail_b.x;
+        // Paredes e encostas íngremes não se pisam.
+        let fade_win = 1.0 - hermite(0.85 * 0.5 * texel * texels, 0.97 * 0.5 * texel * texels,
+            max(abs(world.x - params.trail.x), abs(world.z - params.trail.y)));
+        let fade = fade_win * hermite(0.5, 0.6, geo_n.y);
+        if (fade > 0.0) {
+            let window = vec4<f32>(texel, texels, 1.0, max(snow_d, 0.05) + 0.05);
+            let slope = -geo_n.xz / max(geo_n.y, 0.2);
+            var l = vec3<f32>(0.0, 1.0, 0.0);
+            if (params.sun_dir.w > 0.5) {
+                l = normalize(-params.sun_dir.xyz);
+            }
+            let hit = trail_march(slot, window, world, view.world_position, slope, l, fade);
+            pressed = max(-hit.h, 0.0);
+            trail_open = hit.open;
+            trail_lit = hit.lit;
+            let tilt = vec3<f32>(hit.grad.x, 0.0, hit.grad.y) * geo_n.y;
+            n = normalize(n - tilt);
+            // No fundo de um sulco que chega ao chão vê-se o chão.
+            if (pressed > 0.0) {
+                let bared = hermite(snow_d - 0.02, snow_d, pressed);
+                snow_k = snow_k * (1.0 - bared);
+            }
+            let dig = hermite(0.005, 0.03, pressed);
+            if (params.trail_b.y > 0.35 && snow_k < 0.25) {
+                let mud = dig * params.trail_b.y * fade;
+                albedo = albedo * mix(1.0, 0.72, mud);
+                rough = mix(rough, 0.35, mud);
+            }
+        }
+    }
+    if (snow_k > 0.001) {
+        // Neve compactada no fundo da pegada, azulada nas cavidades.
+        let packed = hermite(0.005, 0.04, pressed);
+        var snow_albedo = SNOW_ALBEDO * mix(vec3<f32>(1.0), vec3<f32>(0.86, 0.89, 0.95), packed);
+        snow_albedo = snow_albedo * mix(vec3<f32>(0.80, 0.87, 1.0), vec3<f32>(1.0), trail_open);
+        snow_albedo = snow_albedo * mix(vec3<f32>(1.0), vec3<f32>(0.84, 0.89, 0.98), snow_cav);
+        albedo = mix(albedo, snow_albedo, snow_k);
+        rough = mix(rough, mix(SNOW_ROUGH, SNOW_ROUGH * 0.75, packed), snow_k);
+    }
+
+    var cloud_ratio = 1.0;
+    if (params.cloud_b.w > 0.5 && params.cloud_b.y > 0.1) {
+        let uv = (world.xz - params.cloud_b.xz * (world.y / params.cloud_b.y) - params.cloud.xy) / max(params.cloud.z, 1e-3);
+        let dx = dpdx(uv);
+        let dy = dpdy(uv);
+        let inside = all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0));
+        let t = select(1.0, map_sample(slot, B_CLOUD, uv, dx, dy).r, inside);
+        cloud_ratio = cloud_shadow_ratio(t, params.cloud.w);
+    }
 
     var pbr_input = pbr_input_new();
     pbr_input.flags = mesh[in.instance_index].flags;
@@ -607,11 +961,15 @@ fn fragment(
     let rough_linear = perceptualRoughnessToRoughness(rough);
     specular_occlusion = saturate(pow(ndv + ssao, exp2(-16.0 * rough_linear - 1.0)) - 1.0 + ssao);
     }
-    pbr_input.diffuse_occlusion = diffuse_occlusion;
+    pbr_input.diffuse_occlusion = diffuse_occlusion * trail_open;
     pbr_input.specular_occlusion = specular_occlusion;
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
+    // A luz direta já leva a transmitância média. Isto só pinta a mancha local.
+    // A sombra própria da pegada leva a parte direta da luz.
+    let trail_shade = 1.0 - 0.55 * (1.0 - trail_lit);
+    out.color = vec4<f32>(out.color.rgb * cloud_ratio * trail_shade, out.color.a);
     // Fog da câmara (`DistanceFog`): aplicada DENTRO do shader do material —
     // sem ela o terreno por layers lia o horizonte a 100% de contraste, as
     // transições de LOD ao longe ficavam duras e o pop-in de chunks era

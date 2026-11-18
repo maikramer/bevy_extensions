@@ -598,11 +598,11 @@ mod tests {
     /// (só a entrada do registry em runtime, serializada por valor).
     #[test]
     fn test_reflected_types_keep_the_frozen_type_paths() {
-        use bevy_ext_water::body::WaterBody;
         use crate::host::SceneEntity;
         use crate::plugin::TerrainChunk;
         use crate::runtime::PendingTerrain;
         use crate::voxel::VoxelChunk;
+        use bevy_ext_water::body::WaterBody;
         assert_eq!(
             <TerrainEdit as bevy::reflect::TypePath>::type_path(),
             "viber::terrain::delta::TerrainEdit"

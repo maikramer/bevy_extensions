@@ -461,13 +461,7 @@ impl BrushGrid {
     }
 
     #[inline]
-    fn smoothed_axis_coords(
-        &self,
-        cells: f32,
-        cross: f32,
-        n: usize,
-        axis: Axis,
-    ) -> f32 {
+    fn smoothed_axis_coords(&self, cells: f32, cross: f32, n: usize, axis: Axis) -> f32 {
         let i0 = cells.floor() as usize;
         let t = cells - i0 as f32;
         let j0 = cross.floor().clamp(0.0, (n - 1) as f32) as usize;

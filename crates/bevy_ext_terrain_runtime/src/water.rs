@@ -147,12 +147,7 @@ pub fn station_curvatures(stations: &[Vec2]) -> Vec<f32> {
 
 /// Signed meander bend bias (`[-1, 1]`) for point `p` relative to `hit`:
 /// `+1.0` = outer cutbank, `-1.0` = inner point bar.
-pub fn river_outer_bias(
-    stations: &[Vec2],
-    curvatures: &[f32],
-    hit: &PathHit,
-    p: Vec2,
-) -> f32 {
+pub fn river_outer_bias(stations: &[Vec2], curvatures: &[f32], hit: &PathHit, p: Vec2) -> f32 {
     if stations.len() < 2 || curvatures.len() != stations.len() {
         return 0.0;
     }
@@ -1096,7 +1091,8 @@ pub fn carve_river_with_falls(
                     let rill = bank_erosion_rill(p, flow_dir, (bank * 0.65).clamp(2.0, 4.5));
                     let relief_fade =
                         smoothstep01((band / 0.22).clamp(0.0, 1.0)) * (1.0 - band * 0.35);
-                    raised += relief_fade * (micro_n * 0.24 * bank_height - rill * 0.30 * bank_height);
+                    raised +=
+                        relief_fade * (micro_n * 0.24 * bank_height - rill * 0.30 * bank_height);
                 }
                 raised.min(axis_h + MAX_BANK_RAISE)
             }
@@ -1608,8 +1604,9 @@ pub fn lake_water_mesh_dense(spec: &LakeSpec, water_y: f32, grid: &BrushGrid) ->
     }
     let outer_r = (spec.radius * reach).max(0.5);
     let ring_count = (outer_r / 0.45).round().clamp(16.0, 96.0) as usize;
-    let seg_count =
-        ((std::f32::consts::TAU * outer_r) / 0.55).round().clamp(72.0, 256.0) as usize;
+    let seg_count = ((std::f32::consts::TAU * outer_r) / 0.55)
+        .round()
+        .clamp(72.0, 256.0) as usize;
 
     let mut data = WaterMeshData::default();
     let island_mask = |p: Vec2| -> f32 {
@@ -1638,8 +1635,7 @@ pub fn lake_water_mesh_dense(spec: &LakeSpec, water_y: f32, grid: &BrushGrid) ->
     let edge_band = (1.8 / outer_r).clamp(0.05, WATER_EDGE_FADE);
     for ring in 0..ring_count {
         let radial = (ring + 1) as f32 / ring_count as f32;
-        let skirt =
-            1.0 - smoothstep01(((radial - (1.0 - edge_band)) / edge_band).clamp(0.0, 1.0));
+        let skirt = 1.0 - smoothstep01(((radial - (1.0 - edge_band)) / edge_band).clamp(0.0, 1.0));
         for i in 0..seg_count {
             let theta = i as f32 / seg_count as f32 * std::f32::consts::TAU;
             let r = shape.contour(spec.radius, theta) * reach * radial;
@@ -1896,12 +1892,8 @@ fn emit_curved_waterfall_sheet(
         let (p_next, y_next, _) = arc_pos(t_next);
         let (center, y, half) = arc_pos(t);
 
-        let tang = bevy::math::Vec3::new(
-            p_next.x - p_prev.x,
-            y_next - y_prev,
-            p_next.y - p_prev.y,
-        )
-        .normalize_or_zero();
+        let tang = bevy::math::Vec3::new(p_next.x - p_prev.x, y_next - y_prev, p_next.y - p_prev.y)
+            .normalize_or_zero();
         let across = bevy::math::Vec3::new(perp.x, 0.0, perp.y);
         // Outward face normal (pointing downstream & slightly upward over the brow).
         let normal = across

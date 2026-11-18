@@ -634,8 +634,7 @@ impl CliffMask {
                         let along = rel.dot(inward);
                         let lat = rel.dot(lateral).abs();
                         let dist = rel.length();
-                        let on_walkway =
-                            along >= -r * 0.9 && along <= r * 1.15 && lat < r * 0.74;
+                        let on_walkway = along >= -r * 0.9 && along <= r * 1.15 && lat < r * 0.74;
                         if on_walkway {
                             set_bit(&mut self.talus, width, x, z);
                             continue;
@@ -649,7 +648,8 @@ impl CliffMask {
                             if in_main || in_wing || in_rim {
                                 set_bit(&mut self.core, width, x, z);
                                 set_bit(&mut self.authored, width, x, z);
-                                let frac = (1.0 - (along / r_mound.max(1.0)).clamp(0.0, 1.0)) * 0.72;
+                                let frac =
+                                    (1.0 - (along / r_mound.max(1.0)).clamp(0.0, 1.0)) * 0.72;
                                 self.wall[z * width + x] = (frac * 255.0).round() as u8;
                             } else {
                                 let in_skirt = (dist <= r_mound * 1.24 && along >= -r * 1.1)
@@ -662,8 +662,7 @@ impl CliffMask {
                         } else {
                             let in_flanks =
                                 along >= -r * 0.25 && along <= r * 2.5 && lat <= r * 2.15;
-                            let in_apron =
-                                along >= -r * 1.9 && along < r * 0.85 && lat <= r * 1.75;
+                            let in_apron = along >= -r * 1.9 && along < r * 0.85 && lat <= r * 1.75;
                             if in_flanks && (lat >= r * 0.76 || along >= r * 0.9) {
                                 set_bit(&mut self.core, width, x, z);
                                 set_bit(&mut self.authored, width, x, z);
@@ -726,8 +725,8 @@ impl CliffMask {
                             if lx >= fp.span * 0.45 {
                                 set_bit(&mut self.core, width, x, z);
                                 set_bit(&mut self.authored, width, x, z);
-                                let edge = ((lx - fp.span * 0.45) / fp.thickness.max(0.5))
-                                    .clamp(0.0, 1.0);
+                                let edge =
+                                    ((lx - fp.span * 0.45) / fp.thickness.max(0.5)).clamp(0.0, 1.0);
                                 self.wall[z * width + x] =
                                     ((0.35 + edge * 0.45) * 255.0).round() as u8;
                             } else {

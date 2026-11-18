@@ -7,9 +7,9 @@
 
 pub use bevy_ext_water::obstacles::*;
 
-use bevy::prelude::*;
 use avian3d::parry::shape::TypedShape;
 use avian3d::prelude::Collider;
+use bevy::prelude::*;
 
 use super::mesh::HeightField as _;
 use super::runtime::TerrainRuntime;
@@ -62,7 +62,14 @@ pub fn collect_collider_water_obstacles(
     let y_lo = water_min_y - OBSTACLE_SLICE_BELOW_M;
     let y_hi = water_max_y + OBSTACLE_SLICE_ABOVE_M;
     let ref_wy = (water_min_y + water_max_y) * 0.5;
-    collect_shape_obstacles(collider.shape_scaled().as_typed_shape(), iso, y_lo, y_hi, ref_wy, out);
+    collect_shape_obstacles(
+        collider.shape_scaled().as_typed_shape(),
+        iso,
+        y_lo,
+        y_hi,
+        ref_wy,
+        out,
+    );
 }
 
 fn collect_shape_obstacles(
@@ -128,8 +135,10 @@ fn collect_shape_obstacles(
             }
         }
         TypedShape::Capsule(cap) => {
-            let a = iso.transform_point(Vec3::new(cap.segment.a.x, cap.segment.a.y, cap.segment.a.z));
-            let b = iso.transform_point(Vec3::new(cap.segment.b.x, cap.segment.b.y, cap.segment.b.z));
+            let a =
+                iso.transform_point(Vec3::new(cap.segment.a.x, cap.segment.a.y, cap.segment.a.z));
+            let b =
+                iso.transform_point(Vec3::new(cap.segment.b.x, cap.segment.b.y, cap.segment.b.z));
             let r = cap.radius;
             if r < MIN_OBSTACLE_RADIUS_M {
                 return;
@@ -139,7 +148,11 @@ fn collect_shape_obstacles(
             }
         }
         TypedShape::Cuboid(cuboid) => {
-            let he = Vec3::new(cuboid.half_extents.x, cuboid.half_extents.y, cuboid.half_extents.z);
+            let he = Vec3::new(
+                cuboid.half_extents.x,
+                cuboid.half_extents.y,
+                cuboid.half_extents.z,
+            );
             collect_cuboid_obstacle(iso, he, y_lo, y_hi, out);
         }
         TypedShape::ConvexPolyhedron(poly) => {
@@ -282,11 +295,7 @@ fn collect_convex_points_obstacle(
     }
 }
 
-fn collect_trimesh_slab_clusters(
-    tris: &[[Vec3; 3]],
-    ref_wy: f32,
-    out: &mut Vec<WaterObstacle>,
-) {
+fn collect_trimesh_slab_clusters(tris: &[[Vec3; 3]], ref_wy: f32, out: &mut Vec<WaterObstacle>) {
     // Cluster slab triangles by touching/overlapping XZ AABBs (expanded 0.35 m) so
     // separate bridge piers in one mesh remain independent water obstacles.
     const LINK_GAP: f32 = 0.35;

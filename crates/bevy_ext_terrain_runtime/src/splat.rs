@@ -688,7 +688,8 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
                 let x = origin.x + (tx as f32 + 0.5) * texel;
                 let y = grid.sample(x, z);
                 let normal = grid.sample_normal(x, z, epsilon);
-                let (mut w, aux) = weights_and_aux_at(x, z, y, normal.y, grid.max_height(), &mut ctx);
+                let (mut w, aux) =
+                    weights_and_aux_at(x, z, y, normal.y, grid.max_height(), &mut ctx);
                 if let Some((slot, weight)) = inputs.paint.and_then(|paint| paint.sample(x, z))
                     && slot < LAYER_COUNT
                 {
@@ -938,10 +939,8 @@ fn weights_and_aux_at(
     let gravel = (slope_gravel + bank_gravel * (1.0 - stone)).min(1.0);
     let hill_erode = smoothstep(0.14, 0.42, slope_rock) * (1.0 - sand_mask) * (1.0 - stone);
     let slope_dirt = hill_erode * smoothstep(0.38, 0.72, n_hill_rib) * 0.42;
-    let slope_forest = hill_erode
-        * smoothstep(0.45, 0.78, 1.0 - n_hill_rib)
-        * (1.0 - climate.aridity)
-        * 0.28;
+    let slope_forest =
+        hill_erode * smoothstep(0.45, 0.78, 1.0 - n_hill_rib) * (1.0 - climate.aridity) * 0.28;
     let patch = climate.patchiness * tuning.patchiness;
     let forest = ((smoothstep(0.60, 0.70, n_forest)
         * smoothstep(0.55, 0.67, n_forest_region)
@@ -1018,13 +1017,12 @@ fn weights_and_aux_at(
         let f = mask.factor(pos);
         if mask.is_talus_at(pos) {
             let n_talus = fbm(x, z, 4.5, p.seed, 29);
-            let talus_mix =
-                ((0.68 + 0.24 * n_talus) * (0.55 + 0.45 * f)).clamp(0.45, 0.94)
-                    * (1.0 - road_band * 0.85);
+            let talus_mix = ((0.68 + 0.24 * n_talus) * (0.55 + 0.45 * f)).clamp(0.45, 0.94)
+                * (1.0 - road_band * 0.85);
             let scree_sand = (climate.aridity * 0.34 * (1.0 - f * 0.35)).clamp(0.0, 0.34);
-            let scree_rock = ((0.18 + 0.16 * n_talus).min(0.34) * (1.0 - scree_sand * 0.5)).max(0.12);
-            let scree_dirt =
-                (0.18 * (1.0 - n_talus) * (1.0 - climate.aridity * 0.75)).max(0.0);
+            let scree_rock =
+                ((0.18 + 0.16 * n_talus).min(0.34) * (1.0 - scree_sand * 0.5)).max(0.12);
+            let scree_dirt = (0.18 * (1.0 - n_talus) * (1.0 - climate.aridity * 0.75)).max(0.0);
             let scree_gravel = (1.0 - scree_sand - scree_rock - scree_dirt).max(0.30);
             let keep = 1.0 - talus_mix;
             for slot in out.iter_mut() {
@@ -1917,10 +1915,22 @@ mod tests {
                 break;
             }
         }
-        let (flat_w, flat_aux) =
-            weights_and_aux_at(p_shore.x, p_shore.y, lake.water_y + 0.15, 1.0, 50.0, &mut ctx);
-        let (steep_w, steep_aux) =
-            weights_and_aux_at(p_shore.x, p_shore.y, lake.water_y + 0.25, 0.72, 50.0, &mut ctx);
+        let (flat_w, flat_aux) = weights_and_aux_at(
+            p_shore.x,
+            p_shore.y,
+            lake.water_y + 0.15,
+            1.0,
+            50.0,
+            &mut ctx,
+        );
+        let (steep_w, steep_aux) = weights_and_aux_at(
+            p_shore.x,
+            p_shore.y,
+            lake.water_y + 0.25,
+            0.72,
+            50.0,
+            &mut ctx,
+        );
         assert!(
             steep_w[SLOT_DIRT] + steep_w[SLOT_GRAVEL] + steep_w[SLOT_MOUNTAIN_STONE]
                 > flat_w[SLOT_DIRT] + flat_w[SLOT_GRAVEL] + flat_w[SLOT_MOUNTAIN_STONE] + 0.15,

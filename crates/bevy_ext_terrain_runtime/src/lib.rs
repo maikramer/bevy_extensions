@@ -42,6 +42,7 @@ pub mod cut;
 pub mod decal;
 pub mod delta;
 pub mod features;
+pub mod ground;
 pub mod heightmap;
 pub mod host;
 pub mod layer_material;
@@ -71,6 +72,9 @@ pub use cliffs::{CliffMask, CliffProfile, CliffSide, CliffSpec, sharpen_terrain}
 pub use cut::CutSpec;
 pub use decal::{GroundDecalSpec, ground_decal_mesh};
 pub use delta::{DeltaGrid, EditedBase, TerrainEdit, TerrainEditQueue};
+pub use ground::{
+    GroundCloudField, GroundTrailField, SnowClimate, SnowFocus, SnowSeed, SnowShelter, SnowState,
+};
 pub use heightmap::HeightMapU16;
 pub use host::StreamingBoost;
 pub use layer_material::TerrainChunkMaterial;

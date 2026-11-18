@@ -32,9 +32,9 @@
 
 use std::path::{Path, PathBuf};
 
+use avian3d::prelude::{Collider, TrimeshFlags};
 use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
-use avian3d::prelude::{Collider, TrimeshFlags};
 
 // ── cena (contratos do scene_loader) ─────────────────────────────────────
 // TODO(viber-exit): o `scene_loader` do monólito define os MESMOS tipos —
@@ -155,9 +155,7 @@ pub fn active_camera_eye(
         .or_else(|| {
             cameras
                 .iter()
-                .find(|(_, cam, target)| {
-                    bevy_ext_core::camera::is_window_camera(*cam, *target)
-                })
+                .find(|(_, cam, target)| bevy_ext_core::camera::is_window_camera(*cam, *target))
                 .map(|(transform, _, _)| transform.translation())
         })
 }

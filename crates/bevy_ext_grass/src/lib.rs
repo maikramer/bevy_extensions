@@ -32,8 +32,9 @@ mod trample;
 
 pub use bake::{FieldData, GrassBakeConfig, StaticMaps, bake_dynamic, bake_static};
 pub use plugin::{
-    GrassPlugin, GrassPluginConfig, GrassSettings, GrassSettingsSpecValue, GrassState,
-    GrassStyleRegistry, GrassStyleSpecSet, GrassSystems, GrassTint, maintain_grass, settings_to_bg,
+    GrassBiomeSnow, GrassPlugin, GrassPluginConfig, GrassSettings, GrassSettingsSpecValue,
+    GrassState, GrassStyleRegistry, GrassStyleSpecSet, GrassSystems, GrassTint, grass_snow_tint,
+    maintain_grass, settings_to_bg,
 };
 pub use specs::{
     GrassPlantSpec, GrassQualitySpec, GrassSettingsSpec, GrassSettingsSpecPlugin, GrassStyleSpec,

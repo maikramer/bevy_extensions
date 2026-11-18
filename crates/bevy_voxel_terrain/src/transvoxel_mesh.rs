@@ -28,7 +28,10 @@ use bevy::math::{Vec2, Vec3};
 use transvoxel::prelude::*;
 use transvoxel::structs::grid_point::GridPoint;
 use transvoxel::structs::vertex_index::VertexIndex;
+use transvoxel::structs::voxel_blocks::VoxelBlockRelayingToField;
+use transvoxel::structs::voxel_index::VoxelIndex;
 use transvoxel::traits::data_field::DataField;
+use transvoxel::traits::voxel_block::VoxelBlock;
 use transvoxel::traits::mesh_builder::MeshBuilder;
 
 use crate::mods::{Bounds3, ModOp, VoxelMod};
@@ -467,6 +470,28 @@ impl DataField<f32, f32> for LatticeField<'_> {
     }
 }
 
+/// The central block's integer coordinates already index our haloed samples.
+/// Only the finer neighbours need world-space lookup at half-cell positions.
+struct SampledBlock<'a> {
+    block: Block<f32>,
+    samples: &'a [f32],
+    stride: usize,
+}
+
+impl VoxelBlock<f32, f32> for SampledBlock<'_> {
+    fn block(&self) -> &Block<f32> {
+        &self.block
+    }
+
+    #[inline]
+    fn get(&self, index: VoxelIndex) -> f32 {
+        let x = (index.x + 1) as usize;
+        let y = (index.y + 1) as usize;
+        let z = (index.z + 1) as usize;
+        self.samples[(z * self.stride + y) * self.stride + x]
+    }
+}
+
 /// Piso de área² abaixo do qual um triângulo conta como sliver de marching
 /// cubes — a métrica dos testes de saúde, não um filtro (ver `add_triangle`).
 ///
@@ -535,7 +560,8 @@ pub fn build_voxel_mesh_grid(
     }
     let cell = params.voxel_size;
     let has_transitions = params.transitions.iter().any(|&t| t);
-    if mods.is_empty() {
+    // Faces de transição leem também as meias células fora desta grelha.
+    if mods.is_empty() && !has_transitions {
         let mut gmin = f32::INFINITY;
         let mut gmax = f32::NEG_INFINITY;
         for &g in ground_xz {
@@ -544,8 +570,7 @@ pub fn build_voxel_mesh_grid(
         }
         let y_lo = params.origin.y - cell;
         let y_hi = params.origin.y + (params.cells as f32 + 1.0) * cell;
-        let margin = if has_transitions { cell } else { 0.0 };
-        if y_lo > gmax + margin || y_hi < gmin - margin {
+        if y_lo > gmax || y_hi < gmin {
             return None;
         }
     }
@@ -566,14 +591,20 @@ pub fn build_voxel_mesh_grid(
     if !field.has_sign_change && !has_transitions {
         return None;
     }
-    let builder = extract_from_field(
-        &field,
-        FieldCaching::CacheNothing,
+    let central = SampledBlock {
         block,
-        transition_sides(params.transitions),
-        0.0f32,
-        ChunkMeshBuilder::new(params),
-    );
+        samples: &field.samples,
+        stride: params.cells + 3,
+    };
+    let mut blocks = BlockStarView::new_simple(central);
+    for side in transition_sides(params.transitions) {
+        let neighbour = VoxelBlockRelayingToField {
+            block: block.high_res_neighbour_to(side),
+            field: &field,
+        };
+        blocks = blocks.with_neighbour(neighbour, side);
+    }
+    let builder = extract(&blocks, 0.0, ChunkMeshBuilder::new(params));
     builder.finish()
 }
 
@@ -606,6 +637,64 @@ mod tests {
             uses_layer_material: false,
             transitions: [false; 4],
         }
+    }
+
+    #[test]
+    fn sampled_grid_matches_scalar_mesh_with_cuts_and_transition_faces() {
+        use crate::mods::BoxMod;
+
+        let cut = BoxMod {
+            bounds: Bounds3::from_corners(Vec3::new(2.0, 2.0, 1.0), Vec3::new(6.0, 5.0, 7.0)),
+            op: ModOp::Subtract,
+            label: "corte".into(),
+        };
+        let height = |x: f32, z: f32| 3.6 + x * 0.1 + (z * 0.4).sin();
+        for carved in [false, true] {
+            let mods: Vec<(&dyn VoxelMod, Bounds3)> = if carved {
+                vec![(&cut, cut.bounds())]
+            } else {
+                vec![]
+            };
+            let density = |p: Vec3| {
+                let d = p.y - height(p.x, p.z);
+                if carved && cut.bounds().contains(p) {
+                    d.max(-cut.distance(p))
+                } else {
+                    d
+                }
+            };
+            for transitions in [[false; 4], [true, false, true, false]] {
+                let mut p = params(Vec3::ZERO, 8, 1.0);
+                p.transitions = transitions;
+                let pts = p.cells + 3;
+                let ground: Vec<_> = (0..pts * pts)
+                    .map(|i| height((i % pts) as f32 - 1.0, (i / pts) as f32 - 1.0))
+                    .collect();
+                let original = build_voxel_mesh(&density, &p).unwrap();
+                let mesh = build_voxel_mesh_grid(&ground, &mods, &density, &p).unwrap();
+                assert_eq!(mesh.positions, original.positions);
+                assert_eq!(mesh.indices, original.indices);
+                assert_eq!(mesh.normals, original.normals);
+                assert_eq!(mesh.uvs, original.uvs);
+                assert_eq!(mesh.colors, original.colors);
+            }
+        }
+    }
+
+    #[test]
+    fn half_cell_peak_on_a_transition_survives_uniform_ground_samples() {
+        let mut p = params(Vec3::ZERO, 8, 1.0);
+        p.transitions[0] = true;
+        let pts = p.cells + 3;
+        let ground = vec![-2.0; pts * pts];
+        let density = |v: Vec3| {
+            let height = (2.0 - 16.0 * (v.z - 3.5).abs()).max(-2.0);
+            v.y - height
+        };
+        let mesh = build_voxel_mesh_grid(&ground, &[], &density, &p).unwrap();
+        let reference = build_voxel_mesh(&density, &p).unwrap();
+        assert_eq!(mesh.positions, reference.positions);
+        assert_eq!(mesh.indices, reference.indices);
     }
 
     /// Plano horizontal a y = 16: negativo (sólido) abaixo.

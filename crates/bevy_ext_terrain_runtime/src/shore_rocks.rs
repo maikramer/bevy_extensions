@@ -306,10 +306,18 @@ pub fn river_candidates(
     rocks: &ShoreRocksSpec,
     index: usize,
 ) -> Vec<Vec2> {
-    river_rock_clusters(stations, width, depth, water_offset, bank_width, rocks, index)
-        .into_iter()
-        .map(|p| p.pos)
-        .collect()
+    river_rock_clusters(
+        stations,
+        width,
+        depth,
+        water_offset,
+        bank_width,
+        rocks,
+        index,
+    )
+    .into_iter()
+    .map(|p| p.pos)
+    .collect()
 }
 
 #[cfg(test)]
