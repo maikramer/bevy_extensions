@@ -36,24 +36,7 @@
 //!
 //! ```ignore
 //! app.add_plugins(bevy_kira_audio::AudioPlugin);
-//! app.add_audio_channel::<bevy_ext_audio::MusicBus>();
-//! let mut sfx_track = bevy_kira_audio::AudioTrack::new();
-//! let sfx_reverb = sfx_track.add_effect(
-//!     bevy_kira_audio::prelude::ReverbBuilder::new()
-//!         .mix(bevy_kira_audio::prelude::Mix(0.0)),
-//! );
-//! app.add_audio_channel_with_track::<bevy_ext_audio::SfxBus>(sfx_track);
-//! let mut voice_track = bevy_kira_audio::AudioTrack::new();
-//! let voice_reverb = voice_track.add_effect(
-//!     bevy_kira_audio::prelude::ReverbBuilder::new()
-//!         .mix(bevy_kira_audio::prelude::Mix(0.0)),
-//! );
-//! app.add_audio_channel_with_track::<bevy_ext_audio::VoiceBus>(voice_track);
-//! app.add_audio_channel::<bevy_ext_audio::AmbienceBus>();
-//! app.insert_resource(bevy_ext_audio::ReverbHandles {
-//!     sfx: Some(sfx_reverb),
-//!     voice: Some(voice_reverb),
-//! });
+//! bevy_ext_audio::music::install_mixer(&mut app);
 //! ```
 //!
 //! Sem canais kira (apps de teste headless) os sistemas são no-ops

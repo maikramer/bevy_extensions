@@ -20,8 +20,12 @@ use bevy_ext_core::{InteriorSceneConfig, Player};
 // Reexportado: os hosts (monólito/Vael) chegam ao mixer pelo caminho
 // histórico `viber::music::AudioMixerSettings` (saves, BRP, painéis).
 pub use bevy_ext_core::AudioMixerSettings;
-use bevy_kira_audio::prelude::{Mix, ReverbHandle};
-use bevy_kira_audio::{AudioChannel, AudioControl, AudioInstance, AudioTween};
+use bevy_kira_audio::prelude::{
+    Mix, ReverbBuilder, ReverbHandle, VolumeControlBuilder, VolumeControlHandle,
+};
+use bevy_kira_audio::{
+    AudioApp, AudioChannel, AudioControl, AudioInstance, AudioTrack, AudioTween,
+};
 
 use crate::host::{AudioPaths, AudioWorldState, MAIN_SCENE, ear_position};
 
@@ -68,6 +72,33 @@ pub struct VoiceBus;
 #[reflect(Resource)]
 #[type_path = "viber::music"]
 pub struct AmbienceBus;
+
+/// Post-fader controls on Kira's four subtracks. Channel.set_volume would
+/// overwrite each playing instance, including silent layers and distant loops.
+#[derive(Resource)]
+pub struct MixerFaders([VolumeControlHandle; 4]);
+
+/// Install the game's mixer after the Kira backend is registered.
+pub fn install_mixer(app: &mut App) {
+    let mut music = AudioTrack::new();
+    let mut sfx = AudioTrack::new();
+    let mut voice = AudioTrack::new();
+    let mut ambience = AudioTrack::new();
+    let reverb = ReverbHandles {
+        sfx: Some(sfx.add_effect(ReverbBuilder::new().mix(Mix(0.0)))),
+        voice: Some(voice.add_effect(ReverbBuilder::new().mix(Mix(0.0)))),
+    };
+    let faders = [&mut music, &mut sfx, &mut voice, &mut ambience]
+        .map(|track| track.add_effect(VolumeControlBuilder::default()));
+    app.add_audio_channel_with_track::<MusicBus>(music)
+        .add_audio_channel_with_track::<SfxBus>(sfx)
+        .add_audio_channel_with_track::<VoiceBus>(voice)
+        .add_audio_channel_with_track::<AmbienceBus>(ambience)
+        .init_resource::<AudioDuck>()
+        .init_resource::<AudioReverb>()
+        .insert_resource(reverb)
+        .insert_resource(MixerFaders(faders));
+}
 
 /// Parâmetros de um loop de SFX pedido por script (`viber.sound_loop`).
 #[derive(Clone, Debug, Reflect)]
@@ -527,6 +558,7 @@ pub fn mixer_sync(
     sfx: Option<Res<AudioChannel<SfxBus>>>,
     voice: Option<Res<AudioChannel<VoiceBus>>>,
     ambience: Option<Res<AudioChannel<AmbienceBus>>>,
+    faders: Option<ResMut<MixerFaders>>,
     mut seeded: Local<bool>,
     mut last: Local<[f32; 5]>,
 ) {
@@ -560,6 +592,13 @@ pub fn mixer_sync(
     *seeded = true;
     *last = signature;
     let tween_ms = || Duration::from_millis(120);
+    if let Some(mut faders) = faders {
+        for (handle, gain) in faders.0.iter_mut().zip(&signature[1..]) {
+            handle.set_volume(linear_to_db(*gain), AudioTween::linear(tween_ms()));
+        }
+        return;
+    }
+    // Compatibility for hosts which still install plain Kira channels.
     if let Some(channel) = music {
         channel
             .set_volume(linear_to_db(signature[1]))
@@ -658,7 +697,8 @@ pub fn music_driver(
     let dt = time.delta_secs().clamp(0.0, 0.2);
     for (tag, instance, mut volume) in &mut layers {
         let target = layer_target(&tag.layer, &zone, tag.base_volume);
-        let next = fade_step(volume.0, target, dt, 0.6);
+        // Give each musical phrase time to recede during a zone change.
+        let next = fade_step(volume.0, target, dt, tag.base_volume.clamp(0.01, 1.0) / 1.8);
         if next != volume.0 {
             let Some(mut snd) = instances.get_mut(&instance.0) else {
                 continue;

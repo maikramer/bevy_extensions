@@ -43,14 +43,7 @@ The plugin owns systems and state only; the audio backend stays host-side:
 
 ```rust
 app.add_plugins(bevy_kira_audio::AudioPlugin);
-app.add_audio_channel::<MusicBus>();
-let mut sfx_track = bevy_kira_audio::AudioTrack::new();
-let sfx_reverb =
-    sfx_track.add_effect(bevy_kira_audio::prelude::ReverbBuilder::new().mix(Mix(0.0)));
-app.add_audio_channel_with_track::<SfxBus>(sfx_track);
-// voice track the same way, then:
-app.add_audio_channel::<AmbienceBus>();
-app.insert_resource(ReverbHandles { sfx: Some(sfx_reverb), voice: Some(voice_reverb) });
+bevy_ext_audio::music::install_mixer(&mut app);
 ```
 
 Without channels the systems are silent no-ops, which keeps headless test
