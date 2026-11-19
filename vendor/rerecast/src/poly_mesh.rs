@@ -312,7 +312,7 @@ impl ContourSet {
                         let pj = &polys[(j * nvp)..];
                         for k in (j + 1)..npolys {
                             let pk = &polys[(k * nvp)..];
-                            let result = get_poly_merge_value(pj, pk, &mesh.vertices, nvp);
+                            let result = get_poly_merge_value(pj, pk, &mesh, nvp);
                             if let Some(PolyMergeValue {
                                 length_squared: v,
                                 edge_a: ea,
@@ -355,8 +355,11 @@ impl ContourSet {
 
             // Store polygons.
             for j in 0..npolys {
-                let p = &mut mesh.polygons[mesh.npolys * nvp * 2..];
                 let q = &polys[j * nvp..];
+                if !mesh.valid_face(&q[..count_poly_verts(q, nvp)]) {
+                    continue;
+                }
+                let p = &mut mesh.polygons[mesh.npolys * nvp * 2..];
                 p[..nvp].copy_from_slice(&q[..nvp]);
                 mesh.regions[mesh.npolys] = cont.region;
                 mesh.areas[mesh.npolys] = cont.area;
@@ -723,7 +726,7 @@ impl InternalPolygonNavmesh {
                     let pj = &polys[j * nvp..];
                     for k in (j + 1)..npolys {
                         let pk = &polys[k * nvp..];
-                        let value = get_poly_merge_value(pj, pk, &self.vertices, nvp);
+                        let value = get_poly_merge_value(pj, pk, self, nvp);
                         if let Some(value) = value
                             && value.length_squared > best_merge_val
                         {
@@ -771,6 +774,10 @@ impl InternalPolygonNavmesh {
         for i in 0..npolys {
             if self.npolys >= max_tris {
                 break;
+            }
+            let face = &polys[i * nvp..];
+            if !self.valid_face(&face[..count_poly_verts(face, nvp)]) {
+                continue;
             }
             let p = &mut self.polygons[self.npolys * nvp * 2..self.npolys * nvp * 2 + nvp * 2];
             p[..nvp * 2].fill(u16::MAX);
@@ -912,12 +919,39 @@ fn merge_poly_verts(
     polys.copy_within(tmp_index..tmp_index + nvp, pa_index);
 }
 
+impl InternalPolygonNavmesh {
+    fn valid_face(&self, indices: &[u16]) -> bool {
+        self.convex_world_ring(indices.len(), |i| indices[i])
+    }
+
+    // Test the same XZ coordinates the consumer receives after dequantization.
+    // A straight boundary is valid; a zero-length edge or a reversal is not.
+    fn convex_world_ring(&self, len: usize, index: impl Fn(usize) -> u16) -> bool {
+        let point = |i| {
+            self.aabb.min.xz()
+                + self.vertices[usize::from(index(i))].as_vec3().xz() * self.cell_size
+        };
+        let mut prev = point(len - 2);
+        let mut center = point(len - 1);
+        (0..len).all(|i| {
+            let next = point(i);
+            let left = prev - center;
+            let right = next - center;
+            let turn = left.perp_dot(right);
+            prev = center;
+            center = next;
+            turn > 0.0 || (turn == 0.0 && left.dot(right) < 0.0)
+        })
+    }
+}
+
 fn get_poly_merge_value(
     pa: &[u16],
     pb: &[u16],
-    verts: &[U16Vec3],
+    mesh: &InternalPolygonNavmesh,
     nvp: usize,
 ) -> Option<PolyMergeValue> {
+    let verts = &mesh.vertices;
     let na = count_poly_verts(pa, nvp);
     let nb = count_poly_verts(pb, nvp);
 
@@ -933,12 +967,10 @@ fn get_poly_merge_value(
     for i in 0..na {
         let va0 = pa[i];
         let va1 = pa[next(i, na)];
-        let (va0, va1) = if va0 <= va1 { (va0, va1) } else { (va1, va0) };
         for j in 0..nb {
             let vb0 = pb[j];
             let vb1 = pb[next(j, nb)];
-            let (vb0, vb1) = if vb0 <= vb1 { (vb0, vb1) } else { (vb1, vb0) };
-            if va0 == vb0 && va1 == vb1 {
+            if va0 == vb1 && va1 == vb0 {
                 ea = Some(i);
                 eb = Some(j);
                 break;
@@ -963,6 +995,19 @@ fn get_poly_merge_value(
     if !uleft(verts[va], verts[vb], verts[vc]) {
         return None;
     };
+
+    // A collinear ear can preserve a shared boundary vertex after merging,
+    // but converting its grid coordinates to f32 can bend that edge inward.
+    let merged_vertex = |i: usize| {
+        if i < na - 1 {
+            pa[(ea + 1 + i) % na]
+        } else {
+            pb[(eb + 1 + i - (na - 1)) % nb]
+        }
+    };
+    if !mesh.convex_world_ring(na + nb - 2, merged_vertex) {
+        return None;
+    }
 
     va = pa[ea] as usize;
     vb = pa[(ea + 1) % na] as usize;
@@ -1388,6 +1433,66 @@ pub enum PolygonNavmeshError {
 #[cfg(test)]
 mod viber_patch_tests {
     use super::*;
+
+    #[test]
+    fn collinear_ears_only_survive_as_straight_boundary_vertices() {
+        let mut mesh = InternalPolygonNavmesh::default();
+        mesh.cell_size = 0.5;
+        mesh.vertices = [(0, 0), (0, 4), (4, 4), (4, 0), (2, 0)]
+            .map(|(x, z)| U16Vec3::new(x, 0, z))
+            .to_vec();
+        assert!(!mesh.valid_face(&[0, 4, 3]));
+        assert!(mesh.valid_face(&[0, 1, 2, 3, 4]));
+        assert!(!mesh.valid_face(&[0, 1, 2, 4, 3]));
+    }
+
+    #[test]
+    fn polygon_build_keeps_walkable_faces_beside_degenerate_contours() {
+        let contour = |points: &[(u16, u16)]| crate::Contour {
+            vertices: points
+                .iter()
+                .map(|&(x, z)| (U16Vec3::new(x, 0, z), 0))
+                .collect(),
+            area: AreaType::DEFAULT_WALKABLE,
+            ..Default::default()
+        };
+        let contours = ContourSet {
+            // The middle point lies exactly on the grid edge but rounds
+            // inward in world space near the reported (-13, 74) tile.
+            contours: vec![
+                contour(&[(100, 343), (103, 345), (106, 347), (106, 340)]),
+                contour(&[(0, 0), (0, 1), (0, 2)]),
+            ],
+            aabb: Aabb3d {
+                min: glam::Vec3::new(-141., 0., -54.),
+                ..Default::default()
+            },
+            cell_size: 1. / 6.,
+            cell_height: 0.1,
+            ..Default::default()
+        };
+        let mesh = contours.into_polygon_mesh(6).unwrap();
+        let mut area = 0;
+        for poly in mesh.polygons() {
+            let vertices: Vec<_> = poly.map(|i| mesh.vertices[usize::from(i)]).collect();
+            for i in 0..vertices.len() {
+                let p = |j: usize| {
+                    mesh.aabb.min.xz()
+                        + vertices[j % vertices.len()].as_vec3().xz() * mesh.cell_size
+                };
+                let left = p(i) - p(i + 1);
+                let right = p(i + 2) - p(i + 1);
+                assert!(
+                    left.perp_dot(right) > 0.
+                        || (left.perp_dot(right) == 0. && left.dot(right) < 0.)
+                );
+            }
+            for pair in vertices[1..].windows(2) {
+                area -= area2(vertices[0], pair[0], pair[1]);
+            }
+        }
+        assert_eq!(area, 42, "all non-degenerate floor area survives");
+    }
 
     #[test]
     fn only_inverted_triangles_are_dropped() {

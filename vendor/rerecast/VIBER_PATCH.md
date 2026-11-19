@@ -42,5 +42,7 @@ Deltas de vendor em relação ao crate publicado:
    `wound_right`). Com a triangulação recuperada (patch 1 e o diagonal
    "loose"), um triângulo invertido fundia-se num polígono côncavo e o
    `landmass` rejeitava o tile (`The polygon at index N is concave or has
-   edges in clockwise order`). Descarta-se só o invertido; os colineares
-   ficam para não abrir T-junctions.
+   edges in clockwise order`). Os colineares podem participar na fusão para preservar vértices partilhados
+   na borda. A fusão exige uma aresta em sentidos opostos e convexidade em
+   coordenadas finais f32. Um triângulo de área zero que sobrar é descartado
+   antes da construção das adjacências e do detail mesh.
