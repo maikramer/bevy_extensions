@@ -619,9 +619,9 @@ fn fragment(
     var wall_n = n_detail;
     var tri_mix = 0.0;
     if (params.walls_a.x < 1.0) {
-        let geom_n = normalize(normal);
+        let geom_n = ng;
         let slope = clamp(1.0 - abs(geom_n.y), 0.0, 1.0);
-        let overhang = smoothstep(-0.02, -0.35, geom_n.y);
+        let overhang = 1.0 - smoothstep(-0.35, -0.02, geom_n.y);
         var region = 1.0;
         var wall = 0.5;
         @if(VERTEX_COLORS)
@@ -631,8 +631,12 @@ fn fragment(
         }
         let brow_n = (vnoise(world.xz * 0.32) - 0.5) * 0.16
             + (vnoise(vec2<f32>(world.x + world.z, world.y) * 0.75) - 0.5) * 0.08;
-        let slope_sheer = clamp(slope + brow_n, 0.0, 1.0);
-        let sheer = smoothstep(0.32, 0.52, slope_sheer);
+        // On unmarked hills the baked bedrock weight distinguishes an exposed
+        // spur from gravel in a hollow, even when their normals match.
+        let rock = u32(params.world.w);
+        let bedrock = select(0.0, w[min(rock, LAYERS - 1u)], rock < LAYERS);
+        let onset = clamp(params.walls_a.x + 0.08 - 0.14 * bedrock, 0.0, 0.98);
+        let sheer = smoothstep(onset, min(1.0, onset + 0.19), slope + brow_n * slope);
         let slope_n = clamp(slope + brow_n * max(region, sheer), 0.0, 1.0);
         let region_tri = smoothstep(params.walls_a.x, params.walls_a.x + params.walls_a.y, slope_n) * region;
         let tri = clamp(max(region_tri, max(overhang, sheer)), 0.0, 1.0);
@@ -640,7 +644,6 @@ fn fragment(
         let scree_bridge = 1.0 - 0.26 * region * smoothstep(0.14, 0.36, slope) * smoothstep(0.30, 0.85, wall);
         albedo *= scree_bridge;
         if (tri > 0.001) {
-            let rock = u32(params.world.w);
             if (rock < LAYERS) {
                 tri_mix = tri;
                 let t = params.tiles[rock].x;
@@ -727,9 +730,11 @@ fn fragment(
                 let dip = world.x * 0.045 - world.z * 0.032;
                 let fold = (vnoise(world.xz * 0.055) - 0.5) * 2.6 + (vnoise(world.xz * 0.19) - 0.5) * 0.9;
                 let y_warp = world.y + dip + fold;
-                let band = y_warp / params.walls_a.z;
+                // Compress and widen successive beds without reversing their order.
+                let bed_height = y_warp / params.walls_a.z;
+                let band = bed_height + 0.32 * sin(bed_height * 1.37) + 0.16 * sin(bed_height * 0.61);
                 let band_id = floor(band);
-                let hue = fract(sin(band_id * vec3<f32>(12.9898, 78.233, 37.719)) * 43758.5453);
+                let hardness = fract(sin(band_id * 12.9898) * 43758.5453);
                 let warm = vec3<f32>(
                     1.0 - params.walls_a.w,
                     1.0 - params.walls_a.w * 0.75,
@@ -740,9 +745,8 @@ fn fragment(
                     1.0 + params.walls_a.w * 0.75,
                     1.0 + params.walls_a.w,
                 );
-                let band_tint = mix(warm, cool, hue);
-                let band_mod = band_id - floor(band_id * 0.25) * 4.0;
-                let hard = step(band_mod, 0.5) * 0.14;
+                let band_tint = mix(warm, cool, hardness);
+                let hard = smoothstep(0.60, 0.95, hardness) * 0.14;
                 let band_f = fract(band);
                 let line = smoothstep(0.84, 0.99, band_f) * params.walls_a.w * 0.85;
                 let fine_band = y_warp / (params.walls_a.z * 0.37);
@@ -772,11 +776,14 @@ fn fragment(
                 let weather = mix(1.06, 0.88, wall);
                 let toe_ao = 1.0 - 0.38 * smoothstep(0.82, 0.98, wall);
                 let ceiling_ao = 1.0 - 0.44 * overhang;
-                let su = vec2<f32>((world.x + world.z) * 0.22, world.y * 0.06);
-                let streak_n = vnoise(su) * 0.65 + vnoise(su * 2.7) * 0.35;
+                // Gravity-aligned stains on both wall projections. A single
+                // diagonal coordinate collapses to a stripe on parallel faces.
+                let stain_scale = vec2<f32>(0.29, 0.055);
+                let streak_n = mix(vnoise(uv_xy * stain_scale), vnoise(uv_zy * stain_scale),
+                    tw.x / max(tw.x + tw.z, 1e-4));
                 let streak = 1.0
                     - params.walls_b.y * detail * smoothstep(0.48, 0.88, streak_n)
-                    * mix(0.55, 1.0, max(wall, overhang));
+                    * mix(0.4, 1.0, slope) * (1.0 - overhang);
                 rock_col = rock_col * weather * toe_ao * ceiling_ao * streak;
                 rock_col = mix(rock_col, params.flats[rock].rgb * (1.0 - 0.25 * overhang), flat_mix);
                 albedo = mix(albedo, rock_col, tri);

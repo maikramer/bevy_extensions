@@ -697,9 +697,10 @@ fn bake_rows(map: &mut SplatMap, inputs: SplatInputs, x0: u32, x1: u32, z0: u32,
             for tx in x0 as usize..x1 as usize {
                 let x = origin.x + (tx as f32 + 0.5) * texel;
                 let y = grid.sample(x, z);
-                let normal = grid.sample_normal(x, z, epsilon);
-                let (mut w, aux) =
-                    weights_and_aux_at(x, z, y, normal.y, grid.max_height(), &mut ctx);
+                let (normal, neighbours) = grid.surface_differences(x, z, epsilon);
+                // Signed bend in metres⁻¹: positive in hollows, zero on a planar ramp.
+                let bend = (neighbours - 4.0 * y) * normal.y / (epsilon * epsilon);
+                let (mut w, aux) = weights_and_aux_at(x, z, y, normal.y, bend, &mut ctx);
                 if let Some((slot, weight)) = inputs.paint.and_then(|paint| paint.sample(x, z))
                     && slot < LAYER_COUNT
                 {
@@ -835,10 +836,10 @@ pub fn weights_at(
     z: f32,
     y: f32,
     normal_y: f32,
-    max_height: f32,
+    _max_height: f32,
     ctx: &mut TexelCtx,
 ) -> [f32; LAYER_COUNT] {
-    weights_and_aux_at(x, z, y, normal_y, max_height, ctx).0
+    weights_and_aux_at(x, z, y, normal_y, 0.0, ctx).0
 }
 
 fn weights_and_aux_at(
@@ -846,12 +847,11 @@ fn weights_and_aux_at(
     z: f32,
     y: f32,
     normal_y: f32,
-    max_height: f32,
+    bend: f32,
     ctx: &mut TexelCtx,
 ) -> ([f32; LAYER_COUNT], [f32; 2]) {
     let p = ctx.params;
     // Altitude não escolhe camada. `y` continua a servir a margem e o leito.
-    let _ = max_height;
     let slope = 1.0 - normal_y.clamp(0.0, 1.0);
     let climate = p.biomes.sample(x, z, p.seed);
 
@@ -898,7 +898,13 @@ fn weights_and_aux_at(
     } else {
         rib_delta * slope_activity
     };
-    let slope_rock = (slope + slope_shift).clamp(0.0, 1.0);
+    // Loose cover collects in converging hollows and thins on exposed spurs.
+    // Reserve this response for intermediate slopes above the shoreline.
+    let landform = (bend / 0.12).clamp(-1.0, 1.0)
+        * slope_activity
+        * (1.0 - smoothstep(0.46, 0.72, slope))
+        * (1.0 - sand_mask);
+    let slope_rock = (slope + slope_shift - 0.10 * landform).clamp(0.0, 1.0);
     let rock0 = (0.30 + climate.rock_bias).clamp(0.05, 0.9);
     let bank_stone = sand_mask * smoothstep(0.16, 0.34, slope_rock) * 0.52;
     let stone = (smoothstep(rock0, rock0 + 0.22, slope_rock) + bank_stone).min(1.0);
@@ -942,8 +948,11 @@ fn weights_and_aux_at(
     //    subsoil/loam collars, forest patches and dirt patches.
     let tuning = &ctx.params.tuning;
     let scree_reach = tuning.gravel_shoulder + 0.07 + 0.08 * n_hill_fine;
-    let slope_gravel = smoothstep(rock0 - scree_reach, rock0 + 0.03, slope_rock)
-        * smoothstep(0.04, 0.14, slope)
+    let slope_gravel = smoothstep(
+        rock0 - scree_reach,
+        rock0 + 0.03,
+        slope_rock + 0.16 * landform.max(0.0),
+    ) * smoothstep(0.04, 0.14, slope)
         * (0.65 + 0.35 * n_hill_fine)
         * (1.0 - stone);
     let gravel = (slope_gravel + bank_gravel * (1.0 - stone)).min(1.0);
@@ -1815,6 +1824,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn baked_hollows_collect_gravel_while_spurs_expose_bedrock_at_the_same_grade() {
+        // Same height and longitudinal grade at the texel centre. Only the
+        // cross-slope curvature changes sign between the two heightmaps.
+        let bake = |curve: f32| {
+            let samples = (0..65)
+                .flat_map(|row| {
+                    (0..65).map(move |col| {
+                        let x = col as f32 - 32.5;
+                        let z = row as f32 - 32.5;
+                        let y = 48.0 + x * 1.23 + curve * z.clamp(-3.0, 3.0).powi(2);
+                        (y.clamp(0.0, 96.0) / 96.0 * u16::MAX as f32).round() as u16
+                    })
+                })
+                .collect();
+            let map = HeightMapU16 {
+                width: 65,
+                depth: 65,
+                data: samples,
+            };
+            let world = World {
+                grid: BrushGrid::from_height_map(&map, 64.0, 96.0, 0.0).unwrap(),
+                water: vec![],
+                roads: vec![],
+            };
+            generate_splats(inputs(&world, &params(), None)).weights_at_texel(32, 32)
+        };
+        let hollow = bake(0.22);
+        let spur = bake(-0.22);
+        assert!(spur[SLOT_MOUNTAIN_STONE] > hollow[SLOT_MOUNTAIN_STONE] + 0.15);
+        assert!(hollow[SLOT_GRAVEL] > spur[SLOT_GRAVEL] + 0.15);
+    }
+
     /// A pintura sobrepõe-se ao campo procedural: o texel sob uma mancha
     /// forte de `desert_sand` fica quase todo nesse slot; longe dela, nada muda.
     #[test]
@@ -1930,7 +1972,7 @@ mod tests {
             p_shore.y,
             lake.water_y + 0.15,
             1.0,
-            50.0,
+            0.0,
             &mut ctx,
         );
         let (steep_w, steep_aux) = weights_and_aux_at(
@@ -1938,7 +1980,7 @@ mod tests {
             p_shore.y,
             lake.water_y + 0.25,
             0.72,
-            50.0,
+            0.0,
             &mut ctx,
         );
         assert!(

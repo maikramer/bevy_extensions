@@ -165,16 +165,21 @@ pub fn profile_offset(
         // back under the bench above it, so a ledge reads as a ledge.
         CliffProfile::Terraced => {
             let steps = steps.max(1.0);
-            let x = v * steps;
+            // Each bed undulates along the continuous crest coordinate. Pin
+            // both ends of the drop so the beds always meet the brow and toe.
+            let phase = hash01(seed, 0, 37) * std::f32::consts::TAU;
+            let fold =
+                (arc * 0.11 + phase).sin() * 0.32 + (arc * 0.043 - phase + v * 3.0).sin() * 0.18;
+            let x = v * steps + fold * (4.0 * v * (1.0 - v));
             let k = x.floor();
             let frac = x - k;
-            let edge = 0.72 + 0.2 * hash01(seed, arc.to_bits() as u64, k as u64);
+            let edge = 0.72 + 0.2 * hash01(seed, 41, k as u64);
             let base = ((k + smoothstep(edge, 1.0, frac)) / steps).clamp(0.0, 1.0);
             // The lip is a short recess at the START of the tread — the bit
             // that makes the bench above overhang. Spreading it across the
             // whole tread would tilt the bench and turn the staircase back
             // into a ramp, which is what the 2.5D profile already was.
-            base - TERRACE_LIP * (1.0 - smoothstep(0.0, 0.22, frac))
+            base - TERRACE_LIP * smoothstep(0.0, 0.06, frac) * (1.0 - smoothstep(0.06, 0.25, frac))
         }
     }
 }
@@ -487,10 +492,24 @@ impl CliffBand {
             .or(self.columns.last())
     }
 
-    /// Turns the band into the mods that carve it out of the world.
+    /// Carves a freestanding cliff whose ends and outer toe meet the terrain.
     pub fn into_mods(self, label: &str) -> Vec<Box<dyn VoxelMod>> {
+        self.make_mods(label, true)
+    }
+
+    /// River, plateau and cut walls join a separately modelled floor or bank.
+    /// Keep the authored boundary open all the way to that adjoining surface.
+    pub(crate) fn into_joined_wall_mods(self, label: &str) -> Vec<Box<dyn VoxelMod>> {
+        self.make_mods(label, false)
+    }
+
+    fn make_mods(self, label: &str, freestanding: bool) -> Vec<Box<dyn VoxelMod>> {
         let mut mods: Vec<Box<dyn VoxelMod>> = Vec::new();
         let n = self.stations.len();
+        let mut aprons: Vec<Box<dyn VoxelMod>> = Vec::new();
+        let repose = self.talus_angle.clamp(5.0, 60.0).to_radians().tan();
+        let mean_width = self.width.iter().sum::<f32>() / n as f32;
+        let terrace_steps = (mean_width / TERRACE_TREAD).round().clamp(2.0, 8.0);
         for i in 0..n - 1 {
             let col = self
                 .column_at((self.arc[i] + self.arc[i + 1]) * 0.5)
@@ -504,6 +523,8 @@ impl CliffBand {
                 bot: (self.bot_y[i], self.bot_y[i + 1]),
                 width: (self.width[i], self.width[i + 1]),
                 arc: self.arc[i],
+                crest_length: freestanding.then_some(self.arc[n - 1]),
+                terrace_steps,
                 profile: self.profile,
                 seed: self.seed,
                 column: col,
@@ -514,19 +535,33 @@ impl CliffBand {
             if self.talus {
                 let run = |k: usize| self.talus_run[k];
                 if run(i) > 0.25 || run(i + 1) > 0.25 {
-                    mods.push(Box::new(TalusMod {
+                    // Debris builds against the face even above a level valley
+                    // floor. Taper the deposit where the authored wall ends.
+                    let apex = |k: usize| {
+                        let drop = (self.top_y[k] - self.bot_y[k]).max(0.0);
+                        let end_dist = self.arc[k].min(self.arc[n - 1] - self.arc[k]);
+                        let taper = smoothstep(0.0, self.width[k].max(1.0), end_dist);
+                        self.bot_y[k] + drop.min(run(k) * repose) * 0.50 * taper
+                    };
+                    aprons.push(Box::new(TalusMod {
                         a: self.stations[i],
                         b: self.stations[i + 1],
                         normal: (self.drop_normal[i] + self.drop_normal[i + 1]).normalize_or_zero(),
-                        start: (self.width[i], self.width[i + 1]),
-                        run: (run(i), run(i + 1)),
-                        crest: (self.bot_y[i], self.bot_y[i + 1]),
-                        toe: (self.toe_ground[i], self.toe_ground[i + 1]),
+                        run: (self.width[i] + run(i), self.width[i + 1] + run(i + 1)),
+                        crest: (apex(i), apex(i + 1)),
+                        toe: (
+                            self.toe_ground[i].min(self.bot_y[i]),
+                            self.toe_ground[i + 1].min(self.bot_y[i + 1]),
+                        ),
+                        over_start: if i == 0 { 0.0 } else { SEGMENT_OVERLAP },
+                        over_end: if i == n - 2 { 0.0 } else { SEGMENT_OVERLAP },
                         label: format!("{label}:talus:{i}"),
                     }));
                 }
             }
         }
+        // Deposit after every cut so neighbouring wedges cannot slice across a fan.
+        mods.extend(aprons);
         // `arch`: one window bored through the wall at the band's middle — a
         // horizontal capsule crossing the whole band depth and reaching back
         // behind the crest. The contour above stays plumb; the void is the
@@ -629,6 +664,8 @@ pub struct CliffFaceMod {
     bot: (f32, f32),
     width: (f32, f32),
     arc: f32,
+    crest_length: Option<f32>,
+    terrace_steps: f32,
     profile: CliffProfile,
     seed: u64,
     column: Option<Column>,
@@ -646,14 +683,17 @@ impl VoxelMod for CliffFaceMod {
         let w = lerp(self.width.0, self.width.1, f.h).max(0.05);
         let drop = (top - bot).max(1e-3);
         let v = ((top - p.y) / drop).clamp(0.0, 1.0);
-        let steps = (w / TERRACE_TREAD).round().clamp(2.0, 8.0);
         let face_taper = smoothstep(0.0, 0.12, v) * (1.0 - smoothstep(0.86, 1.0, v));
-        let fracture = cliff_face_fracture(p) * (w * 0.045).clamp(0.14, 0.42) * face_taper;
+        // Broad, shallow cuts weather smooth; a high scarp exposes larger
+        // fractured beds. Cap the displacement on narrow or low walls.
+        let exposure = smoothstep(0.55, 2.0, drop / w);
+        let relief = (w * 0.10).min(drop * 0.09).min(1.15);
+        let fracture = cliff_face_fracture(p) * relief * (0.18 + 0.82 * exposure) * face_taper;
         let off = w * profile_offset(
             v,
             self.profile,
-            steps,
-            self.arc,
+            self.terrace_steps,
+            self.arc + f.s,
             self.seed,
             self.column.as_ref(),
         ) + fracture;
@@ -662,9 +702,19 @@ impl VoxelMod for CliffFaceMod {
         // negative. Beyond the face, above the toe, below the crest, within
         // the segment's span and within reach of the band.
         let outer = w * OUTER_REACH;
+        let floor = if let Some(length) = self.crest_length {
+            // Where the valley floor rises again, close the cut progressively
+            // instead of exposing the rectangular outer and end planes.
+            let arc = self.arc + f.s;
+            let end_fade = smoothstep(0.0, (0.85 * w).min(0.22 * length), arc.min(length - arc));
+            let runout = 1.0 - smoothstep(0.72 * w, outer, f.d);
+            lerp(ceil, bot, end_fade * runout)
+        } else {
+            bot
+        };
         [
             off - f.d,
-            bot - p.y,
+            floor - p.y,
             p.y - ceil,
             f.d - outer,
             -(f.s + self.over_start),
@@ -677,7 +727,14 @@ impl VoxelMod for CliffFaceMod {
     fn bounds(&self) -> Bounds3 {
         let w = self.width.0.max(self.width.1);
         let reach = w * OUTER_REACH + 1.0;
-        let tan = Vec2::new(self.normal.y, -self.normal.x);
+        // Extend in crest order on either drop side. Deriving the tangent
+        // from the drop normal can reverse it and clip the segment overlap.
+        let tan = if self.crest_length.is_some() {
+            (self.b - self.a).normalize_or_zero()
+        } else {
+            // The bank/plateau seam uses its authored footprint and overlap.
+            Vec2::new(self.normal.y, -self.normal.x)
+        };
         let pad = SEGMENT_OVERLAP + 1.0;
         let corners = [
             self.a - tan * pad,
@@ -737,54 +794,50 @@ pub struct TalusMod {
     a: Vec2,
     b: Vec2,
     normal: Vec2,
-    /// Lateral distance where the apron starts (the band toe).
-    start: (f32, f32),
     /// How far out it runs.
     run: (f32, f32),
     /// Height at the wall foot.
     crest: (f32, f32),
     /// Ground it dies into.
     toe: (f32, f32),
+    over_start: f32,
+    over_end: f32,
     label: String,
 }
 
 impl VoxelMod for TalusMod {
     fn distance(&self, p: Vec3) -> f32 {
         let f = local_frame(p, self.a, self.b, self.normal);
-        let start = lerp(self.start.0, self.start.1, f.h);
         let run = lerp(self.run.0, self.run.1, f.h).max(1e-3);
         let crest = lerp(self.crest.0, self.crest.1, f.h);
         let toe = lerp(self.toe.0, self.toe.1, f.h);
         // Cone profile: full height at the wall, dying into the ground at the
         // end of the run, broken up by deterministic talus rubble lobes.
-        let t = ((f.d - start) / run).clamp(0.0, 1.0);
+        let t = (f.d / run).clamp(0.0, 1.0);
         let taper = (t * (1.0 - t) * 4.0).clamp(0.0, 1.0);
-        let surface = lerp(crest, toe, t * t) + talus_scree_relief(p) * taper;
+        // Upper scree falls fastest, then shallows toward the runout.
+        // Scale loose rubble down to the available relief on small aprons.
+        let falloff = t * (1.6 - 0.6 * t);
+        let rubble = talus_scree_relief(p) * taper * ((crest - toe).abs() * 0.4).min(1.0);
+        let surface = lerp(crest, toe, falloff) + rubble;
         [
             p.y - surface,
-            start - f.d,
-            f.d - (start + run),
-            -f.s,
-            f.s - f.len,
+            -f.d,
+            f.d - run,
+            -(f.s + self.over_start),
+            f.s - f.len - self.over_end,
         ]
         .into_iter()
         .fold(f32::NEG_INFINITY, f32::max)
     }
 
     fn bounds(&self) -> Bounds3 {
-        let reach = self.start.0.max(self.start.1) + self.run.0.max(self.run.1) + 1.0;
-        let tan = Vec2::new(self.normal.y, -self.normal.x);
-        let corners = [
-            self.a - tan,
-            self.b + tan,
-            self.a + self.normal * reach - tan,
-            self.b + self.normal * reach + tan,
-        ];
-        let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
-        for c in corners {
-            lo = lo.min(c);
-            hi = hi.max(c);
-        }
+        let reach = self.run.0.max(self.run.1);
+        let dir = (self.b - self.a).normalize_or_zero();
+        let a = self.a - dir * self.over_start;
+        let b = self.b + dir * self.over_end;
+        let lo = a.min(b) + (self.normal * reach).min(Vec2::ZERO) - Vec2::ONE;
+        let hi = a.max(b) + (self.normal * reach).max(Vec2::ZERO) + Vec2::ONE;
         let y_lo = self.toe.0.min(self.toe.1) - 2.0;
         let y_hi = self.crest.0.max(self.crest.1) + 1.0;
         Bounds3::from_corners(Vec3::new(lo.x, y_lo, lo.y), Vec3::new(hi.x, y_hi, hi.y))
@@ -926,6 +979,19 @@ mod tests {
             flat > 60,
             "terraced profile is a ramp, not benches ({flat})"
         );
+    }
+
+    #[test]
+    fn terrace_beds_are_continuous_along_the_face_and_pin_both_ends() {
+        for arc in [-8.0, 0.0, 7.25, 21.0, 64.0] {
+            let offset = |v, a| profile_offset(v, CliffProfile::Terraced, 5.0, a, 19, None);
+            assert_eq!(offset(0.0, arc), 0.0);
+            assert_eq!(offset(1.0, arc), 1.0);
+            for depth in 0..=200 {
+                let v = depth as f32 / 200.0;
+                assert!((offset(v, arc + 0.001) - offset(v, arc)).abs() < 0.002);
+            }
+        }
     }
 
     #[test]
@@ -1128,12 +1194,18 @@ mod tests {
     fn test_talus_adds_rock_at_the_foot_instead_of_removing_it() {
         let mut s = spec(CliffProfile::Vertical);
         s.talus = true;
-        let mods = build_cliff_mods(&s, &Step, 1.0, 0);
-        let talus: Vec<_> = mods.iter().filter(|m| m.op() == ModOp::Union).collect();
-        assert!(!talus.is_empty(), "talus must contribute additive mods");
-        for m in talus {
-            assert!(m.label().contains("talus"));
+        let field = VoxelField::new(build_cliff_mods(&s, &Step, 1.0, 0), 512.0, 64.0);
+        // This step has a level valley floor. An apron interpolating only
+        // between the two floor heights cannot deposit anything here.
+        for z in [-1.0, 0.0, 1.0] {
+            let upper = field.surface_top(&Step, 3.0, z);
+            let lower = field.surface_top(&Step, 12.0, z);
+            assert!(upper > lower + 1.0 && lower > 16.5);
+            assert!((field.surface_top(&Step, 46.0, z) - 16.0).abs() < 0.1);
         }
+        assert!(
+            (field_for(CliffProfile::Vertical).surface_top(&Step, 3.0, 0.0) - 16.0).abs() < 0.1
+        );
     }
 
     #[test]
@@ -1153,6 +1225,24 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_faces_stay_in_the_index_on_either_drop_side() {
+        let mut s = spec(CliffProfile::Vertical);
+        s.noise = 0.0;
+        for side in [CliffSide::Left, CliffSide::Right] {
+            s.side = side;
+            let band = CliffBand::build(&s, &Step, 1.0).unwrap();
+            let i = band.stations.len() / 2;
+            let start = band.stations[i];
+            let direction = (band.stations[i + 1] - start).normalize();
+            let beside = start - direction + band.drop_normal[i] * 2.0;
+            let point = Vec3::new(beside.x, band.top_y[i] - 5.0, beside.y);
+            let mods = band.into_mods("wall");
+            assert!(mods[i].distance(point) < 0.0);
+            assert!(mods[i].bounds().contains(point));
+        }
+    }
+
+    #[test]
     fn test_overhang_bounds_reach_past_the_deepest_cut_of_the_profile() {
         // The box has to contain every offset the distance function can
         // generate: the overhang curve bottoms out at v³ − LEAN·sin(π·v^0.7)
@@ -1168,6 +1258,8 @@ mod tests {
             bot: (16.0, 16.0),
             width: (w, w),
             arc: 0.0,
+            crest_length: None,
+            terrace_steps: 4.0,
             profile: CliffProfile::Overhang,
             seed: 7,
             column: None,
@@ -1218,6 +1310,20 @@ mod tests {
         fn range_over(&self, min_x: f32, _a: f32, max_x: f32, _b: f32) -> Option<(f32, f32)> {
             Some((41.0 - 0.12 * max_x, 41.0 - 0.12 * min_x))
         }
+    }
+
+    #[test]
+    fn freestanding_cut_rejoins_rising_ground_before_its_outer_boundary() {
+        let base = RisingWest;
+        let mut s = spec(CliffProfile::Vertical);
+        s.side = CliffSide::Left;
+        s.noise = 0.0;
+        let field = VoxelField::new(build_cliff_mods(&s, &base, 1.0, 0), 256.0, 64.0);
+        let depth = |x, z| base.sample(x, z) - field.surface_top(&base, x, z);
+        assert!(depth(-7.0, 0.0) > 5.0);
+        assert!(depth(-12.0, 0.0) < depth(-7.0, 0.0));
+        assert!(depth(-15.9, 0.0).abs() < 0.5);
+        assert!(depth(-7.0, 39.9).abs() < 0.5);
     }
 
     #[test]

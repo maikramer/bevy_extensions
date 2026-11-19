@@ -361,7 +361,7 @@ mod tests {
         let bands = cut_wall_bands(&spec, &grid, grid.texel());
         let mut mods = Vec::new();
         for (i, band) in bands.iter().enumerate() {
-            mods.extend(band.clone().into_mods(&format!("cut:0:{i}")));
+            mods.extend(band.clone().into_joined_wall_mods(&format!("cut:0:{i}")));
         }
         assert!(!mods.is_empty());
         let field = crate::voxel::VoxelField::new(mods, 96.0, 32.0);

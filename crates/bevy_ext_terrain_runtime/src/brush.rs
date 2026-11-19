@@ -513,11 +513,20 @@ impl BrushGrid {
     /// Surface normal via central differences with a world epsilon.
     pub fn sample_normal(&self, x: f32, z: f32, epsilon: f32) -> Vec3 {
         let e = if epsilon > 0.0 { epsilon } else { self.texel() };
+        self.surface_differences(x, z, e).0
+    }
+
+    /// Normal and the sum of opposite height pairs. The splat bake reuses
+    /// the four normal probes to distinguish convex spurs from hollows.
+    pub(crate) fn surface_differences(&self, x: f32, z: f32, e: f32) -> (Vec3, f32) {
         let hx0 = self.sample(x - e, z);
         let hx1 = self.sample(x + e, z);
         let hz0 = self.sample(x, z - e);
         let hz1 = self.sample(x, z + e);
-        Vec3::new(hx0 - hx1, 2.0 * e, hz0 - hz1).normalize_or_zero()
+        (
+            Vec3::new(hx0 - hx1, 2.0 * e, hz0 - hz1).normalize_or_zero(),
+            (hx0 + hx1) + (hz0 + hz1),
+        )
     }
 
     /// Surface normal averaged over a 3×3 probe matrix centered on `(x, z)`.

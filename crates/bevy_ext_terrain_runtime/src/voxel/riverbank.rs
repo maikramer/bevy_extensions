@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(bands.len(), 2);
         let mut mods = Vec::new();
         for (i, band) in bands.iter().enumerate() {
-            mods.extend(band.clone().into_mods(&format!("bank:{i}")));
+            mods.extend(band.clone().into_joined_wall_mods(&format!("bank:{i}")));
         }
         assert!(!mods.is_empty(), "bands produce face mods");
         let field = crate::voxel::VoxelField::new(mods, 96.0, 32.0);

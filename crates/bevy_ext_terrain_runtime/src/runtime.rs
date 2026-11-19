@@ -492,7 +492,7 @@ fn splat_cache_key(
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    "viber-splat-v7".hash(&mut hasher);
+    "viber-splat-v8".hash(&mut hasher);
     grid.raw().hash(&mut hasher);
     grid.world_size().to_bits().hash(&mut hasher);
     grid.max_height().to_bits().hash(&mut hasher);
@@ -1513,11 +1513,11 @@ pub fn bootstrap(world: &mut World) {
     }
     // Margens de água voxel (gorge/overhang) — as mesmas bandas da máscara.
     for (i, band) in bank_bands.iter().enumerate() {
-        voxel_mods.extend(band.clone().into_mods(&format!("riverbank:{i}")));
+        voxel_mods.extend(band.clone().into_joined_wall_mods(&format!("riverbank:{i}")));
     }
     // Paredes de cut/plateau — as mesmas bandas da máscara (acima).
     for (i, band) in wall_bands.iter().enumerate() {
-        voxel_mods.extend(band.clone().into_mods(&format!("wall:{i}")));
+        voxel_mods.extend(band.clone().into_joined_wall_mods(&format!("wall:{i}")));
     }
     // Fendas de spill das cachoeiras de parede (rio × cliff).
     voxel_mods.extend(spill_mods);
