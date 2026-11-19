@@ -289,6 +289,7 @@ pub fn drive_ui_modals(
         &mut Visibility,
         Option<&UiId>,
         Has<ModalDialog>,
+        &InheritedVisibility,
     )>,
     parents: Query<&ChildOf>,
     mut classes: Query<&mut UiClasses>,
@@ -303,7 +304,7 @@ pub fn drive_ui_modals(
     // dos componentes: um modal destruído (`viber.ui.destroy`, unload de
     // cena) deixava o id na lista e `menu_open()` ficava true para sempre.
     let mut live = std::collections::HashSet::new();
-    for (entity, mut modal, mut visibility, id, has_modal) in &mut modals {
+    for (entity, mut modal, mut visibility, id, has_modal, inherited) in &mut modals {
         let was_open = modal.open;
         let toggled = typing.0.is_none() && keys.just_pressed(modal.key);
         // Escape only ever closes: opening every modal with one key would be a
@@ -319,9 +320,11 @@ pub fn drive_ui_modals(
         // aberto, o Tab/`AcquireFocus` fica dentro dele. Só existe enquanto
         // aberto — o observer de `Add` procura o último focável e um modal
         // `Hidden` no arranque só produzia um aviso por cada menu.
-        if modal.open && !has_modal {
+        // A hidden legacy tree may still drive a separate visible menu.
+        let trap_focus = modal.open && inherited.get();
+        if trap_focus && !has_modal {
             commands.entity(entity).insert(ModalDialog);
-        } else if !modal.open && has_modal {
+        } else if !trap_focus && has_modal {
             commands
                 .entity(entity)
                 .remove::<ModalDialog>()
@@ -629,6 +632,41 @@ mod parse_key_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_modal_tracks_open_state_without_taking_keyboard_focus() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<super::super::widgets::UiFocusedInput>()
+            .init_resource::<UiModalsOpen>()
+            .add_systems(Update, drive_ui_modals);
+        let entity = app
+            .world_mut()
+            .spawn((
+                UiModal {
+                    open: true,
+                    key: KeyCode::KeyQ,
+                    escape_closes: true,
+                },
+                UiId("menu".into()),
+                Visibility::Inherited,
+                InheritedVisibility::HIDDEN,
+            ))
+            .id();
+        app.update();
+        assert!(app.world().resource::<UiModalsOpen>().is_open("menu"));
+        assert!(app.world().get::<ModalDialog>(entity).is_none());
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(InheritedVisibility::VISIBLE);
+        app.update();
+        assert!(app.world().get::<ModalDialog>(entity).is_some());
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(InheritedVisibility::HIDDEN);
+        app.update();
+        assert!(app.world().get::<ModalDialog>(entity).is_none());
+    }
 
     #[test]
     fn test_parse_key_covers_the_menu_keys_and_falls_back_loudly() {
