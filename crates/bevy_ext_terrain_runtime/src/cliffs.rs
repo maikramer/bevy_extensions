@@ -126,8 +126,8 @@ pub struct CliffSpec {
     /// Horizontal run of the face (meters) — `width`. Ignored when both
     /// `height` and `angle` are authored (then `width = height / tan(angle)`).
     pub width: f32,
-    /// Total drop (meters). `None` = auto: the natural elevation difference
-    /// between crest and toe (the wall adapts to the place).
+    /// Maximum exposed drop (meters). The downhill outlet limits the actual
+    /// face height. `None` uses the available relief.
     pub height: Option<f32>,
     /// Face slope in degrees — with `height` authored, derives the band width
     /// (`height / tan(angle)`); 90° would be zero-width, so the useful range
@@ -541,6 +541,9 @@ impl CliffMask {
                     let Some(hit) = nearest_on_path(&band.stations, p) else {
                         continue;
                     };
+                    if station_lerp(&band.top_y, &hit) <= station_lerp(&band.bot_y, &hit) {
+                        continue;
+                    }
                     let n = band.drop_normal[hit.segment.min(band.drop_normal.len() - 1)];
                     let d = (p - hit.point).dot(n);
                     if d < -texel {

@@ -358,6 +358,11 @@ pub fn wall_waterfalls(
                 let Some(hit) = nearest_on_path(&band.stations, *st) else {
                     continue;
                 };
+                if crate::paths::station_lerp(&band.top_y, &hit)
+                    <= crate::paths::station_lerp(&band.bot_y, &hit)
+                {
+                    continue;
+                }
                 let d = hit.point.distance(*st);
                 if best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
                     best = Some((d, bi, hit));

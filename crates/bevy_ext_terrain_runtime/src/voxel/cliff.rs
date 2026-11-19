@@ -33,16 +33,10 @@
 //!
 //! # Ceiling
 //!
-//! The wedge is a *cut*: it removes rock above the face, between the toe and a
-//! ceiling. The ceiling is normally the crest height, but on ground that has
-//! no real drop — an authored `height` on a gentle slope, or a crest probe
-//! that landed in a dip — the natural ground over the reach sits *above* it.
-//! The cut then runs under that ground and leaves it hanging as a floating
-//! crust: a shelf of terrain over the trench, joined to nothing. [`CliffBand::ceil_y`]
-//! samples the ground from the crest out to just inside the outer reach and
-//! raises the ceiling to the highest point, so the cut always reaches the
-//! surface. On a well-formed cliff every outer sample is below the crest and
-//! the ceiling stays the crest height.
+//! A freestanding cliff only steepens a descent the terrain can support.
+//! Probes across the downhill shoulder keep the cut above its outlet.
+//! The ceiling clears the local terrain so a high spot between stations
+//! cannot survive above the cut as an isolated sheet.
 //!
 //! Determinism is preserved the same way the carve preserves it: every probe
 //! of the terrain happens up front, in [`CliffBand::build`], before any mod
@@ -192,12 +186,8 @@ pub struct CliffBand {
     /// Unit XZ normal at each station pointing toward the low side.
     pub drop_normal: Vec<Vec2>,
     pub top_y: Vec<f32>,
-    /// Ceiling of the air wedge: `top_y` raised to the highest natural ground
-    /// the wedge spans (crest → outer reach). The crest probe alone can land
-    /// in a local dip; the cut then runs *under* the surrounding slope and
-    /// leaves it as a floating crust (a shelf of terrain hanging over the
-    /// trench). On a real cliff the ground outside the crest is below the
-    /// top, so this stays equal to `top_y`.
+    /// Upper bound of the ground covered by the cut. Joined banks supply
+    /// their own ceiling to fit the neighbouring surface.
     pub ceil_y: Vec<f32>,
     pub bot_y: Vec<f32>,
     pub width: Vec<f32>,
@@ -391,10 +381,34 @@ impl CliffBand {
             CliffSide::Auto => (im, op_, 1.0f32),
         };
 
-        if let Some(h) = spec.height.filter(|h| h.is_finite() && *h > 0.0) {
-            for i in 0..bot_y.len() {
-                bot_y[i] = bot_y[i].min(top_y[i] - h);
+        // A free cliff steepens an existing descent. Its toe must daylight
+        // at the downhill shoulder, including where adjacent wedges overlap.
+        // An authored height on flat land used to excavate a blind trench.
+        self.drop_normal = normals.iter().map(|n| *n * drop_sign).collect();
+        for (i, st) in self.stations.iter().enumerate() {
+            let n = self.drop_normal[i];
+            let w = self.width[i];
+            let tangent = Vec2::new(n.y, -n.x);
+            let half_station = texel.max(0.5) + SEGMENT_OVERLAP;
+            let mut outlet = bot_y[i];
+            let start = w * 0.80;
+            let end = w * OUTER_REACH + texel;
+            let probes = ((end - start) / texel.max(0.25)).ceil().clamp(1.0, 128.0) as usize;
+            for j in 0..=probes {
+                let across = lerp(start, end, j as f32 / probes as f32);
+                let center = *st + n * across;
+                for along in [-half_station, 0.0, half_station] {
+                    let p = center + tangent * along;
+                    outlet = outlet.max(base.sample(p.x, p.y));
+                }
             }
+            let fall = (top_y[i] - outlet).max(0.0);
+            let supported = fall * smoothstep(0.18, 0.55, fall / w);
+            let height = spec
+                .height
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .unwrap_or(fall);
+            bot_y[i] = top_y[i] - height.min(supported);
         }
 
         // Crest notches — one-sided dips, scaled by the LOCAL drop.
@@ -415,68 +429,45 @@ impl CliffBand {
             }
         }
 
-        // Drop normals and the ground the talus apron would rest on.
-        self.drop_normal = normals.iter().map(|n| *n * drop_sign).collect();
-        // Ground the apron dies into, probed past the band AND past the
-        // apron's own run — the carve does the same, and probing too close
-        // would rest the cone on the wall's own foot instead of on the valley.
+        // A rubble fan needs a supplying face steeper than the rubble's own
+        // angle of repose. On a gentle slope a raised apron would form a dam.
         let cot = 1.0 / self.talus_angle.clamp(5.0, 60.0).to_radians().tan();
+        self.talus_run = (0..self.stations.len())
+            .map(|i| {
+                if !self.talus {
+                    return 0.0;
+                }
+                let run = (top_y[i] - bot_y[i]).max(0.0) * cot;
+                (run * 0.55).min(40.0) * smoothstep(1.0, 1.6, run / self.width[i])
+            })
+            .collect();
         self.toe_ground = self
             .stations
             .iter()
             .enumerate()
             .map(|(i, st)| {
-                let run = if self.talus {
-                    ((top_y[i] - bot_y[i]).max(0.0) * cot * 0.55).min(40.0)
-                } else {
-                    0.0
-                };
-                let d = self.width[i] + run + texel * 2.0;
+                let d = self.width[i] + self.talus_run[i] + texel * 2.0;
                 let p = *st + self.drop_normal[i] * d;
                 base.sample(p.x, p.y)
             })
             .collect();
 
-        self.talus_run = if self.talus {
-            (0..self.stations.len())
-                .map(|i| ((top_y[i] - bot_y[i]).max(0.0) * cot * 0.55).min(40.0))
-                .collect()
-        } else {
-            vec![0.0; self.stations.len()]
-        };
-
-        // Wedge ceiling. The natural ground over the reach can sit ABOVE the
-        // crest probe — the crest sample landed in a dip, or the slope simply
-        // rises again outside the band (`height` authored on ground that has
-        // no drop). The wedge then cuts a tunnel *under* that ground and the
-        // surface above it is left as a floating crust: the shelves that read
-        // as a broken staircase. Sampling the ground from the crest out to
-        // just inside the outer reach and taking the highest point as the
-        // ceiling removes the crust; the cut stops where the terrain begins,
-        // so nothing else moves. On a real cliff every outer sample is below
-        // the crest and the ceiling stays `top_y` (no behaviour change).
-        const CEIL_SAMPLES: [f32; 4] = [0.0, 0.4, 0.75, 1.0];
-        let margin = texel * 0.25;
-        self.ceil_y = (0..self.stations.len())
-            .map(|i| {
-                let st = self.stations[i];
-                let n = self.drop_normal[i];
-                let reach = self.width[i] * OUTER_REACH;
-                let mut ground = f32::NEG_INFINITY;
-                for f in CEIL_SAMPLES {
-                    let d = if f >= 1.0 {
-                        (reach - texel).max(0.0)
-                    } else {
-                        reach * f
-                    };
-                    let p = st + n * d;
-                    ground = ground.max(base.sample(p.x, p.y));
-                }
-                if ground > top_y[i] {
-                    ground + margin
-                } else {
-                    top_y[i]
-                }
+        // Enclose the terrain over the entire cut, including between
+        // stations. A ceiling interpolated from sparse line probes can sit
+        // below a ridge and leave an isolated skin of terrain above a void.
+        self.ceil_y = self
+            .stations
+            .iter()
+            .enumerate()
+            .map(|(i, st)| {
+                let w = self.width[i.saturating_sub(1)]
+                    .max(self.width[i])
+                    .max(self.width[(i + 1).min(last)]);
+                let r = w * OUTER_REACH + 3.0 * texel + SEGMENT_OVERLAP + 2.0;
+                base.range_over(st.x - r, st.y - r, st.x + r, st.y + r)
+                    .map_or_else(|| base.max_height(), |(_, high)| high)
+                    .max(top_y[i])
+                    + texel
             })
             .collect();
 
@@ -511,6 +502,12 @@ impl CliffBand {
         let mean_width = self.width.iter().sum::<f32>() / n as f32;
         let terrace_steps = (mean_width / TERRACE_TREAD).round().clamp(2.0, 8.0);
         for i in 0..n - 1 {
+            if freestanding
+                && self.top_y[i] <= self.bot_y[i]
+                && self.top_y[i + 1] <= self.bot_y[i + 1]
+            {
+                continue;
+            }
             let col = self
                 .column_at((self.arc[i] + self.arc[i + 1]) * 0.5)
                 .copied();
@@ -703,12 +700,13 @@ impl VoxelMod for CliffFaceMod {
         // the segment's span and within reach of the band.
         let outer = w * OUTER_REACH;
         let floor = if let Some(length) = self.crest_length {
-            // Where the valley floor rises again, close the cut progressively
-            // instead of exposing the rectangular outer and end planes.
+            // Carry the toe downhill until the original surface takes over.
+            // Lifting this floor back to the crest closes the drainage path.
             let arc = self.arc + f.s;
             let end_fade = smoothstep(0.0, (0.85 * w).min(0.22 * length), arc.min(length - arc));
-            let runout = 1.0 - smoothstep(0.72 * w, outer, f.d);
-            lerp(ceil, bot, end_fade * runout)
+            let toe = bot + (top - bot) * 0.10 * (1.0 - smoothstep(0.0, outer, f.d));
+            let exposure = smoothstep(0.0, 0.20 * w, top - bot);
+            lerp(ceil, toe, end_fade * exposure)
         } else {
             bot
         };
@@ -1091,11 +1089,11 @@ mod tests {
     }
 
     #[test]
-    fn test_authored_height_pins_the_toe() {
+    fn test_authored_height_caps_a_supported_drop() {
         let band = CliffBand::build(&spec(CliffProfile::Vertical), &Step, 1.0).expect("band");
         for (t, b) in band.top_y.iter().zip(band.bot_y.iter()) {
             assert!(
-                (t - b) >= 19.9,
+                (t - b - 20.0).abs() < 0.01,
                 "authored height=20 must hold the drop, got {}",
                 t - b
             );
@@ -1228,8 +1226,11 @@ mod tests {
     fn overlapping_faces_stay_in_the_index_on_either_drop_side() {
         let mut s = spec(CliffProfile::Vertical);
         s.noise = 0.0;
-        for side in [CliffSide::Left, CliffSide::Right] {
+        for side in [CliffSide::Right, CliffSide::Left] {
             s.side = side;
+            if side == CliffSide::Left {
+                s.path.reverse();
+            }
             let band = CliffBand::build(&s, &Step, 1.0).unwrap();
             let i = band.stations.len() / 2;
             let start = band.stations[i];
@@ -1291,92 +1292,60 @@ mod tests {
         );
     }
 
-    /// Ground that RISES toward the drop side: the crest probe (1.5 texels
-    /// behind the crest) reads lower than the ground the wedge spans.
-    #[derive(Debug)]
-    struct RisingWest;
+    struct Hillside(f32);
 
-    impl HeightField for RisingWest {
+    impl HeightField for Hillside {
         fn sample(&self, x: f32, _z: f32) -> f32 {
-            // Crest at x = 0; the ground climbs westward, where the face drops.
-            41.0 - 0.12 * x
+            60.0 - self.0 * x
         }
         fn sample_normal(&self, _x: f32, _z: f32, _e: f32) -> Vec3 {
-            Vec3::Y
+            Vec3::new(self.0, 1.0, 0.0).normalize()
         }
         fn max_height(&self) -> f32 {
-            41.0
+            160.0
         }
-        fn range_over(&self, min_x: f32, _a: f32, max_x: f32, _b: f32) -> Option<(f32, f32)> {
-            Some((41.0 - 0.12 * max_x, 41.0 - 0.12 * min_x))
+        fn range_over(&self, x0: f32, _: f32, x1: f32, _: f32) -> Option<(f32, f32)> {
+            let a = self.sample(x0, 0.0);
+            let b = self.sample(x1, 0.0);
+            Some((a.min(b), a.max(b)))
         }
     }
 
     #[test]
-    fn freestanding_cut_rejoins_rising_ground_before_its_outer_boundary() {
-        let base = RisingWest;
+    fn unsupported_height_cannot_make_a_pit_or_debris_dam() {
+        let mut s = spec(CliffProfile::Columnar);
+        s.side = CliffSide::Right; // +X
+        s.talus = true;
+        for grade in [-0.8, 0.0, 0.07] {
+            let band = CliffBand::build(&s, &Hillside(grade), 1.0).unwrap();
+            assert_eq!(band.bot_y, band.top_y);
+            assert_eq!(band.talus_run_max(), 0.0);
+            assert!(band.into_mods("unsupported").is_empty());
+        }
+    }
+
+    #[test]
+    fn steepened_face_drains_downhill_without_a_return_wall() {
+        let base = Hillside(0.8);
         let mut s = spec(CliffProfile::Vertical);
-        s.side = CliffSide::Left;
+        s.height = Some(35.0);
         s.noise = 0.0;
         let field = VoxelField::new(build_cliff_mods(&s, &base, 1.0, 0), 256.0, 64.0);
-        let depth = |x, z| base.sample(x, z) - field.surface_top(&base, x, z);
-        assert!(depth(-7.0, 0.0) > 5.0);
-        assert!(depth(-12.0, 0.0) < depth(-7.0, 0.0));
-        assert!(depth(-15.9, 0.0).abs() < 0.5);
-        assert!(depth(-7.0, 39.9).abs() < 0.5);
-    }
-
-    #[test]
-    fn test_wedge_ceiling_clears_the_ground_it_spans() {
-        // The case that made `ombro-capela` hang thin shelves over the cut: a
-        // band whose drop side rises, so the crest probe lands BELOW the
-        // ground the wedge must remove. Without the ceiling the cut ran under
-        // that ground and left it as a floating crust.
-        let base = RisingWest;
-        let s = CliffSpec {
-            path: vec![Vec2::new(0.0, -30.0), Vec2::new(0.0, 30.0)],
-            width: 6.0,
-            height: Some(5.0),
-            profile: CliffProfile::Convex,
-            side: CliffSide::Left,
-            noise: 0.0,
-            talus: false,
-            seed: 7,
-            ..CliffSpec::default()
-        };
-        let band = CliffBand::build(&s, &base, 1.0).expect("band");
-        assert!(
-            band.ceil_y.iter().all(|c| *c > 41.0),
-            "the ceiling never rose to the ground the wedge spans: {:?}",
-            band.ceil_y
-        );
-        let field = VoxelField::new(build_cliff_mods(&s, &base, 1.0, 0), 256.0, 64.0);
-        let mut cut = false;
-        for x in [-24.0f32, -20.0, -16.0, -12.0, -8.0, -6.0] {
-            let ground = base.sample(x, 0.0);
-            let spans = field.column(&base, x, 0.0);
-            // A crust is the NATURAL surface surviving over a hole: its top is
-            // the untouched ground (within the half-metre the mesher can
-            // express) with air right under it.
-            if let Some(top) = spans.first().map(|s| s.top)
-                && (top - ground).abs() < 0.5
-            {
-                for pair in spans.windows(2) {
-                    let gap = pair[0].bottom - pair[1].top;
-                    assert!(
-                        gap < 0.5,
-                        "crust floating at x={x}: natural top {top:.2} hangs {gap:.2} m \
-                         over [{:.2}..{:.2}]",
-                        pair[1].bottom,
-                        pair[1].top
-                    );
-                }
-            }
-            if let Some(top) = spans.first().map(|s| s.top) {
-                cut |= top < ground - 1.0;
-            }
+        let mut previous = base.sample(-1.0, 0.0);
+        let mut max_cut = 0.0_f32;
+        for i in -3..=100 {
+            let x = i as f32 * 0.25;
+            let spans = field.column(&base, x, 0.25);
+            assert_eq!(spans.len(), 1, "hidden air pocket at {x}");
+            let h = spans[0].top;
+            assert!(
+                h <= previous + 0.005,
+                "uphill lip at {x}: {previous} -> {h}"
+            );
+            max_cut = max_cut.max(base.sample(x, 0.25) - h);
+            previous = h;
         }
-        assert!(cut, "the wedge never cut the ground it spans");
+        assert!(max_cut > 1.0, "a supported cliff must still expose a face");
     }
 
     #[test]
