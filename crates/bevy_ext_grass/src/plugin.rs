@@ -269,7 +269,6 @@ impl Plugin for GrassPlugin {
                 Update,
                 (
                     (sync_settings_spec, sync_style_specs, apply_settings).chain(),
-                    tag_sun,
                     tag_cameras,
                 )
                     .in_set(GrassSystems::SyncSpecs),
@@ -277,6 +276,13 @@ impl Plugin for GrassPlugin {
             .add_systems(
                 Update,
                 (apply_field_overrides, update_stats).in_set(GrassSystems::Tint),
+            )
+            .add_systems(
+                PostUpdate,
+                tag_sun
+                    .after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
+                    .before(bevy_grass::GrassLightSystems::Sample)
+                    .before(bevy_grass::GrassSystems::Rebuild),
             )
             .add_systems(Update, poll_bake.in_set(GrassSystems::Poll));
         #[cfg(feature = "avian")]
@@ -614,17 +620,39 @@ fn apply_field_overrides(
     }
 }
 
-/// O sol da relva é o direcional que projeta sombras.
+/// Identifies a marker owned by this adapter, so authored choices keep priority.
+#[derive(Component)]
+struct AutoGrassSun;
+
 fn tag_sun(
     mut commands: Commands,
-    tagged: Query<(), With<GrassSun>>,
+    authored: Query<(), (With<GrassSun>, Without<AutoGrassSun>)>,
+    automatic: Query<Entity, With<AutoGrassSun>>,
     lights: Query<(Entity, &DirectionalLight)>,
 ) {
-    if !tagged.is_empty() {
-        return;
-    }
-    if let Some((entity, _)) = lights.iter().find(|(_, light)| light.shadow_maps_enabled) {
-        commands.entity(entity).insert(GrassSun);
+    let current = automatic.iter().next();
+    let mut casters = lights.iter().filter(|(_, light)| light.shadow_maps_enabled);
+    // The renderer already follows a single caster. Disambiguate multiple
+    // casters, and release our choice when baking or the day cycle disables it.
+    let chosen = if authored.is_empty() {
+        casters.next().and_then(|(first, _)| {
+            casters.next()?;
+            Some(
+                current
+                    .filter(|&e| lights.get(e).is_ok_and(|(_, l)| l.shadow_maps_enabled))
+                    .unwrap_or(first),
+            )
+        })
+    } else {
+        None
+    };
+    if current != chosen {
+        if let Some(old) = current {
+            commands.entity(old).remove::<(GrassSun, AutoGrassSun)>();
+        }
+        if let Some(new) = chosen {
+            commands.entity(new).insert((GrassSun, AutoGrassSun));
+        }
     }
 }
 
@@ -741,6 +769,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(settings_to_bg(&settings).density_scale, 0.0);
+    }
+
+    #[test]
+    fn automatic_sun_tracks_casters_and_respects_an_authored_sun() {
+        let mut app = App::new();
+        app.add_systems(Update, tag_sun);
+        let light = || DirectionalLight {
+            shadow_maps_enabled: true,
+            ..default()
+        };
+        let a = app.world_mut().spawn(light()).id();
+        let b = app.world_mut().spawn(light()).id();
+        app.update();
+        let chosen = [a, b]
+            .into_iter()
+            .find(|e| app.world().get::<GrassSun>(*e).is_some())
+            .unwrap();
+        app.world_mut()
+            .get_mut::<DirectionalLight>(chosen)
+            .unwrap()
+            .shadow_maps_enabled = false;
+        app.update();
+        assert!(app.world().get::<GrassSun>(chosen).is_none());
+        app.world_mut()
+            .get_mut::<DirectionalLight>(chosen)
+            .unwrap()
+            .shadow_maps_enabled = true;
+        app.world_mut().entity_mut(b).insert(GrassSun);
+        app.update();
+        assert!(app.world().get::<GrassSun>(a).is_none());
+        assert!(app.world().get::<GrassSun>(b).is_some());
     }
 
     #[test]
