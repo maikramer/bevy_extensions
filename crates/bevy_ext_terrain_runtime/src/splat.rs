@@ -88,6 +88,16 @@ pub fn pool_normal(alias: &str) -> Option<String> {
     }
 }
 
+/// The photographed pool stores OpenGL +Y (toward the top of the image).
+/// Generated pool maps encode the gradient in image-row coordinates. Our
+/// top-down UVs increase toward world +Z, i.e. down the image.
+pub(crate) fn normal_row_sign(alias: &str) -> f32 {
+    match alias {
+        "grass" | "dirt" | "dirt_road" | "dirt_trail" | "gravel" | "sand" | "pebbles" => -1.0,
+        _ => 1.0,
+    }
+}
+
 /// Pool alias → height map path (escalar, LINEAR) RELATIVE ao
 /// `terrain_textures_dir`. Alimenta o height-blend entre as duas layers
 /// dominantes do fragmento (a rocha "sai por cima" da relva na fronteira).

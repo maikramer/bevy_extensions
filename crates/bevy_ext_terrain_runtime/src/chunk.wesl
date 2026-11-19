@@ -151,8 +151,8 @@ const HEIGHT_BIAS: f32 = 2.5;
 /// peso — impossível desaparecer de golpe.
 const HEIGHT_BIAS_MIN: f32 = 0.35;
 
-// Força do AO do pool sobre o albedo (1 = total; 0.6 mantém o chão vivo).
-const AO_STRENGTH: f32 = 0.6;
+// Microcontraste na luz direta. A oclusão completa modula a iluminação indireta.
+const AO_STRENGTH: f32 = 0.32;
 
 
 fn terrain_params(slot: u32) -> TerrainChunkParams {
@@ -531,9 +531,6 @@ fn fragment(
     var wsum = 0.0;
     // Frame tangente derivado da normal geométrica (projeção top-down).
     let ng = normalize(normal);
-    let cross_up = cross(vec3<f32>(0.0, 1.0, 0.0), ng);
-    let t_axis = select(vec3<f32>(1.0, 0.0, 0.0), normalize(cross_up), dot(cross_up, cross_up) > 1e-8);
-    let b_axis = cross(ng, t_axis);
     var n_world = vec3<f32>(0.0);
 
     for (var k = 0u; k < 4u; k++) {
@@ -569,21 +566,38 @@ fn fragment(
         } else {
             rough += wb * params.roughs[li].x;
         }
-        ao += wb * map_sample(slot, B_AO + 2u * li, uv_t, gx, gy).r;
+        var cavity = map_sample(slot, B_AO + 2u * li, uv_t, gx, gy).r;
         wsum += wb;
         let kd = 1.0 - flat_mix;
-        if (kd >= 1.0 - FLAT_SKIP) {
+        if (flat_mix < FLAT_SKIP) {
             let nm = map_sample(slot, B_NORMAL + 2u * li, uv_t, gx, gy).rgb * 2.0 - 1.0;
-            n_world += wb * (t_axis * (nm.x * kd) + b_axis * (nm.y * kd) + ng * (nm.z * kd + (1.0 - kd)));
+            let row_sign = params.roughs[li].w;
+            var slope = nm.xy * vec2<f32>(1.0, row_sign) / max(nm.z, 0.35);
+            if (tile_mix > 0.01) {
+                let uv2 = anti_tile(uv_t) + vec2<f32>(f32(li) * 0.173, f32(li) * 0.311);
+                let dx2 = anti_tile(gx);
+                let dy2 = anti_tile(gy);
+                let n2 = map_sample(slot, B_NORMAL + 2u * li, uv2, dx2, dy2).rgb * 2.0 - 1.0;
+                let s2 = n2.xy * vec2<f32>(1.0, row_sign) / max(n2.z, 0.35);
+                // Transform the second pattern's gradient back into the world XZ frame.
+                let rotated = vec2<f32>(dot(s2, vec2<f32>(ANTI_TILE_COS, ANTI_TILE_SIN)),
+                    dot(s2, vec2<f32>(-ANTI_TILE_SIN, ANTI_TILE_COS)));
+                slope = mix(slope, rotated, tile_mix);
+                cavity = mix(cavity, map_sample(slot, B_AO + 2u * li, uv2, dx2, dy2).r, tile_mix);
+            }
+            let offset = vec3<f32>(slope.x, 0.0, slope.y);
+            n_world += wb * normalize(ng + (offset - ng * dot(offset, ng)) * (1.45 * kd));
         } else {
             n_world += wb * ng;
         }
+        ao += wb * cavity;
     }
 
     let total = max(wsum, 1e-4);
     albedo /= total;
     rough = clamp(rough / total, 0.05, 1.0);
-    albedo *= mix(1.0, ao / total, AO_STRENGTH);
+    let floor_ao = clamp(ao / total, 0.0, 1.0);
+    albedo *= mix(1.0, floor_ao, AO_STRENGTH);
     // Variação macro de tom (perto e longe).
     let macro_n = vnoise(world.xz / 170.0) * 0.6 + vnoise(world.xz / 55.0) * 0.4;
     albedo *= mix(MACRO_LOW, MACRO_HIGH, macro_n);
@@ -961,8 +975,9 @@ fn fragment(
     let rough_linear = perceptualRoughnessToRoughness(rough);
     specular_occlusion = saturate(pow(ndv + ssao, exp2(-16.0 * rough_linear - 1.0)) - 1.0 + ssao);
     }
-    pbr_input.diffuse_occlusion = diffuse_occlusion * trail_open;
-    pbr_input.specular_occlusion = specular_occlusion;
+    let material_ao = mix(floor_ao, 1.0, max(tri_mix, snow_k));
+    pbr_input.diffuse_occlusion = diffuse_occlusion * (material_ao * trail_open);
+    pbr_input.specular_occlusion = specular_occlusion * material_ao;
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);

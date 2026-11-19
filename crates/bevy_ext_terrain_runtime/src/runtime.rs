@@ -415,6 +415,19 @@ pub(crate) fn load_world_texture(
     }
 }
 
+/// Normal, height, AO and roughness are linear data even when stored in a
+/// format also used for colour. Set this on the first load, including prefetch.
+fn load_world_data(server: &AssetServer, world: &mut World, path: &str) -> Handle<Image> {
+    let image = server
+        .load_builder()
+        .with_settings(|settings: &mut bevy::image::ImageLoaderSettings| settings.is_srgb = false)
+        .load(path.trim_start_matches('/').to_owned());
+    if let Some(mut tiled) = world.get_resource_mut::<WorldTiledTextures>() {
+        tiled.register(image.id());
+    }
+    image
+}
+
 /// The terrain's layer material, published by the bootstrap: ONE material for
 /// every chunk (the 13 pool layers + the global splat planes). Kept behind the
 /// per-chunk `get` so the chunk spawners stay unchanged.
@@ -1581,6 +1594,7 @@ pub fn bootstrap(world: &mut World) {
         root,
         &grid,
         &result,
+        &asset_roots,
         &mut watched,
     );
 
@@ -1707,7 +1721,7 @@ fn terrain_standard_material(
 ///
 /// Serve para NÃO pedir ao `AssetServer` um mapa que se sabe ausente. Os
 /// mapas OPCIONAIS das layers de terreno (`normal`/`height`/`ao`) faltam em
-/// algumas do pool — `dirt_trail` e `dirt_road` só têm albedo — e cada pedido
+/// algumas instalações do pool, e cada pedido
 /// falhado custa um `ERROR Path not found` do Bevy mais um watch pendente. No
 /// simple-rpg isso são 12 linhas de erro no arranque para um caso que o
 /// material já trata como normal (normal plana, height 0.5, AO 1.0): o
@@ -1879,8 +1893,12 @@ fn preload_terrain_textures(world: &mut World) {
             "terrain textures: {albedo_n} albedos + {detail_n} mapas de detalhe na frente dos GLBs"
         );
     }
-    for path in queued {
-        load_world_texture(&server, world, &path);
+    for (index, path) in queued.into_iter().enumerate() {
+        if index < albedo_n {
+            load_world_texture(&server, world, &path);
+        } else {
+            load_world_data(&server, world, &path);
+        }
     }
     if let Some(texture) = legacy.as_deref() {
         load_world_texture(&server, world, texture);
@@ -1957,22 +1975,22 @@ fn spawn_terrain_material(
     let flat_normal = images.add(flat_normal_image());
     let mut layer_normals = vec![flat_normal.clone(); super::splat::LAYER_COUNT];
     for (slot, path) in &tex_paths.normals {
-        layer_normals[*slot] = load_world_texture(server, world, path);
+        layer_normals[*slot] = load_world_data(server, world, path);
     }
     let flat_height = images.add(flat_height_image());
     let mut layer_heights = vec![flat_height.clone(); super::splat::LAYER_COUNT];
     for (slot, path) in &tex_paths.heights {
-        layer_heights[*slot] = load_world_texture(server, world, path);
+        layer_heights[*slot] = load_world_data(server, world, path);
     }
     let flat_ao = images.add(flat_ao_image());
     let mut layer_aos = vec![flat_ao.clone(); super::splat::LAYER_COUNT];
     for (slot, path) in &tex_paths.aos {
-        layer_aos[*slot] = load_world_texture(server, world, path);
+        layer_aos[*slot] = load_world_data(server, world, path);
     }
     let flat_rough = images.add(flat_rough_image());
     let mut layer_roughs = vec![flat_rough.clone(); super::splat::LAYER_COUNT];
     for (slot, path) in &tex_paths.roughs {
-        layer_roughs[*slot] = load_world_texture(server, world, path);
+        layer_roughs[*slot] = load_world_data(server, world, path);
     }
     let bound_normals: Vec<Handle<Image>> = layer_normals
         .iter()
@@ -2016,6 +2034,10 @@ fn spawn_terrain_material(
     let side = map.size as f32 * map.texel;
     let pick = |list: &[Handle<Image>], i: usize| list[i].clone();
     let mut chunk_params = TerrainChunkParams::new([origin.x, origin.y], side, config);
+    for (i, slot) in chunk_params.roughs.iter_mut().enumerate() {
+        let alias = spec.layers.get(i).map(String::as_str).unwrap_or_default();
+        slot.w = super::splat::normal_row_sign(alias);
+    }
     // Mapa de roughness não RESIDENTE: mix 0 (a constante). Isto inclui o
     // slot SEM mapa nenhum — o fallback plano é BRANCO (1.0) e num slot
     // `Smooth` o shader inverte-o (`1 − 1 = 0`): o chão ficava quase
@@ -2536,6 +2558,30 @@ fn paving_enabled() -> bool {
     )
 }
 
+/// Companion maps use the same convention as the terrain material pool.
+fn ground_detail_maps(
+    material: &mut StandardMaterial,
+    server: &AssetServer,
+    world: &mut World,
+    albedo: &str,
+    roots: &[PathBuf],
+) {
+    let Some(dir) = albedo.trim_start_matches('/').strip_suffix("/albedo.ktx2") else {
+        return;
+    };
+    material.flip_normal_map_y =
+        super::splat::normal_row_sign(dir.rsplit('/').next().unwrap_or(dir)) < 0.0;
+    for (name, slot) in [
+        ("normal", &mut material.normal_map_texture),
+        ("ao", &mut material.occlusion_texture),
+    ] {
+        let path = format!("{dir}/{name}.ktx2");
+        if asset_present(roots, &path) {
+            *slot = Some(load_world_data(server, world, &path));
+        }
+    }
+}
+
 /// Spawns the merged paving surface: one mesh per (material, chunk), split by
 /// [`spawn_ground_surface`] into an opaque core plus a blended feather band.
 #[allow(clippy::too_many_arguments)]
@@ -2547,6 +2593,7 @@ fn spawn_paving(
     parent: Entity,
     grid: &BrushGrid,
     paving: &crate::paving::PavingGrid,
+    asset_roots: &[PathBuf],
     watched: &mut Vec<WatchedTexture>,
 ) {
     for (gid, data) in crate::paving::paving_meshes(grid, paving) {
@@ -2573,9 +2620,10 @@ fn spawn_paving(
             let image = load_world_texture(server, world, texture);
             texture_handle = Some(image.clone());
             material.base_color_texture = Some(image);
+            ground_detail_maps(&mut material, server, world, texture, asset_roots);
         }
         if let (Some(server), Some(normal)) = (asset_server, group.normal.as_deref()) {
-            material.normal_map_texture = Some(load_world_texture(server, world, normal));
+            material.normal_map_texture = Some(load_world_data(server, world, normal));
         }
         spawn_ground_surface(
             world,
@@ -2600,6 +2648,7 @@ fn spawn_roads(
     parent: Entity,
     grid: &BrushGrid,
     result: &FeatureResult,
+    asset_roots: &[PathBuf],
     watched: &mut Vec<WatchedTexture>,
 ) {
     let paving_on = paving_enabled();
@@ -2612,6 +2661,7 @@ fn spawn_roads(
             parent,
             grid,
             &result.paving,
+            asset_roots,
             watched,
         );
     }
@@ -2640,6 +2690,7 @@ fn spawn_roads(
             let image = load_world_texture(server, world, texture);
             texture_handle = Some(image.clone());
             material.base_color_texture = Some(image);
+            ground_detail_maps(&mut material, server, world, texture, asset_roots);
         }
         // estrada não projeta sombra dura — a sombra própria escurecia as
         // bordas na relva (polish loop 6)
@@ -2675,6 +2726,7 @@ fn spawn_roads(
             let image = load_world_texture(server, world, texture);
             texture_handle = Some(image.clone());
             material.base_color_texture = Some(image);
+            ground_detail_maps(&mut material, server, world, texture, asset_roots);
         }
         // Um decal transparente a 10 cm do chão que projecta sombra desenha
         // a sua própria silhueta de volta no chão: era isso que dava o anel
@@ -2712,6 +2764,7 @@ fn spawn_roads(
             let image = load_world_texture(server, world, texture);
             texture_handle = Some(image.clone());
             material.base_color_texture = Some(image);
+            ground_detail_maps(&mut material, server, world, texture, asset_roots);
         }
         spawn_ground_surface(
             world,
@@ -2786,6 +2839,27 @@ fn spawn_ground_surface(
     watched: &mut Vec<WatchedTexture>,
 ) {
     let (core, edge) = split_ground_surface(data);
+    let mapped = material.normal_map_texture.is_some();
+    let ground_mesh = |data: &super::mesh::ChunkMeshData| {
+        let mut mesh = to_bevy_mesh(data);
+        if mapped {
+            // Ground UVs are a positive-scale projection of world XZ, even on the cut stones.
+            let tangents: Vec<[f32; 4]> = data
+                .normals
+                .iter()
+                .map(|&normal| {
+                    let n = Vec3::from_array(normal);
+                    Vec3::new(n.y, -n.x, 0.0)
+                        .try_normalize()
+                        .unwrap_or(Vec3::X)
+                        .extend(-1.0)
+                        .to_array()
+                })
+                .collect();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+        }
+        mesh
+    };
     let core_material = (!core.indices.is_empty()).then(|| {
         materials.add(StandardMaterial {
             alpha_mode: bevy::material::AlphaMode::Opaque,
@@ -2811,7 +2885,7 @@ fn spawn_ground_surface(
     ));
     if !edge.indices.is_empty() {
         root.insert((
-            Mesh3d(meshes.add(to_bevy_mesh(&edge))),
+            Mesh3d(meshes.add(ground_mesh(&edge))),
             MeshMaterial3d(handle),
         ));
     }
@@ -2823,7 +2897,7 @@ fn spawn_ground_surface(
             Visibility::Inherited,
             NotShadowCaster,
             ChildOf(root),
-            Mesh3d(meshes.add(to_bevy_mesh(&core))),
+            Mesh3d(meshes.add(ground_mesh(&core))),
             MeshMaterial3d(core_material),
         ));
     }

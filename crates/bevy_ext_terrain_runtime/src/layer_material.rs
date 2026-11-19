@@ -476,7 +476,8 @@ impl bevy::pbr::Material for TerrainChunkMaterial {
 /// Tabela de estilo do terreno (storage, binding 10). Indexada pelo SLOT DO
 /// POOL (0..13, [`super::splat::DEFAULT_LAYERS`]): `tiles[i].x` = metros por
 /// tile, `tints/flats/roughs` = correção de cor, cor plana ao longe e
-/// rugosidade (`roughs[i].y` = mix do MAPA, `.z` = inverter — smoothness).
+/// rugosidade (`roughs[i].y` = mix do mapa, `.z` = inverter smoothness,
+/// `.w` = sinal da componente Y da normal no referencial XZ).
 /// `world` coloca o splat global: xy = canto (-X,-Z), z = lado em metros,
 /// w = slot da rocha das paredes.
 #[derive(Debug, Clone, Copy, ShaderType)]
@@ -554,7 +555,8 @@ impl TerrainChunkParams {
                     RoughMap::Smooth => (ROUGH_MAP_MIX, 1.0),
                     RoughMap::None => (0.0, 0.0),
                 };
-                Vec4::new(s.rough, mix, invert, 0.0)
+                let normal_y = super::splat::normal_row_sign(super::splat::DEFAULT_LAYERS[i]);
+                Vec4::new(s.rough, mix, invert, normal_y)
             }),
             world: Vec4::new(
                 origin[0],
@@ -626,7 +628,7 @@ pub const SLOT_STYLES: [LayerStyle; super::splat::LAYER_COUNT] = [
     /* grass         */ style(5.0, [2.684, 2.793, 2.124], [0.1620, 0.3050, 0.0482], 0.95, RoughMap::Rough),
     /* vale_grass    */ style(6.0, [1.617, 1.323, 0.876], [0.3231, 0.5647, 0.1221], 0.95, RoughMap::Smooth),
     /* dirt          */ style(4.0, [1.429, 1.403, 1.137], [0.1441, 0.0802, 0.0452], 0.95, RoughMap::Rough),
-    /* dirt_trail    */ style(3.0, [1.384, 1.364, 1.460], [0.2961, 0.1946, 0.0802], 0.92, RoughMap::None),
+    /* dirt_trail    */ style(3.0, [1.384, 1.364, 1.460], [0.2961, 0.1946, 0.0802], 0.92, RoughMap::Rough),
     /* forest_floor  */ style(4.5, [0.794, 1.142, 0.692], [0.0976, 0.1441, 0.0545], 0.95, RoughMap::Smooth),
     /* gravel        */ style(3.5, [0.870, 1.010, 1.246], [0.4020, 0.3231, 0.2159], 0.90, RoughMap::Rough),
     /* mountain_stone*/ style(7.0, [1.356, 1.346, 1.299], [0.2623, 0.2542, 0.2307], 0.85, RoughMap::Smooth),
@@ -634,7 +636,7 @@ pub const SLOT_STYLES: [LayerStyle; super::splat::LAYER_COUNT] = [
     /* desert_sand   */ style(6.0, [2.282, 1.942, 1.325], [0.6308, 0.4125, 0.1878], 0.92, RoughMap::Smooth),
     /* snow_peak     */ style(8.0, [2.637, 2.687, 2.739], [0.8879, 0.9216, 0.9734], 0.65, RoughMap::Smooth),
     /* swamp_mud     */ style(3.5, [0.882, 0.817, 0.864], [0.0612, 0.0762, 0.0343], 0.70, RoughMap::Smooth),
-    /* dirt_road     */ style(3.0, [1.094, 1.148, 1.102], [0.3140, 0.2384, 0.1620], 0.92, RoughMap::None),
+    /* dirt_road     */ style(3.0, [1.094, 1.148, 1.102], [0.3140, 0.2384, 0.1620], 0.92, RoughMap::Rough),
     /* pebbles       */ style(2.5, [0.880, 0.920, 1.020], [0.2262, 0.2476, 0.2701], 0.85, RoughMap::Rough),
 ];
 
@@ -1178,8 +1180,8 @@ mod tests {
             "smoothness entra invertido"
         );
         assert_eq!(
-            params.roughs[SLOT_DIRT_TRAIL].y, 0.0,
-            "sem mapa → só a constante"
+            params.roughs[SLOT_DIRT_TRAIL].y, ROUGH_MAP_MIX,
+            "a terra usa o mapa de rugosidade do material"
         );
         assert_eq!(
             params.roughs[SLOT_DIRT_TRAIL].x,

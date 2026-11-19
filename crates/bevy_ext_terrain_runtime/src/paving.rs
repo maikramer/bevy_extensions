@@ -45,6 +45,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy::math::Vec2;
 use bevy::prelude::Reflect;
 
+mod setts;
+
 use super::brush::BrushGrid;
 use super::mesh::ChunkMeshData;
 
@@ -125,6 +127,10 @@ const WELD: f32 = 1e-4;
 #[derive(Debug, Clone, PartialEq, Reflect)]
 #[type_path = "viber::terrain::paving"]
 pub struct PavingStyle {
+    /// Mesh a crowned street with fitted stone borders and blended junctions.
+    pub setts: bool,
+    /// Optional stone face material for the border blocks.
+    pub kerb_texture: Option<String>,
     /// Lattice module (meters). `0` inherits the world default
     /// ([`DEFAULT_CELL`], or the finest module among the paved nodes).
     pub cell: f32,
@@ -160,6 +166,8 @@ impl Default for PavingStyle {
     /// "pick for me" — that footgun already swallowed one test round.
     fn default() -> Self {
         Self {
+            setts: false,
+            kerb_texture: None,
             cell: 0.0,
             corner: -1.0,
             inner_corner: -1.0,
@@ -262,6 +270,8 @@ impl Default for PavingSpec {
         Self {
             name: None,
             style: PavingStyle {
+                setts: false,
+                kerb_texture: None,
                 cell: 0.0,
                 corner: -1.0,
                 inner_corner: -1.0,
@@ -388,6 +398,9 @@ impl PavingSpec {
 #[derive(Debug, Clone, PartialEq, Reflect)]
 #[type_path = "viber::terrain::paving"]
 pub struct PavingGroup {
+    pub setts: bool,
+    /// Optional stone face material for the border blocks.
+    pub kerb_texture: Option<String>,
     pub texture: Option<String>,
     pub normal: Option<String>,
     pub texture_scale: f32,
@@ -414,7 +427,9 @@ impl PavingGroup {
     /// Everything except the declaration order — two nodes with the same
     /// material share one mesh however far apart they sit in the file.
     fn same_material(&self, other: &Self) -> bool {
-        self.texture == other.texture
+        self.setts == other.setts
+            && self.kerb_texture == other.kerb_texture
+            && self.texture == other.texture
             && self.normal == other.normal
             && self.texture_scale == other.texture_scale
             && self.base_color == other.base_color
@@ -451,6 +466,7 @@ pub struct PavingGrid {
     cells: BTreeMap<(i32, i32), u16>,
     groups: Vec<PavingGroup>,
     corridors: Vec<PavingCorridor>,
+    kerb_groups: BTreeMap<u16, u16>,
     /// Which run corridors claimed each cell. A rim vertex may only follow a
     /// road it actually belongs to: otherwise a plaza vertex near a passing
     /// artery is dragged onto the artery's edge, and the square's rim turns
@@ -542,6 +558,8 @@ impl PavingGrid {
 
         for (index, spec) in specs.iter().enumerate() {
             let group = PavingGroup {
+                setts: spec.style.setts,
+                kerb_texture: spec.style.kerb_texture.clone(),
                 texture: spec.texture.clone(),
                 normal: spec.normal.clone(),
                 texture_scale: spec.texture_scale,
@@ -592,6 +610,26 @@ impl PavingGrid {
                 };
                 grid.rasterize(shape, gid, run);
             }
+        }
+        // The border gets its own material within the same chunk buckets.
+        // Sampling the cobble atlas on a single block magnifies the mortar joints.
+        let street_groups: BTreeSet<_> = grid
+            .corridors
+            .iter()
+            .map(|c| c.group)
+            .filter(|&gid| grid.groups[gid as usize].setts)
+            .collect();
+        for gid in street_groups {
+            let street = &grid.groups[gid as usize];
+            let kerb = PavingGroup {
+                texture: street.kerb_texture.clone(),
+                normal: None,
+                setts: false,
+                base_color: street.base_color.map(|v| v * 0.9 + 0.09),
+                ..street.clone()
+            };
+            grid.kerb_groups.insert(gid, grid.groups.len() as u16);
+            grid.groups.push(kerb);
         }
         grid
     }
@@ -1753,6 +1791,7 @@ pub fn paving_meshes(terrain: &BrushGrid, paving: &PavingGrid) -> Vec<(usize, Ch
     }
 
     emit_corridors(terrain, paving, &mut pieces);
+    setts::emit(terrain, paving, &mut pieces);
 
     let mut merged: BTreeMap<(u16, i32, i32), ChunkMeshData> = BTreeMap::new();
     for (key, piece) in pieces {
@@ -2081,6 +2120,9 @@ fn emit_corridors(
     pieces: &mut Vec<((u16, i32, i32), ChunkMeshData)>,
 ) {
     for (ri, corridor) in paving.corridors.iter().enumerate() {
+        if paving.groups[corridor.group as usize].setts {
+            continue;
+        }
         let secs = ribbon_sections(corridor);
         if secs.len() < 2 {
             continue;
@@ -2958,6 +3000,57 @@ mod tests {
             },
             ..PavingSpec::default()
         }
+    }
+
+    #[test]
+    fn setts_join_mid_run_with_one_crowned_bed_and_an_unbroken_opening() {
+        let terrain = BrushGrid::new(vec![0; 64 * 64], 64, 64, 64.0, 50.0, 0.0).unwrap();
+        let mut main = run_spec(vec![Vec2::new(-12.0, 0.0), Vec2::new(12.0, 0.0)], 2.5);
+        main.style.setts = true;
+        main.style.cell = 0.75;
+        let mut side = main.clone();
+        side.shapes = vec![PavingShape::Run {
+            stations: vec![Vec2::ZERO, Vec2::new(0.0, 12.0)],
+            half_width: vec![2.0; 2],
+        }];
+        let grid = PavingGrid::build(&[main, side]);
+        let meshes = paving_meshes(&terrain, &grid);
+        assert_eq!(meshes.len(), 2);
+        let mesh = &meshes[0].1;
+        // A point away from triangle edges must be covered exactly once even
+        // inside the junction and in the fillet between perpendicular arms.
+        for p in [Vec2::new(0.31, 0.13), Vec2::new(2.09, 2.62)] {
+            let covers = mesh
+                .indices
+                .chunks_exact(3)
+                .filter(|tri| {
+                    let v = [tri[0], tri[1], tri[2]].map(|i| {
+                        let [x, _, z] = mesh.positions[i as usize];
+                        Vec2::new(x, z)
+                    });
+                    (0..3).all(|j| (v[(j + 1) % 3] - v[j]).perp_dot(p - v[j]) < 0.0)
+                })
+                .count();
+            assert_eq!(covers, 1, "overlap or gap at {p:?}");
+        }
+        let y_at = |x: f32, z: f32| {
+            mesh.positions
+                .iter()
+                .find(|p| p[0] == x && p[2] == z)
+                .unwrap()[1]
+        };
+        assert!(y_at(-7.5, 0.0) > y_at(-7.5, 2.25) + 0.03);
+        let mut cut_stones = 0;
+        for (p, c) in meshes[1].1.positions.iter().zip(&meshes[1].1.colors) {
+            if c[0] > 1.0 {
+                cut_stones += 1;
+                assert!(
+                    p[0].abs() > 1.4 || p[2] < -2.0 || p[2] > 10.0,
+                    "kerb crosses an open approach at {p:?}"
+                );
+            }
+        }
+        assert!(cut_stones > 100);
     }
 
     fn opaque_xz(mesh: &ChunkMeshData) -> Vec<Vec2> {

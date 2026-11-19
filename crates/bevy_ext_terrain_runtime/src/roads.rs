@@ -541,7 +541,7 @@ impl RoadNetworkSpec {
             // centreline da vizinha deixava uma cunha de chão nu no canto
             // externo da junção. Estende as pontas em ways partilhados
             // (grau ≥ 2) — as ribbons sobrepõem-se e o alpha feather funde.
-            if profile != RoadProfile::Bridge {
+            if profile != RoadProfile::Bridge && !self.paving.as_ref().is_some_and(|s| s.setts) {
                 let ext = (width.unwrap_or(self.default_width) * 0.75).min(6.0);
                 if degree.get(first_id.as_str()).copied().unwrap_or(0) >= 2 {
                     extend_path_end(&mut points, ext, false);

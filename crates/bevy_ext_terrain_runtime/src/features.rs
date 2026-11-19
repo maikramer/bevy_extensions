@@ -285,6 +285,10 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
                     .then_with(|| a.2.total_cmp(&b.2))
             })
             .expect("junction has at least three arms");
+        if arms.iter().all(|arm| paving_specs[arm.0].style.setts) {
+            // The continuous street surface already includes the junction.
+            continue;
+        }
         let radius = arms.iter().map(|arm| arm.2).fold(0.0, f32::max);
         // Stamp after all arms so a later narrow street of another material
         // cannot take cells back from the junction. Plazas still paint last.
