@@ -177,7 +177,7 @@ pub struct FramePacingPlugin;
 
 impl Plugin for FramePacingPlugin {
     fn build(&self, app: &mut App) {
-        let mode = PacingMode::parse(std::env::var("VIBER_FPS_CAP").ok().as_deref());
+        let mode = PacingMode::parse(bevy_ext_core::envs::var_lossy("FPS_CAP").as_deref());
         if mode == PacingMode::Off {
             return;
         }

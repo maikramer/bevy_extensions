@@ -33,8 +33,7 @@ pub const SHADOW_LIGHT_BUDGET: usize = 12;
 /// Orçamento efectivo: `VIBER_SHADOW_LIGHTS` ou [`SHADOW_LIGHT_BUDGET`]
 /// limitado pelo tier de qualidade ([`set_quality_shadow_cap`]).
 pub fn shadow_light_budget() -> usize {
-    std::env::var("VIBER_SHADOW_LIGHTS")
-        .ok()
+    bevy_ext_core::envs::var_lossy("SHADOW_LIGHTS")
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or_else(|| {
             SHADOW_LIGHT_BUDGET.min(QUALITY_SHADOW_CAP.load(std::sync::atomic::Ordering::Relaxed))
@@ -67,8 +66,7 @@ pub const SHADOW_LIGHT_MAX_DISTANCE: f32 = 60.0;
 
 /// Distância efectiva: `VIBER_SHADOW_LIGHT_DISTANCE` ou o default.
 pub fn shadow_light_max_distance() -> f32 {
-    std::env::var("VIBER_SHADOW_LIGHT_DISTANCE")
-        .ok()
+    bevy_ext_core::envs::var_lossy("SHADOW_LIGHT_DISTANCE")
         .and_then(|raw| raw.parse::<f32>().ok())
         .filter(|value| *value >= 0.0)
         .unwrap_or(SHADOW_LIGHT_MAX_DISTANCE)
@@ -88,8 +86,7 @@ const SHADOW_LIGHT_DAYLIGHT_BAND: f32 = 0.1;
 
 /// Limiar efectivo: `VIBER_SHADOW_LIGHT_DAYLIGHT` ou o default.
 pub fn shadow_light_daylight_max() -> f32 {
-    std::env::var("VIBER_SHADOW_LIGHT_DAYLIGHT")
-        .ok()
+    bevy_ext_core::envs::var_lossy("SHADOW_LIGHT_DAYLIGHT")
         .and_then(|raw| raw.parse::<f32>().ok())
         .unwrap_or(SHADOW_LIGHT_DAYLIGHT_MAX)
 }
@@ -188,7 +185,7 @@ pub fn light_budget_system(
     let cam_pos = cam.translation();
 
     // Braço de controlo (QA): a política antiga — luzes APAGADAS além de N.
-    if std::env::var("VIBER_LIGHT_BUDGET").as_deref() == Ok("12") {
+    if bevy_ext_core::envs::var_lossy("LIGHT_BUDGET").as_deref() == Some("12") {
         let mut by_distance: Vec<(Entity, f32)> = lights
             .iter()
             .map(|(entity, t)| (entity, t.translation().distance_squared(cam_pos)))

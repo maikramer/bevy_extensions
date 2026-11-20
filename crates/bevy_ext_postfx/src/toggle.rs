@@ -469,7 +469,7 @@ mod tests {
         assert!(crate::runtime::fx_off("SPLITTONE"), "1.º toque desliga");
         press(&mut app);
         assert!(
-            std::env::var_os("VIBER_NO_SPLITTONE").is_some()
+            bevy_ext_core::envs::var("NO_SPLITTONE").is_some()
                 || !crate::runtime::fx_off("SPLITTONE"),
             "2.º toque repõe"
         );

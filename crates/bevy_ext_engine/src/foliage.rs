@@ -46,7 +46,7 @@ pub fn batch_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let read = || {
         !matches!(
-            std::env::var("VIBER_FOLIAGE_BATCH").ok().as_deref(),
+            bevy_ext_core::envs::var_lossy("FOLIAGE_BATCH").as_deref(),
             Some("0" | "false" | "off")
         )
     };
@@ -419,7 +419,7 @@ pub struct ImpostorCard {
 
 pub fn impostors_enabled() -> bool {
     !matches!(
-        std::env::var("VIBER_IMPOSTORS").ok().as_deref(),
+        bevy_ext_core::envs::var_lossy("IMPOSTORS").as_deref(),
         Some("0" | "false" | "off")
     )
 }

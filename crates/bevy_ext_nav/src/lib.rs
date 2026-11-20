@@ -231,10 +231,10 @@ impl NavConfig {
     /// documented escape hatch.
     pub fn from_env() -> Self {
         let mut config = Self::default();
-        if let Ok(value) = std::env::var("VIBER_NAV") {
+        if let Some(value) = bevy_ext_core::envs::var_lossy("NAV") {
             config.enabled = !matches!(value.trim(), "0" | "false" | "off");
         }
-        if let Ok(value) = std::env::var("VIBER_NAV_DEBUG") {
+        if let Some(value) = bevy_ext_core::envs::var_lossy("NAV_DEBUG") {
             config.debug = !matches!(value.trim(), "0" | "false" | "off");
         }
         config

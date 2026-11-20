@@ -94,16 +94,38 @@ pub struct ScriptToast(pub String);
 /// e pelo prompt do HUD (`hud::interact::BALLOON_RANGE_M`).
 pub const BASE_RANGE_M: f32 = 3.5;
 
+/// Leitura de configuração por ambiente com **transição de nomes**: lê
+/// `VAEL_<NAME>` e cai para `VIBER_<NAME>` (os QA scripts e docs antigos
+/// continuam a funcionar durante a migração; o nome novo ganha sempre).
+pub mod envs {
+    /// Valor cru de `VAEL_<NAME>`, com fallback a `VIBER_<NAME>`.
+    pub fn var(name: &str) -> Option<std::ffi::OsString> {
+        std::env::var_os(format!("VAEL_{name}"))
+            .or_else(|| std::env::var_os(format!("VIBER_{name}")))
+    }
+
+    /// Como [`var`], convertido para `String` (perde não-UTF8, como
+    /// `std::env::var`).
+    pub fn var_lossy(name: &str) -> Option<String> {
+        var(name).and_then(|raw| raw.into_string().ok())
+    }
+
+    /// `true` se `VAEL_<NAME>` (ou o `VIBER_<NAME>` legado) está presente e
+    /// não é `"0"`/`"false"`/vazio.
+    pub fn flag(name: &str) -> bool {
+        var_lossy(name).is_some_and(|raw| !matches!(raw.as_str(), "" | "0" | "false"))
+    }
+}
+
 /// Escala global dos alcances de interação (0,5 = metade do histórico; pedido
 /// do utilizador a 2026-09-12 para reduzir sobreposições).
-/// `VIBER_INTERACT_RANGE_SCALE=1` devolve o comportamento antigo (A/B).
+/// `VAEL_INTERACT_RANGE_SCALE=1` devolve o comportamento antigo (A/B).
 pub const INTERACT_RANGE_SCALE: f32 = 0.5;
 
-/// Escala efetiva (env `VIBER_INTERACT_RANGE_SCALE`, senão
+/// Escala efetiva (env `VAEL_INTERACT_RANGE_SCALE`, senão
 /// [`INTERACT_RANGE_SCALE`]).
 pub fn interact_range_scale() -> f32 {
-    std::env::var("VIBER_INTERACT_RANGE_SCALE")
-        .ok()
+    envs::var_lossy("INTERACT_RANGE_SCALE")
         .and_then(|raw| raw.parse::<f32>().ok())
         .filter(|v| v.is_finite() && *v > 0.0)
         .unwrap_or(INTERACT_RANGE_SCALE)

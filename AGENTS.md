@@ -246,7 +246,7 @@ project:                     # config.yaml — sem este bloco o mundo é de uma 
 
 * **WESL substituiu o naga_oil** — os shaders do motor são `.wesl`: `#import a::b::{x}` → `import a::b::{x};` (imports no topo, podem ser condicionais), `#ifdef X` → `@if(X)` (anexado a declarações/instruções; blocos `@if(BINDLESS) { … } @else { … }` embrulham regiões inteiras), `#{CONST}` → `constants::CONST` (defs numéricas), e os módulos do PBR ganharam o prefixo `bevy_pbr::render::` (`prepass_utils`→`bevy_pbr::prepass::utils`, `ssao_utils`→`bevy_pbr::ssao::utils`). Os ficheiros gerados em `<mundo>/shaders/` são `.wesl`; WGSL puro SEM diretivas continua válido (`AERIAL_WGSL`/`water_ssr` ficam `from_wgsl`). Harnesses: `tests/common/mod.rs` compila WESL com `wesl::compile` + stubs por módulo + o módulo especial `constants` — o padrão do `bevy_shader::shader_cache`.
 * **bevy 0.20.1 do crates.io** (0.20.0 final a 2026-10-08; a tabela `[patch.crates-io]` de tags git foi removida e o único patch restante é o `rerecast` com fixes locais). Os crates do ecossistema ainda sem versão bevy-0.20 publicada vivem em `vendor/` (bevy_rerecast[_core], bevy_landmass, landmass_rerecast, rerecast — o fork `bevy_rapier3d` saiu a 2026-10-18: o upstream 0.37.0 é a versão oficial bevy-0.20. Proveniência e condições de des-vendor em [`vendor/FORKS_020.md`](vendor/FORKS_020.md)).
-* **OIT** (transparência order-independent, opt-in `VIBER_OIT=1`): o gate é o componente `OrderIndependentTransparencySettings` na câmara (postfx.rs `oit_requested`); materiais `AlphaMode::Blend/Add` participam por omissão (`enable_oit()` default true), a ÁGUA fica fora (`WaterExtension::enable_oit() = false`).
+* **OIT** (transparência order-independent, opt-in `VAEL_OIT=1`): o gate é o componente `OrderIndependentTransparencySettings` na câmara (postfx.rs `oit_requested`); materiais `AlphaMode::Blend/Add` participam por omissão (`enable_oit()` default true), a ÁGUA fica fora (`WaterExtension::enable_oit() = false`).
 * **Reads/writes por sistema no profiler** (tab Sistemas, `viber debug prof --tab sistemas`): `ScheduleData` do `bevy_dev_tools` — os mesmos dados do BRP `schedule.graph`.
 
 ## WHERE TO LOOK
@@ -265,8 +265,8 @@ project:                     # config.yaml — sem este bloco o mundo é de uma 
 | Camada de pintura do terreno | `src/terrain/paint.rs` | `PaintGrid` (sidecar `<ahgt>.paint`), blend + eleição forçada nos chunks (`splat.rs bake_chunk`), repaint in-place (`runtime::repaint_chunks`), op `terrain_paint`/`splat_patch` |
 | Terreno (specs, heightmap, mesh, LOD) | `src/terrain/` | `spec.rs` (contrato), `heightmap.rs`/`brush.rs` (altura), `pads.rs` (pads resolvidos), `mesh.rs` (buffers/tint), `plugin.rs` (LOD runtime + rebuild por edições), `runtime.rs` (bootstrap + carve + applier das edições vivas), `cliffs.rs` (cliffs procedurais + sharpen + CliffMask), `delta.rs` (**terreno vivo**: overlay de edições, Fase 3) |
 | Preview de estado de UI (editor) | `src/ui/runtime.rs` | `UiPreviewState(StyleState)` sobrepõe a interação na cascata (`:hover`/`:active` sem ponteiro); entidades de UI carimbadas com `scene::SceneSource` |
-| Scripts Luau + API `viber.*` | `src/luau/` | módulos categorizados: `host` (VM/chunks), `ctx` (snapshot), `commands` (fila Lua→engine), `runtime` (sistemas), `api` + `input`/`events`/`timers`/`entity`/`game` (grupos da API), `sfx`; referência completa em **`docs/LUA_API.md`**; hooks `on_update(dt)`/`on_player_attack`; "LOD de IA" via `ScriptActivation`. **Luau JIT** (feature `luau-jit`, default ON desde 2026-10-18): chunks novos compilam para código nativo (codegen do Luau, mlua 0.12) — `VIBER_LUAU_JIT=0` volta ao interpretador; o orçamento de 500 ms interrompe TAMBÉM código JIT (testado ao vivo + `test_infinite_loop_is_interrupted_by_the_cpu_budget`) |
-| Hot-reload de scripts | `src/hot_reload.rs` | watcher (`notify`) sobre `<mundo>/scripts/` — recarga ao gravar com re-corrida do top-level; erro de compilação mantém o chunk antigo; `VIBER_HOT_RELOAD=0` desliga |
+| Scripts Luau + API `viber.*` | `src/luau/` | módulos categorizados: `host` (VM/chunks), `ctx` (snapshot), `commands` (fila Lua→engine), `runtime` (sistemas), `api` + `input`/`events`/`timers`/`entity`/`game` (grupos da API), `sfx`; referência completa em **`docs/LUA_API.md`**; hooks `on_update(dt)`/`on_player_attack`; "LOD de IA" via `ScriptActivation`. **Luau JIT** (feature `luau-jit`, default ON desde 2026-10-18): chunks novos compilam para código nativo (codegen do Luau, mlua 0.12) — `VAEL_LUAU_JIT=0` volta ao interpretador; o orçamento de 500 ms interrompe TAMBÉM código JIT (testado ao vivo + `test_infinite_loop_is_interrupted_by_the_cpu_budget`) |
+| Hot-reload de scripts | `src/hot_reload.rs` | watcher (`notify`) sobre `<mundo>/scripts/` — recarga ao gravar com re-corrida do top-level; erro de compilação mantém o chunk antigo; `VAEL_HOT_RELOAD=0` desliga |
 | UI declarativa (`UiRoot`/`UiStyle`) + `viber.ui.*` | `src/ui/` | `tree.rs` (XML→bevy_ui), `style.rs` (stylesheet), `palette.rs` (cores Tailwind), `anim.rs` (movimento), `widgets.rs` (check/slider/input/tooltip/cursor), `script.rs` (API Luau), `bind.rs` (bindings), `modal.rs` (modais autorais). **Interaction via PICKING nativo** (2026-10-18): `interaction.rs` é um adaptador fino `PointerHits`→`Interaction` (o hit-testing é o `bevy_ui::picking_backend`; blocking por `Pickable` via `runtime::ui_pickable` — o backend ignora `FocusPolicy`); o mesh picking ficou `require_markers: true` (sem consumidor) |
 | HUD de jogo | `src/hud/` | widgets que desenham dados do mundo: minimapa, compasso. O profiler e os painéis/menus vivem na UI declarativa (`src/ui/`, `world/profiler.xml`) |
 | Player + câmara | `src/player.rs`, `src/camera.rs` | WASD/setas + Shift sprint + Space salto; third-person com drag/scroll |
@@ -279,7 +279,7 @@ project:                     # config.yaml — sem este bloco o mundo é de uma 
 | RNG determinístico | `src/rng.rs` | SplitMix64 ÚNICO da engine ("mesma seed, mesmo mundo") — spawner/terreno/IA/clima; sequência congelada por golden test. `splitmix64` counter-style para o heightmap procedural |
 | Travel & wayfinding | `src/travel.rs` | A Nota [F], viagem rápida [G], registry de hostis (alimenta `viber.alive_in_region`) |
 | Mundo vivo | `src/worldsys.rs`, `src/ambient.rs`, `src/sky.rs`, `src/postfx.rs`, `src/animation.rs`, `src/music.rs` | DayCycle/Weather/WorldBorder/BiomeRegion como recursos; fog/tint/gestos de NPC/SFX; céu WGSL especializado por mundo; exposure/bloom/SSAO; clips glTF; BGM crossfade |
-| DLSS (upscaling NGX) | `src/dlss.rs` (+ ramo no attach do `src/postfx.rs`) | feature cargo `dlss` (NÃO-default; SDK da NVIDIA em build — secção "DLSS Super Resolution" abaixo); troca o TAA, gate `VIBER_DLSS`/config.yaml `dlss:`, modo ao vivo na REPL `viber.debug.dlss(...)` |
+| DLSS (upscaling NGX) | `src/dlss.rs` (+ ramo no attach do `src/postfx.rs`) | feature cargo `dlss` (NÃO-default; SDK da NVIDIA em build — secção "DLSS Super Resolution" abaixo); troca o TAA, gate `VAEL_DLSS`/config.yaml `dlss:`, modo ao vivo na REPL `viber.debug.dlss(...)` |
 | Física | `src/physics.rs`, `src/player.rs`, `src/physics_fx.rs` | Avian (`avian3d 0.8`) + `bevy-tnua` no herói: `collider`/`rigidbody` declarativos (contrato DSL intacto); o herói é um corpo dinâmico com sensor de chão, autostep próprio (`probe_steps`) e natação por `TnuaToggle`; knockback/lunge na `desired_motion` + destrutíveis |
 | IA sem script | `src/ai.rs` | wander/chase determinístico p/ criaturas de `DynamicSpawner` sem script + respawn |
 | Debug bridge + REPL Luau | `src/bridge/` | `mod.rs` (métodos BRP `viber.*`), `lua.rs` (método `viber.lua` + API `viber.debug.*`), `client.rs` (cliente std-only), `logs.rs` (layer de tracing); QA headless via `viber debug …` |
@@ -307,7 +307,7 @@ Sem caminho, `run`/`analyze`/`scene`/`tool` descobrem o mundo por ordem:
 `graphics: alto | equilibrado (default) | desempenho` — UM botão para a lente
 toda (cascatas do sol, shadow map, raymarch volumétrico, SSAO/DOF/motion blur/
 contact shadows, alcance de render dos spawners, densidade da relva).
-`VIBER_GRAPHICS` sobrepõe-se sem editar o ficheiro e cada `VIBER_*` individual
+`VAEL_GRAPHICS` sobrepõe-se sem editar o ficheiro e cada `VAEL_*` individual
 continua a ganhar ao preset (a bissecção de QA não perdeu nada). Medido no
 `simple-rpg` (RTX 4050 Laptop, 1280x720, janela VISÍVEL): **32 / 26 / 17 ms**
 de frame — o `desempenho` é o preset dos 60 fps. Fonte:
@@ -332,7 +332,7 @@ estrada, pad, teto fino, falésia, exclusão, bioma) ficam numa grelha a 4 m
 reutilizada entre rebakes. O bake refaz-se por cena (`SceneEpoch`) ou por
 edição viva (`DeltaGrid::revision`, debounce 0,6 s).
 
-Knobs no Vael: `VIBER_GRASS=0`, `VIBER_GRASS_DENSITY=<f32>`,
+Knobs no Vael: `VAEL_GRASS=0`, `VAEL_GRASS_DENSITY=<f32>`,
 `GRASS_DEBUG=1` (logs do bake + PGMs das máscaras em `/tmp`). O tier segue
 `graphics:` (alto=High, equilibrado=Medium, desempenho=Low); no equilibrado as
 sombras são `Near` e no desempenho ficam `Off`. Sem compute/indirect
@@ -364,7 +364,7 @@ full-res — são injetados pelo próprio Bevy).
   `.cargo/config.toml` fá-lo achar. (O antigo pin `prettyplease 0.2.37` foi
   retirado — o lock resolve `bindgen 0.73.2` + `prettyplease 0.3` sem âncora.)
 * **Runtime**: LIGADO por omissão quando a feature está compilada; sem
-  suporte (sem RTX/NGX/Vulkan) → warn + TAA. Gate: `VIBER_DLSS` > `dlss:` do
+  suporte (sem RTX/NGX/Vulkan) → warn + TAA. Gate: `VAEL_DLSS` > `dlss:` do
   config.yaml > `auto` (off|auto|dlaa|quality|balanced|performance|ultra).
   On/off é gate de arranque (como o TAA); o MODO troca AO VIVO na REPL:
   `viber debug lua 'viber.debug.dlss("performance") return true'` — A/B de
@@ -417,7 +417,7 @@ teste do Bevy em dev pesa ~2.2 GB de debug symbols) e os **caches
 incrementais** — reconstruíveis num relink de segundos, porque o cargo deteta
 a falta do output e refaz só o link. Rlibs, `.fingerprint` e outputs de build
 scripts FICAM (`cargo test` volta a pronto num relink, não numa
-recompilação). Guards: `VIBER_PRUNE=0` desliga; com um cargo/rustc ALHEIO em
+recompilação). Guards: `VAEL_PRUNE=0` desliga; com um cargo/rustc ALHEIO em
 curso a limpeza salta-se inteira (o cargo ancestral de `cargo run` é
 excluído); binários em execução de dentro do perfil a limpar são poupados.
 `viber prune [--debug]` dispara a mesma limpeza sem abrir janela.
@@ -443,7 +443,7 @@ Nunca `etc1s`: a policy do pool é UASTC (o leitor do 0.20 já transcode ETC1S, 
 [`docs/PERFORMANCE.md`](docs/viber/PERFORMANCE.md). Assets partilhados vivem SÓ no
 pool — sem cópias nem symlinks por exemplo ([`docs/ASSETS.md`](docs/viber/ASSETS.md)).
 
-### SSR de reflexões raster (`VIBER_WATER_SSR`, `src/water_ssr.rs`)
+### SSR de reflexões raster (`VAEL_WATER_SSR`, `src/water_ssr.rs`)
 
 Reflexo de cena por raymarch screen-space (Fase B das reflexões). Passe
 fullscreen no Core3d (ANTES do TAA — o acumulo
@@ -455,7 +455,7 @@ com `<Weather rain>`, superfícies para cima ganham o mesmo reflexo × chuva ×
 0.55 — o look "rua molhada" sem material novo.** O custo do chão é o que
 cresce com a chuva no mapa todo; `config.yaml → reflections.wet-ground: false`
 tira-o do raymarch (o sheen barato do `walls_b.w` no terreno fica). **OPT-IN**
-(`VIBER_WATER_SSR=1`, ou `reflections.mode` do config) — sem acumulação
+(`VAEL_WATER_SSR=1`, ou `reflections.mode` do config) — sem acumulação
 temporal própria o reflexo dança com as ondas (medido 2026-09-10); é caminho
 raster oficial mas não está no frame por omissão. Ligar custa ~1 passe
 fullscreen; `reflections.steps`/`max-distance` cortam o raymarch. WGSL
@@ -484,7 +484,7 @@ e os interiores ficam EXACTAMENTE como eram (o alvo de sempre) e a noite fica
 presa no teto. Sem o joelho, o teto escurecia também a alvorada aprovada.
 Medido no simples-rpg (pântano, chuva 0.9): frame **127/255** com 2.0,
 **83/255** com 0.5 (noite seca) e 90/255 no antigo `qa-raster` (removido a 2026-11-12; chuva 0.9).
-`VIBER_NO_AECURVE=1` devolve a curva plana (A/B do branco da noite).
+`VAEL_NO_AECURVE=1` devolve a curva plana (A/B do branco da noite).
 O fog de distância e o volumétrico NÃO são a fonte do branco (removidos ao vivo,
 o frame muda ~1/255) — é a exposição.
 
@@ -501,17 +501,17 @@ acende (`light_attenuation = exp(−densidade × raio do AABB × (abs+scat))` �
 sol e lanternas incluídas) e ele só encobria a distância; no pântano levava
 `FOG_VOLUME_SWAMP_BONUS` extra, ou seja era o pior caso. Medido no antigo
 `qa-raster` (removido a 2026-11-12) à chuva: o contraste da cena sobe de sd
-3.2 para 4.7 (= a referência com `VIBER_NO_VOLUMETRICS=1`) e o frame de
+3.2 para 4.7 (= a referência com `VAEL_NO_VOLUMETRICS=1`) e o frame de
 89/95/103 para 93/103/117.
 
-### Probes regionais (`VIBER_PROBES`, `src/probes.rs`)
+### Probes regionais (`VAEL_PROBES`, `src/probes.rs`)
 
 Bounce de bioma nos pads: probes nascem AUTOMATICAMENTE nos `<TerrainPad>`
 cujo `<BiomeRegion>` declara `tint` (máx. 8, espaçados ≥40 m; pad sem tint
 não gera probe — seria clone do céu mundial). Cubemap pintado em CPU pelo
 MESMO painter do IBL (`crate::ibl::sky_cubemap_tinted`, tint no hemisfério de
 baixo), repintado por fase do dia; parallax correction por AABB é nativa do
-Bevy. `VIBER_PROBES=0` desliga.
+Bevy. `VAEL_PROBES=0` desliga.
 
 ### Debug bridge (`viber run --bridge`)
 
@@ -531,10 +531,10 @@ script" do bridge, secção abaixo). Os métodos BRP builtin (`world.query`,
 `world.spawn_entity`, `world.insert_components`, `world.mutate_components`,
 …) também ficam expostos — inspecção e mutação live do ECS.
 
-Cliente CLI (`--port` → `--world` → `VIBER_BRIDGE_PORT` → **porta da sessão
+Cliente CLI (`--port` → `--world` → `VAEL_BRIDGE_PORT` → **porta da sessão
 viva** → 15702). Desde que `session up` escolha a primeira porta livre, o
 cliente descobre-a sozinho pelo `engine.json` da sessão — não é preciso
-exportar `VIBER_BRIDGE_PORT` no fluxo normal. A descoberta é rápida (pre-check
+exportar `VAEL_BRIDGE_PORT` no fluxo normal. A descoberta é rápida (pre-check
 TCP de 250 ms por sessão, probe HTTP só na vencedora), imprime `viber: bridge
 descoberto em :PORT (sessão: …)` no stderr, prefere a engine cujo mundo está
 debaixo do cwd e — como o `viber run --bridge` também registra o seu
@@ -547,7 +547,7 @@ Aponta a TUA engine com `--world` (caminho do XML, nome de ficheiro ou stem —
 `viber debug --world terrain lua '…'` resolve a porta pelo `engine.json` da
 sessão desse mundo e valida a identidade que a engine reporta no ping; registo
 stale → erro, não mutação do mundo errado), ou com `--port`, ou exporta
-`VIBER_BRIDGE_PORT`. `viber debug probe` é a exceção: com ambiguidade LISTA as
+`VAEL_BRIDGE_PORT`. `viber debug probe` é a exceção: com ambiguidade LISTA as
 engines vivas em vez de falhar. O `viber run --bridge` sem valor escolhe a
 primeira porta LIVRE a partir de 15702 (a linha de arranque sugere o comando
 `--world` certo); `--bridge 15702` fixa a porta:
@@ -616,7 +616,7 @@ Chrome Trace Format (Perfetto); o `trace_status`/CLI imprime o resumo
 analítico (avg/p50/p95/p99/max, frames acima de 16.7/33.3/50 ms, top total e
 top max, hitches, contadores first→last) que a IA lê diretamente. `--seconds
 0` inicia uma gravação manual, `viber debug mark "…"` correlaciona eventos e
-`trace --stop` fecha/exporta. O limiar de hitch é `VIBER_HITCH_MS` (default
+`trace --stop` fecha/exporta. O limiar de hitch é `VAEL_HITCH_MS` (default
 50 ms) ou `--hitch-ms`.
 
 **Quatro capacidades (2026-09-14):** VER — `viber.debug.*` lê TUDO (vitals de
@@ -789,8 +789,8 @@ Fluxo típico:
 ```bash
 viber session up
 viber session claim --owner qa-sky || return    # exit 3 → fazer outro trabalho
-VIBER_BRIDGE_PORT=15702 viber debug lua 'viber.debug.tp(0, -20) return true'
-VIBER_BRIDGE_PORT=15702 viber debug screenshot -o qa.png
+VAEL_BRIDGE_PORT=15702 viber debug lua 'viber.debug.tp(0, -20) return true'
+VAEL_BRIDGE_PORT=15702 viber debug screenshot -o qa.png
 viber session release --owner qa-sky
 ```
 
@@ -823,7 +823,7 @@ Teclas: **P** (modal), abas por **clique** ou teclado nativo do modal
 (**`]`/`.`** próxima, **`[`/`,`** anterior, **1–5** saltam), **F12/Pause**
 (congelar), **`** (exportar), **PgUp/PgDn** (raio das próximas). A fonte da
 verdade das abas é o widget nativo; o driver espelha para a engine. Overlay mínimo **F3**
-mantém-se. `VIBER_PROF_LOG=1` liga o `LogDiagnosticsPlugin`.
+mantém-se. `VAEL_PROF_LOG=1` liga o `LogDiagnosticsPlugin`.
 
 QA típico: `viber debug prof --tab física`, `viber debug prof --tab tudo
 --json`, `viber debug lua 'return viber.profiler().state'`. (O P do profiler
@@ -861,7 +861,7 @@ Dentro da bolsa declarada por `<InteriorScene>` a câmara muda de regime
 
 | Regra | Onde | Porquê |
 |---|---|---|
-| Ambiente FIXO (`INTERIOR_AMBIENT_BRIGHTNESS` = 2000 lux, `VIBER_INTERIOR_AMBIENT` afina) | `daycycle_drive` | a sala não escurece com o relógio lá fora |
+| Ambiente FIXO (`INTERIOR_AMBIENT_BRIGHTNESS` = 2000 lux, `VAEL_INTERIOR_AMBIENT` afina) | `daycycle_drive` | a sala não escurece com o relógio lá fora |
 | Sol a 0 e IBL a `INTERIOR_IBL_INTENSITY` | `interior_lighting_apply` | o cubemap do céu pintava a sala de azul-lua |
 | Paleta/exposição/névoa de DIA (`INTERIOR_SUN_ELEVATION_DEG`) | `atmosphere_drive` | o grading noturno mantinha a sala escura mesmo com o ambiente alto — é ele o lever (medido 99 → 220/255) |
 | Tint de props em dia | `prop_tint` | idem, nos materiais |
@@ -921,7 +921,7 @@ Duas regras, uma fonte (2026-09-12):
   `interact::range_scale()` (default **0,5** → 1,75 m efetivos), e os alcances
   AUTORADOS (`viber.set_interaction(label, tecla, range)`, `destructible
   range`) levam a mesma escala — a conversão acontece num só sítio, ao inserir
-  o `ScriptInteraction`. `VIBER_INTERACT_RANGE_SCALE=1` devolve o antigo.
+  o `ScriptInteraction`. `VAEL_INTERACT_RANGE_SCALE=1` devolve o antigo.
 * **O mais próximo ganha** — `InteractionFocus` (recurso, recalculado no
   `PreUpdate`) elege UM vencedor por TECLA entre tudo o que é interagível
   (`ScriptInteraction` + `<DialogueNPC>`). `viber.interacted(tecla)` só é
@@ -949,19 +949,19 @@ Quatro camadas cobrem o resto; o retrato e os números estão em
 
 | Linhas no snapshot | O quê | Como ligar |
 |---|---|---|
-| `gpu[]` | cada passe do render graph em CPU **e** GPU (timestamps do wgpu) | `VIBER_PROF_GPU=1` no ambiente da engine |
+| `gpu[]` | cada passe do render graph em CPU **e** GPU (timestamps do wgpu) | `VAEL_PROF_GPU=1` no ambiente da engine |
 | `sched.*` | fatia de cada schedule do `Main`, mais **`sched.render_wait`** — o buraco entre frames: extract + render app + present | sempre |
 | `render.*` | fases do schedule `Render` no sub-app (`prepare_views`, `queue`, `phase_sort`, `bind_groups`, `render`…) | sempre |
 | `bevy.*` | fases do `PostUpdate` do Bevy (transform propagate, visibilidade, visibilidade por luz, clusters) | sempre |
 
 Mais: `shadow_lights` nos contadores (PointLights com cube shadow map activo,
-6 vistas cada) e `VIBER_PROF_SYSTEMS=<n>|all` para tirar o corte de 30 linhas
+6 vistas cada) e `VAEL_PROF_SYSTEMS=<n>|all` para tirar o corte de 30 linhas
 da lista de sistemas.
 
 ```bash
-VIBER_PROF_GPU=1 viber session up --world ../Vael/world.xml
+VAEL_PROF_GPU=1 viber session up --world ../Vael/world.xml
 viber debug prof --world … --samples 8          # traz "render — top passes"
-VIBER_PROF_SYSTEMS=all viber debug prof --world … --json
+VAEL_PROF_SYSTEMS=all viber debug prof --world … --json
 ```
 
 **Protocolo:** braços A/B só valem **interleaved no mesmo processo** (os
@@ -988,8 +988,8 @@ faísca de fogueira ao pé da câmara continua opaca):
 
 | Controlo | Default | Env | Porquê |
 |---|---|---|---|
-| `near_fade_m` | 8 m | `VIBER_RAIN_NEAR_FADE` | a câmara de 3.ª pessoa vive DENTRO da coluna de chuva; um streak de 0,5 m a 1 m do olho tapa ~40 % da altura do ecrã |
-| `max_alpha` | 0.28 | `VIBER_RAIN_ALPHA` | cortina translúcida deixa ver a paisagem; opaca é uma parede |
+| `near_fade_m` | 8 m | `VAEL_RAIN_NEAR_FADE` | a câmara de 3.ª pessoa vive DENTRO da coluna de chuva; um streak de 0,5 m a 1 m do olho tapa ~40 % da altura do ecrã |
+| `max_alpha` | 0.28 | `VAEL_RAIN_ALPHA` | cortina translúcida deixa ver a paisagem; opaca é uma parede |
 
 Afinação AO VIVO (sem rebuild): `viber.debug.rain_look{near_fade=…,
 alpha=…, width=…, rate=…}` e `viber.debug.set_weather{rain=…, clouds=…,
@@ -1021,10 +1021,10 @@ noite as sombras da vila ficam todas:
 Histerese nos dois eixos (rank e distância), senão a lanterna pisca ao andar
 na fronteira (refresh de 1 s).
 
-Knobs (QA e GPUs fracas): `VIBER_SHADOW_LIGHTS` (orçamento; `0` desliga),
-`VIBER_SHADOW_LIGHT_DISTANCE`, `VIBER_SHADOW_LIGHT_DAYLIGHT` (`1` = sombras
-sempre), `VIBER_POINT_SHADOW_SIZE`, `VIBER_SHADOW_CASCADES` (1–4),
-`VIBER_SHADOW_DISTANCE` (alcance das cascatas do sol). Extras do profiler
+Knobs (QA e GPUs fracas): `VAEL_SHADOW_LIGHTS` (orçamento; `0` desliga),
+`VAEL_SHADOW_LIGHT_DISTANCE`, `VAEL_SHADOW_LIGHT_DAYLIGHT` (`1` = sombras
+sempre), `VAEL_POINT_SHADOW_SIZE`, `VAEL_SHADOW_CASCADES` (1–4),
+`VAEL_SHADOW_DISTANCE` (alcance das cascatas do sol). Extras do profiler
 para o A/B ao vivo: `extra:dir-shadows`, `extra:point-shadows`
 (`viber debug lua 'viber.profiler_cmd("extra:point-shadows")'`).
 
@@ -1073,13 +1073,13 @@ em **[`docs/ASSETS.md`](docs/viber/ASSETS.md)**; `viber create` gera um completo
 | `Cylinder` | `radius`, `half-height` |
 | `Plane` | `half-size` (vec2, plano XZ) |
 | `Capsule` | `radius`, `half-height` |
-| `PointLight` | `color`, `intensity` (default 1200 lm), `radius`, `shadows` — TODAS iluminam (o cluster do Bevy aguenta 204); com `shadows="true"` a luz concorre ao orçamento de cube shadow maps (as `SHADOW_LIGHT_BUDGET`=12 mais próximas, `ambient::light_budget_system`; `VIBER_LIGHT_BUDGET=12` devolve a política antiga de apagar as luzes além das 12 mais próximas, para A/B) |
+| `PointLight` | `color`, `intensity` (default 1200 lm), `radius`, `shadows` — TODAS iluminam (o cluster do Bevy aguenta 204); com `shadows="true"` a luz concorre ao orçamento de cube shadow maps (as `SHADOW_LIGHT_BUDGET`=12 mais próximas, `ambient::light_budget_system`; `VAEL_LIGHT_BUDGET=12` devolve a política antiga de apagar as luzes além das 12 mais próximas, para A/B) |
 | `DirectionalLight` | `color`, `illuminance` (lux, default bevy 10 000), `direction` ("x y z", para onde a luz viaja; −Z da entidade alinha à direção), `shadows` |
 | `AmbientLight` | `color`, `brightness` — aplicado como recurso `GlobalAmbientLight`, não entidade |
 | `OrbitCamera` | `target` (nome de entidade), `distance`, `height`, `pitch` (graus; quando presente sobrepõe `height` via `height = distance·tan(pitch)`) |
 | `GltfScene` | `url` (obrigatório; `/assets/...` resolve contra as asset roots por ordem — a pasta do jogo SEMPRE 1.ª, as roots extra do `config.yaml` a seguir (tipicamente o pool partilhado); guarda anti-regressão `tests/asset_pool_dedup.rs`, ver **[`docs/ASSETS.md`](docs/viber/ASSETS.md)**) + attrs universais; cena default do GLB spawna como filhos da entidade (transform aplica); load assíncrono, falha = warn + nó vazio. GLBs do pipeline vêm meshopt-comprimidos — o `MeshoptAssetReader` (`src/meshopt.rs`) descomprime EXT_meshopt à leitura; NÃO há espelho nem cópias por exemplo |
 | `StaticSpawner` | `count`, `seed`, `region-min`/`region-max` ("x y z"), `density-per-km2`+`max-instances` (modo de contagem alternativo: `count = densidade × área km²` da região XZ, teto `max-instances` — 0 = sem teto; `count` explícito ganha), `cluster-count`/`cluster-radius`, `footprint-radius`+`avoid-overlaps` (0 = AUTO: meia-largura XZ do AABB do GLB, fallback 0.8 m), `max-slope-deg`, `max-slope-attempts` (32 — tentativas POR instância; esgotadas, a instância é omitida), `avoid-water`, `in-water` (à lâmina de água), `near-water`+`near-water-radius`, `avoid-road` (default ON), `avoid-cliff` (default ON — nada nasce em parede de cliff nem a `cliff-margin` dela; `"0"` restaura), `cliff-margin` (2 m — folga além da vergem da máscara de cliffs, distância REAL medida por `CliffMask::is_cliff_within`), `activation-radius` (LOD de IA dos scripts), `align-to-terrain`, `base-y-offset` (soma ao Y pós-assentamento), `scale-min`/`max`+`scale-axis-min`/`max`, `random-yaw`, `max-distance`; template = primeiro glTF (`GLTFLoader`/`GltfScene`) na subárvore filho. Colocação determinística (SplitMix64 por seed). Espelha `src/spawner.rs` (função pura `compute_placements`) — ver **Spawner: colocação** abaixo. **Gerador:** o `viber bake` converte-o em `<Scatter id=…>` (receita) + `<Group name="spawn/…" generated-by=…>` (instâncias editáveis); num mundo estático é ERRO de parse (só mundos procedurais antigos, à espera do `viber bake`) |
-| `ParticleSystem` | `preset` (fire, smoke, fireflies, ground-dust, sparkle, leaves, snow, sand-dust, magic, core; desconhecido = core) + `transform="pos: x y z"` (component-string) + overrides em `particle-emitter="preset: …; emission-rate: …; start-life-min/max: …; start-speed-min/max: …; start-size-min/max: …; start-color: #hex; looping: …; world-space: …"`. Emissor CPU billboard (`src/particles.rs`): mesh de capacidade FIXA por emissor (quads degenerados nos slots livres — realocar por frame tripava use-after-free no slab allocator), vertex color com fade por vida, material unlit Add (fogo/magic/sparkle/fireflies) ou Blend (resto). **Lifecycle por proximidade (OPT-IN `VIBER_FX_LIFECYCLE=1`)**: `<ParticleSystem>` e os FX da água nascem como markers `AmbientFx` leves; o `ambient_fx_manager` (scan 0,5 s + rescan em teleporte) monta/desmonta o bundle render (`Mesh3d`/material partilhado/emissor, mesh reciclada do `BurstPool`) dentro de ~110 m com banda de histerese — FX distante NÃO EXISTE no pipeline (simple-rpg: 399 markers → ~90 vivos). `VIBER_FX_SPAWN_RADIUS` afina o raio; a chuva/bursts seguem o player e ficam de fora. **Porque é opt-in**: o ganho de fps não mediu limpo (2026-10-10 — confounds de streaming/lanternas do crepúsculo; no teste limpo os emissores custam ≈0,1 ms no prepare) — ligar após A/B com relógio congelado; sem a env o comportamento é o antigo (tudo montado) |
+| `ParticleSystem` | `preset` (fire, smoke, fireflies, ground-dust, sparkle, leaves, snow, sand-dust, magic, core; desconhecido = core) + `transform="pos: x y z"` (component-string) + overrides em `particle-emitter="preset: …; emission-rate: …; start-life-min/max: …; start-speed-min/max: …; start-size-min/max: …; start-color: #hex; looping: …; world-space: …"`. Emissor CPU billboard (`src/particles.rs`): mesh de capacidade FIXA por emissor (quads degenerados nos slots livres — realocar por frame tripava use-after-free no slab allocator), vertex color com fade por vida, material unlit Add (fogo/magic/sparkle/fireflies) ou Blend (resto). **Lifecycle por proximidade (OPT-IN `VAEL_FX_LIFECYCLE=1`)**: `<ParticleSystem>` e os FX da água nascem como markers `AmbientFx` leves; o `ambient_fx_manager` (scan 0,5 s + rescan em teleporte) monta/desmonta o bundle render (`Mesh3d`/material partilhado/emissor, mesh reciclada do `BurstPool`) dentro de ~110 m com banda de histerese — FX distante NÃO EXISTE no pipeline (simple-rpg: 399 markers → ~90 vivos). `VAEL_FX_SPAWN_RADIUS` afina o raio; a chuva/bursts seguem o player e ficam de fora. **Porque é opt-in**: o ganho de fps não mediu limpo (2026-10-10 — confounds de streaming/lanternas do crepúsculo; no teste limpo os emissores custam ≈0,1 ms no prepare) — ligar após A/B com relógio congelado; sem a env o comportamento é o antigo (tudo montado) |
 | `PlayerGLTF` | `model-url` (obrigatório), `name` (default `player`), `pos` (alias de `translation` — tags verbatim mantêm `pos`), `speed`. Componente `Player` + WASD/setas relativo à câmara (Shift = sprint ×1.5, Space = salto com buffer/coyote), assenta no terreno via `TerrainRuntime::sample` todos os frames (`src/player.rs`) |
 | `ThirdPersonCamera` | alias interactivo do `OrbitCamera` com defaults `target="player"`, `distance` 4, `height` 1.6; attrs `mouse-sensitivity`, `follow-lag`, `turn-lag`, `min-terrain-distance`, `fov`. Drag (qualquer botão) = yaw/pitch, scroll = zoom (clamp 2–80 m), anti-clip com o terreno; câmaras extra são rebaixadas a Group com warning |
 | `DialogueNPC` | `dialogue-id` (obrigatório; ausente = skip), `marker-height` (2.5 — marcador flutuante), `portrait-url`/`voice-sfx` aceites sem efeito. Componente `DialogueNpc` + marcador esférico dourado emissivo; [E] a <3.5 m abre o **diálogo real** (linhas intro/progress/complete das quests JSON, `src/quests.rs`) com balão no HUD |
@@ -1149,7 +1149,7 @@ e os 6 guardas não nasciam).
 | `destructible` (attr universal) | component-string de colheita nativa (`src/harvest.rs`): `popup-text`, `popup-color` (#hex), `preset` (burst de break), `burst-count`, `hits` (3), `hit-preset` (sparks/rockshards→sparks, woodchips→leaves), `hit-burst-count`, `shake-on-hit`, `crack-on-hit`+`crack-style` (voronoi/vertical → darken ×0.85 por golpe), `break-style` (`burst` \| `fall` \| `shatter`), `cut-height` (aceite; os GLBs de árvore já vêm pré-divididos em meshes `Stump`+`Top`), `range` (3.5). Num template de spawner aplica-se a CADA instância; filho `<ResourceNode kind="wood\|stone" yield="N"/>` do template define o loot. [J]/clique perto do prop: o herói equipa picareta (mine) ou machado (fall), toca o clip `mine`/`chop`, impacto a 35 % do clip, faíscas+wobble+darken por golpe; no último: `fall` tomba o `Top` longe do player com pivô no corte e fica o toco com collider, `shatter` lança 9 pedaços balísticos que pousam e desvanecem. Loot → vault (`ResourceNode`) + 30 XP + quests de recolha (lêem o vault) + popup flutuante + SFX `chop/mine-hit/break` (`assets/audio/sfx/combat/*.ogg`) |
 | `Vegetation` | `meshes` (lista separada por espaços), `density-per-km2`, `seed`, `region-*`, `scale-*`, `max-slope-deg`, `avoid-water`, `avoid-road` (default ON — `avoid-road="0"` deixa a erva entrar nas fitas), `avoid-cliff`/`cliff-margin` (idem spawners, default ON/2 m), `max-distance`, `cluster-*`, **`instances`** (`.vinst` pré-gerado pelo bake — ex. `instances="world.data/veg/NNN.vinst"`, binário `src/vinst.rs`; o runtime carrega as instâncias e NÃO calcula nada — sem `instances` num mundo estático é ERRO de parse); count = densidade × área km² com cap `max-instances` (default 800/tag — o original GPU-instancia ~100k; instancing é follow-up). `smart`/`wind`/`flower-*`/`plant-*` aceites sem efeito |
 | `Scatter` | **saída do bake** (receita de um gerador — tag NO-OP em runtime): o `viber bake` converte cada `<StaticSpawner>` em `<Scatter id=… attrs-de-colocação>` + um `<Group name="spawn/…" generated-by="id">` com as instâncias. `viber tool list` enumera-as; `viber tool scatter id=… [--live]` recalcula o grupo sobre o terreno atual, com ocupação dos outros geradores, numa transação desfazível |
-| `Sky` | domo de céu procedural WGSL (`src/sky.rs`: sol, nuvens FBM, lua, estrelas, aurora, meteoros); os attrs crus são injectados como consts no shader **escrito em disco** (`<asset_root>/shaders/sky.wesl`) a cada `run` — especialização por mundo (o Bevy não re-uploads uniforms de material custom). `model` (`analytic`, default — o gradiente estilizado — ou `nishita`, o scattering físico portado do `bevy_atmosphere`) escolhe o modelo; `VIBER_SKY_MODEL` sobrepõe-no sem editar o XML. O modelo é resolvido UMA vez no `run` (`SkyConfig::with_env_override`) e viaja como resource `SkyModelState` para o IBL e os probes regionais — é o mesmo valor no shader e no ambiente, e o arranque loga `sky: modelo …` (o gate fica visível no `viber debug logs`) |
+| `Sky` | domo de céu procedural WGSL (`src/sky.rs`: sol, nuvens FBM, lua, estrelas, aurora, meteoros); os attrs crus são injectados como consts no shader **escrito em disco** (`<asset_root>/shaders/sky.wesl`) a cada `run` — especialização por mundo (o Bevy não re-uploads uniforms de material custom). `model` (`analytic`, default — o gradiente estilizado — ou `nishita`, o scattering físico portado do `bevy_atmosphere`) escolhe o modelo; `VAEL_SKY_MODEL` sobrepõe-no sem editar o XML. O modelo é resolvido UMA vez no `run` (`SkyConfig::with_env_override`) e viaja como resource `SkyModelState` para o IBL e os probes regionais — é o mesmo valor no shader e no ambiente, e o arranque loga `sky: modelo …` (o gate fica visível no `viber debug logs`) |
 | `DayCycle` | relógio dia/noite que conduz ambiente + sol: `minute-of-day` (normalizado a 0..1440), `minutes-per-real-second`, `dawn-minute`, `dusk-minute` (dawn tem de vir antes de dusk dentro de 0..1440 — senão avisa e volta a 330/1170), `ambient-day-intensity`, `ambient-night-intensity`, `drive-ambient`, `max-sun-elevation`, `sun-azimuth-base`. As rampas de luz são circulares (sem salto à meia-noite) (`src/worldsys.rs`) |
 | `Weather` | `wind` (vec2, consts de shader no boot), `wind-strength`, `clouds`, `rain` (0..1 contínuo — intensidade; conduz emissor de chuva ancorado ao player com partículas esticadas `size_y`, loop SFX `ambient/rain_loop.ogg` com volume ∝ intensidade, fog/exposure no `AtmosphereState`), `cycle` (bool — liga o scheduler determinístico: a cada 240 s roda um alvo de chuva com SplitMix64(seed ⊕ índice·golden), transição lerp 10 s; sem `cycle` a chuva é estática como autorada) (`src/worldsys.rs` + `src/ambient.rs`: `RainEmitter`, `rain_emitter_driver`) |
 | `BiomeRegion` | polígono de bioma: `id`, `polygon` (`"[x,z;x,z;…]"`), `display-name` (nome de exposição no HUD via bind `zone.name`; ausente = tabela de fallback da engine), `fog-density`, `tint`, `pp-exposure`, `pp-bloom-strength`, `rain-scale` (0..1: fator da chuva do `<Weather cycle>` com o herói na região — o deserto do simple-rpg usa 0.1; escala o ALVO do ciclo, a rampa de 10 s mantém-se) — fog/tint/postfx seguem a região do player (`src/ambient.rs` + `src/postfx.rs`) |
@@ -1157,7 +1157,7 @@ e os 6 guardas não nasciam).
 | `NavMesh` | afina a navegação (`agent-radius`, tile, custo fora-de-estrada) — `src/nav/mod.rs`, lido no Startup **depois** do spawn do mundo (antes vivia em PreStartup e nunca via a tag) |
 | `SpawnGate` | `target-entity` (`player` default, ou `Name` de uma entidade), `y-fallback`, `skin-distance` (0.05): segura o alvo no ar (física desligada, velocidade a zero) até a coluna de terreno sob ele ter `VoxelCollider` e larga-o na superfície + skin; timeout 20 s; mundo sem `<Terrain>`, fora do heightfield ou sem colisão de terreno solta logo (no Y autorado). O herói ganha `TeleportSettle` ao ser largado (`src/spawn_gate.rs`) |
 | `ProjectileTemplate` | `id`, `speed` (16), `damage` (8), `max-life` (2.5 s), `sensor-radius` (0.3), `faction` (`enemy` → herói via `PlayerHurt`; `player` → criaturas com `Health`, com número/flash/recoil/abate; `neutral` → só terreno), `gravity` (0 = reta; >0 = arco balístico baixo, 45° fora de alcance), `color`, `size`. Disparados por `viber.fire_projectile(id [, x, y, z])`; teto de 256 vivos; teste de acerto VARRIDO (o passo inteiro contra a cápsula — um soluço de frame não atravessa o alvo), nunca acerta a entidade que disparou, e abate criaturas com ou sem script; impacto com o terreno via `surface_below` (grutas contam) — `src/projectile.rs` |
-| `AdaptiveQuality` | `target-fps` (55), `mode` (`auto` \| `max` \| `high` \| `medium` \| `low`), `enabled`: EMA do frame-time real com histerese/cooldown (constantes da referência) escolhe um de 4 tiers — High: SSAO Medium, volumétrico 32 passos, ≤8 sombras de ponto; Medium: SSAO Low, 24 passos, ≤4 sombras, sem DOF/motion blur/contact shadows; Low: +sem SSAO/volumétrico/aberração, 0 sombras de ponto (a histerese de rank das sombras é ≤ ⅓ do teto, para o corte valer mesmo). Com vsync, um frame colado ao refresh e abaixo do orçamento também conta como folga (senão a 60 Hz o tier só descia); uma subida que volta a descer em < 20 s dobra o cooldown da seguinte (até 8×). Os cortes aplicam-se AO VIVO na câmara (`postfx::set_quality_gates` → `sync_postfx_gates`). `min/max-pixel-ratio` aceites sem efeito (o Viber não escala a resolução). Env: `VIBER_QUALITY=<mode>` sobrepõe o mundo; `VIBER_ADAPTIVE_QUALITY=0` desliga (`src/adaptive_quality.rs`) |
+| `AdaptiveQuality` | `target-fps` (55), `mode` (`auto` \| `max` \| `high` \| `medium` \| `low`), `enabled`: EMA do frame-time real com histerese/cooldown (constantes da referência) escolhe um de 4 tiers — High: SSAO Medium, volumétrico 32 passos, ≤8 sombras de ponto; Medium: SSAO Low, 24 passos, ≤4 sombras, sem DOF/motion blur/contact shadows; Low: +sem SSAO/volumétrico/aberração, 0 sombras de ponto (a histerese de rank das sombras é ≤ ⅓ do teto, para o corte valer mesmo). Com vsync, um frame colado ao refresh e abaixo do orçamento também conta como folga (senão a 60 Hz o tier só descia); uma subida que volta a descer em < 20 s dobra o cooldown da seguinte (até 8×). Os cortes aplicam-se AO VIVO na câmara (`postfx::set_quality_gates` → `sync_postfx_gates`). `min/max-pixel-ratio` aceites sem efeito (o Viber não escala a resolução). Env: `VAEL_QUALITY=<mode>` sobrepõe o mundo; `VAEL_ADAPTIVE_QUALITY=0` desliga (`src/adaptive_quality.rs`) |
 | `PostFxDebugToggle` | `bindings` (default `ctrl+1:bloom, ctrl+2:ca, ctrl+3:vignette, ctrl+4:ssao, ctrl+5:dof, ctrl+6:volumetrics`; modificadores `ctrl`/`shift`/`alt`, teclas `1`/`Digit1`/`b`/`KeyB`), `enabled`: cada tecla comuta o gate do efeito na câmara, ao vivo (efeitos: `bloom ca vignette ssao dof autoexposure contactshadows cas splittone aerial volumetrics motionblur lens`; TAA/tonemapping são de arranque e dão warning). O estado é o corte runtime partilhado com o `viber.debug.postfx{…}` do bridge (a tecla segue o que o bridge fez). Calado com menus abertos (`src/postfx_toggle.rs`) |
 | `UiStyle` | stylesheet CSS-like da UI declarativa: texto do elemento ou ficheiro via `src="ui/hud.css"`, relativo à pasta do mundo (`src/ui/style.rs`) — guia: [`docs/UI.md`](docs/viber/UI.md) |
 | `UiRoot` | árvore UI declarativa inteira (`src/ui/tree.rs`): elementos `uitext, uibutton, uibar, uilist, uimodal, uirow, uicolumn, uigrid (cols="repeat(4, 1fr)"), uicooldown, uiicon, uispacer, uicheck (toggle), uislider (min/max/step), uiinput (campo de texto)` com attrs `id, class, style, text, value, key, tab, tab-group, scroll, hidden, disabled, escape-closes, bind, anim ("spin/pulse/bob/shake"), tooltip`; folha de estilo com paleta Tailwind por nome (`rose-400/80`), `box-shadow`, grid, decoração de texto, `pointer-events`/`cursor`, estados `:hover/:active/:disabled/:focus/:checked/:empty/:nth-child(…)`, combinador filho `.a > .b`, cores `hsl()`/nomes CSS/gradientes `linear-gradient`/`radial-gradient`, MOTION (`transition: prop dur easing` + `@keyframes` + `animation`, e `viber.ui.tween()`; motor em `src/ui/tween.rs` que anima via `UiComputed`+dirty), `text-transform`/`letter-spacing`/`border-color` por lado e RESPONSIVO: unidades `vw/vh/vmin/vmax` + `calc()/clamp()` com `%` do pai + blocos `@media (min-width: …)/(portrait)/(max-aspect: …)` com re-estilo em resize — guia completo: [`docs/UI.md`](docs/viber/UI.md); `<UiList>` + `<UiTemplate>`/`<UiEmpty>` repetem uma fonte de dados com `{campo}` substituído (fontes da engine OU `viber.ui.list()` de script, que passa a possuir a fonte); scripts manuseiam-na via `viber.ui.*` — agora com EVENTOS (`viber.ui.events()` drena cliques/mudanças/focos/tween_done, em vez do `clicked()` de 1 frame), CRIAÇÃO DINÂMICA (`viber.ui.create{…}`/`destroy(id)`), leitura (`query(seletor)`/`rect(id)`/`classes`/`children`) e BINDS DE SCRIPT (`viber.ui.set(nome, valor)` alimenta class-binds; `src/ui/events.rs`) (`docs/LUA_API.md`); vitrina de tudo em `../Vael/ui-showcase.xml` |
@@ -1208,7 +1208,7 @@ lagos/rios.
 default = budget de 2048 colunas), `height-smoothing` (1 = Catmull-Rom
 monotone; 0 = bilinear — suaviza a GRID de input), `collision-resolution`
 (64; interruptor — **0 desliga os colliders**; já não define geometria), `cliff-angle` (50° — gatilho da
-CliffMask/splat; 90 desliga), `cliff-min-area` (120 m²), `cliff-min-drop` (4 m), `cliff-min-extent` (8 m) — filtro REGIONAL: um componente de declive só é cliff se passar os três (mata declives espúrios), `cliff-streaks` (0.5 — escorrimentos verticais na pele da parede), `cliff-moss` (0.35 — musgo procedural nos ombros/ledges), `sharpen` (false), `sharpen-angle` (35°), `sharpen-seed` (0 = deriva de `seed`), `texture`/`texture-url`, `texture-tile-size` (0 = auto), `seed` (0), tint (caminho LEGADO): `base-color`, `color-low`, `color-mid`, `color-high`, `color-rock`, `snow-height`, `slope-threshold`, `slope-softness`, `height-blend-strength`; blend de camadas: `layers` (lista de ≤13 aliases do pool — `grass vale_grass dirt dirt_trail forest_floor gravel mountain_stone sand desert_sand snow_peak swamp_mud dirt_road pebbles` — ou caminhos de textura; o slot do leito carrega `pebbles` mesmo que o mundo não o liste), `shore-width` (5 m — faixa de areia fora da linha de água) — **PRODUÇÃO**: 8 layers por chunk (material bindless — o crash NV foi resolvido), ligado por omissão; escape hatch para o tint legado: `VIBER_CHUNK_LAYERS=0`; pele das paredes (estratos/streaks/musgo) configurável ao vivo via `viber.debug.ground{...}` |
+CliffMask/splat; 90 desliga), `cliff-min-area` (120 m²), `cliff-min-drop` (4 m), `cliff-min-extent` (8 m) — filtro REGIONAL: um componente de declive só é cliff se passar os três (mata declives espúrios), `cliff-streaks` (0.5 — escorrimentos verticais na pele da parede), `cliff-moss` (0.35 — musgo procedural nos ombros/ledges), `sharpen` (false), `sharpen-angle` (35°), `sharpen-seed` (0 = deriva de `seed`), `texture`/`texture-url`, `texture-tile-size` (0 = auto), `seed` (0), tint (caminho LEGADO): `base-color`, `color-low`, `color-mid`, `color-high`, `color-rock`, `snow-height`, `slope-threshold`, `slope-softness`, `height-blend-strength`; blend de camadas: `layers` (lista de ≤13 aliases do pool — `grass vale_grass dirt dirt_trail forest_floor gravel mountain_stone sand desert_sand snow_peak swamp_mud dirt_road pebbles` — ou caminhos de textura; o slot do leito carrega `pebbles` mesmo que o mundo não o liste), `shore-width` (5 m — faixa de areia fora da linha de água) — **PRODUÇÃO**: 8 layers por chunk (material bindless — o crash NV foi resolvido), ligado por omissão; escape hatch para o tint legado: `VAEL_CHUNK_LAYERS=0`; pele das paredes (estratos/streaks/musgo) configurável ao vivo via `viber.debug.ground{...}` |
 | — | **Material de chunk (r8 — 8 layers + roughness, bindless)**: o bootstrap gera UM material por chunk (`generate_chunk_splats` em `splat.rs`): as 8 texturas do pool com MAIOR peso agregado no chunk + DOIS planos splat RGBA8 próprios (plano 0 = slots 0–3, plano 1 = slots 4–7; pesos renormalizados a somar 1 EM CONJUNTO; chunks de montanha carregam snow/stone, de pântano mud — áreas diferentes têm blends diferentes). `rock` (paredes), leito (seixo) e a AREIA DA MARGEM são FORÇADOS na eleição top-8 — sem o force da areia a praia quebrava em costuras retas nos chunks que a perdiam da paleta. Material próprio (`layer_material.rs`, NÃO ExtendedMaterial) `#[bindless]` com 8 layers × (albedo, normal, height, AO, **roughness**) + 2 splats — 42 pares textura/sampler, tabela de índices `range(0..85)`; params em storage array na binding 10: tiles/tints/flats/roughs + origem/tamanho + layer de rocha para paredes triplanares). **Roughness maps** (`roughness.ktx2`; `smoothness.ktx2` entra INVERTIDO — inventário estático `RoughMap` em `SLOT_STYLES`): flags em `roughs[i].y` (mix 0.85 com a constante afinada) e `.z` (inverter); slots sem mapa mantêm a constante (mix 0) — o look não muda um milímetro onde o pool não tem mapa. + day/night tint; shader `shaders/terrain_chunk.wesl` (template embutido reescrito no `run`). ⚠ **porquê bindless (re-verificado 2026-10-18)**: com bevy 0.19.1 + wgpu 29.0.4 + NV 595.84, QUALQUER material custom NÃO-bindless com `#[texture]` morria com SIGSEGV dentro de `libnvidia-gpucomp` ao criar o pipeline layout — isolado por bissect de mundos M0–M23 (2026-09-04). **No bevy 0.20.0 + wgpu 30 + driver NV 615.71.09 o crash JÁ NÃO REPRODUZ** (experimento ao vivo em `worlds/lua-demo`: `#[bindless]` removido → pipelines criados, terreno desenhado no look flat, boot completo sem sinal). O bindless MANTÉM-SE pelo layout (8 layers num material, slab partilhada); desligá-lo exige um ramo não-bindless no shader. Falha de textura reponta o slot para o fallback dele (leito → gravel; mapa opcional → plano/constante) |
 | `TerrainPad` | `at` (`"x z"`), `size` (`"w d"`), `falloff` (8), `corner-radius` (4), `height` (ausente = auto: amostra o centro e escreve de volta) |
 | `InteriorScene` | `at` (`"x z"`, CENTRO), `size` (`"w d"`) — declara um retângulo como **bolsa de interior**, FORA da pegada do heightmap (`|x|` ou `|z|` > `world_size/2`). Dentro dela a `WorldBorder` não trava, não há bioma (névoa/tinta/exposição neutras) e NÃO chove (o emissor de chuva segue o player e seguiria para dentro da sala). A distância (>2 km) desliga o resto por si — render, cull, IA, spawners — e **fora do campo o terreno não gera colunas nem colliders**. A zona de música `dungeon` deixou de ter caixa copiada à mão: segue esta declaração. Um só por mundo/cena; ver `src/worldsys.rs::InteriorSceneConfig`. Num projeto com cenas cada interior é uma cena com `<InteriorScene at="0 0" size=…>` a cobrir a sala (ex.: `../Vael/scenes/interiors/chapel.xml`) |
@@ -1394,7 +1394,7 @@ entre entidades com o mesmo script — estado por entidade em `viber.state()`);
 os setters enfileiram comandos aplicados pós-frame; erros dão warn 1× e a
 engine segue; "LOD de IA" — além do raio de ativação (`activation-radius` no
 spawner, default 45 m) o `on_update` nem corre. **Hot-reload** (`src/hot_reload.rs`,
-`VIBER_HOT_RELOAD=0` desliga): gravar um `.lua` recompila o chunk e re-corre o
+`VAEL_HOT_RELOAD=0` desliga): gravar um `.lua` recompila o chunk e re-corre o
 top-level nas entidades ativas (globals resetam; `viber.state()` sobrevive);
 erro de compilação mantém o chunk antigo. Sem hooks `on_add`/`on_remove` (o
 ciclo de vida é top-level na ativação + `on_update`).

@@ -585,11 +585,11 @@ fn motion_blur_component() -> MotionBlur {
 /// Medium sem (o ruído de 18 spp sem acumulação temporal não se limpava).
 fn ssao_quality(taa: bool) -> ScreenSpaceAmbientOcclusionQualityLevel {
     use ScreenSpaceAmbientOcclusionQualityLevel as Q;
-    match std::env::var("VIBER_SSAO").as_deref() {
-        Ok("low") | Ok("baixo") => Q::Low,
-        Ok("medium") | Ok("medio") | Ok("médio") => Q::Medium,
-        Ok("high") | Ok("alto") => Q::High,
-        Ok("ultra") => Q::Ultra,
+    match bevy_ext_core::envs::var_lossy("SSAO").as_deref() {
+        Some("low") | Some("baixo") => Q::Low,
+        Some("medium") | Some("medio") | Some("médio") => Q::Medium,
+        Some("high") | Some("alto") => Q::High,
+        Some("ultra") => Q::Ultra,
         _ => quality_gates()
             .ssao
             .or(scene_profile(|scene| scene.ssao).flatten())
@@ -611,8 +611,7 @@ fn volumetrics_enabled() -> bool {
 /// controle = o mesmo braço corrido 2× com a flag off).
 pub fn oit_requested() -> bool {
     matches!(
-        std::env::var("VIBER_OIT")
-            .ok()
+        bevy_ext_core::envs::var_lossy("OIT")
             .map(|v| v.trim().to_ascii_lowercase())
             .as_deref(),
         Some("1" | "true" | "yes" | "on")
@@ -632,8 +631,7 @@ pub fn oit_requested() -> bool {
 /// (RTX 4050, 1280x720) mostrar o raymarch a valer **~3 ms de um frame de
 /// 31 ms** — o segundo maior item da lente, atrás só das cascatas do sol.
 fn volumetric_steps() -> u32 {
-    std::env::var("VIBER_VOLUMETRIC_STEPS")
-        .ok()
+    bevy_ext_core::envs::var_lossy("VOLUMETRIC_STEPS")
         .and_then(|v| v.parse().ok())
         // `0` é um valor VÁLIDO aqui: é como se desliga o raymarch sem tocar
         // no preset (`volumetrics_enabled` lê-o).
@@ -896,7 +894,7 @@ impl Plugin for PostFxPlugin {
         // `viber::dlss::register_teleport_reset` — `pub(crate)` no monólito,
         // não acessível daqui. Quem integrar com a feature `dlss` do Bevy
         // registra o observer no glue de integração (o plugin do jogo).
-        if std::env::var_os("VIBER_NO_POSTFX").is_some() {
+        if bevy_ext_core::envs::var("NO_POSTFX").is_some() {
             info!("postfx: desligado por VIBER_NO_POSTFX");
             return;
         }
@@ -1002,7 +1000,7 @@ fn attach_postfx_to_cameras(
     let compensation_curve = curve
         .0
         .get_or_insert_with(|| {
-            if std::env::var_os("VIBER_NO_AECURVE").is_some() {
+            if bevy_ext_core::envs::var("NO_AECURVE").is_some() {
                 info!("postfx: teto da exposição automática DESLIGADO (VIBER_NO_AECURVE)");
                 curves.add(AutoExposureCompensationCurve::default())
             } else {
@@ -1157,7 +1155,7 @@ fn attach_postfx_to_cameras(
         // Oclusão GPU do Bevy. Fica opt-in: o material bindless do terreno
         // pode não entrar no culling, e sem um boot com GPU não se liga
         // por omissão. `VIBER_OCCLUSION=1`.
-        if std::env::var("VIBER_OCCLUSION").ok().as_deref() == Some("1") {
+        if bevy_ext_core::envs::var_lossy("OCCLUSION").as_deref() == Some("1") {
             commands
                 .entity(camera)
                 .insert(bevy::render::occlusion_culling::OcclusionCulling);
@@ -2572,8 +2570,8 @@ fn prepare_aerial(
 /// alternar gradientes cinza/castanho com um ping-pong pré-TAA).
 fn aerial_after_taa() -> bool {
     matches!(
-        std::env::var("VIBER_AERIAL_AFTER_TAA").as_deref(),
-        Ok("1" | "true" | "on")
+        bevy_ext_core::envs::var_lossy("AERIAL_AFTER_TAA").as_deref(),
+        Some("1" | "true" | "on")
     )
 }
 
@@ -2933,7 +2931,7 @@ fn spawn_fog_volume(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             fog_color: Color::srgb(1.0, 0.97, 0.92),
             // Névoa com TEXTURA (bancos FBM que rolam com o vento).
             // `VIBER_NO_FOGTEX=1` volta à névoa uniforme (A/B de QA).
-            density_texture: std::env::var_os("VIBER_NO_FOGTEX")
+            density_texture: bevy_ext_core::envs::var("NO_FOGTEX")
                 .is_none()
                 .then(|| images.add(fbm_density_texture())),
             ..FogVolume::default()
@@ -3322,7 +3320,7 @@ mod tests {
     /// horizonte). `VIBER_AERIAL_AFTER_TAA=1` é só o braço de A/B.
     #[test]
     fn aerial_runs_before_taa_by_default() {
-        if std::env::var_os("VIBER_AERIAL_AFTER_TAA").is_none() {
+        if bevy_ext_core::envs::var("AERIAL_AFTER_TAA").is_none() {
             assert!(
                 !aerial_after_taa(),
                 "sem o env o passe tem de ficar no EarlyPostProcess, antes do TAA"

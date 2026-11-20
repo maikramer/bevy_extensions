@@ -68,7 +68,7 @@ impl DlssSetting {
 /// e caem para o degrau seguinte — nunca derrubam o arranque.
 pub fn requested(config: Option<&str>) -> DlssSetting {
     static SETTING: std::sync::OnceLock<DlssSetting> = std::sync::OnceLock::new();
-    *SETTING.get_or_init(|| resolve_once(std::env::var("VIBER_DLSS").ok().as_deref(), config))
+    *SETTING.get_or_init(|| resolve_once(bevy_ext_core::envs::var_lossy("DLSS").as_deref(), config))
 }
 
 /// A hierarquia do gate, pura (sem OnceLock, sem ambiente) — é isto que os

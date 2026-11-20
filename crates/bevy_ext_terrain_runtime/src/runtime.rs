@@ -514,7 +514,7 @@ fn splat_cache_path(heightmap: &Path) -> Option<std::path::PathBuf> {
         .unwrap_or_else(|_| heightmap.to_path_buf());
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     abs.hash(&mut hasher);
-    let dir = std::env::var_os("VIBER_SPLAT_CACHE")
+    let dir = bevy_ext_core::envs::var("SPLAT_CACHE")
         .map(std::path::PathBuf::from)
         .or_else(|| dirs::cache_dir().map(|d| d.join("viber").join("splat")))?;
     Some(dir.join(format!("{:016x}.splat", hasher.finish())))
@@ -529,7 +529,7 @@ fn load_or_bake_splat(
     heightmap: Option<&Path>,
 ) -> SplatMap {
     let paint = inputs.paint;
-    let cache = if std::env::var("VIBER_SPLAT_CACHE").is_ok_and(|v| v == "0") {
+    let cache = if bevy_ext_core::envs::var_lossy("SPLAT_CACHE").is_some_and(|v| v == "0") {
         None
     } else {
         heightmap.and_then(splat_cache_path)
@@ -1324,7 +1324,7 @@ pub fn bootstrap(world: &mut World) {
     } else if asset_server.is_none() {
         warn!("terrain layers requested but no AssetServer — using the legacy path");
         None
-    } else if std::env::var("VIBER_CHUNK_LAYERS").is_ok_and(|v| v == "0") {
+    } else if bevy_ext_core::envs::var_lossy("CHUNK_LAYERS").is_some_and(|v| v == "0") {
         // Escape hatch: `VIBER_CHUNK_LAYERS=0` volta ao tint legado sem
         // editar o mundo.
         warn!("terrain `layers` disabled by VIBER_CHUNK_LAYERS=0 — using the legacy tint");
@@ -2553,8 +2553,8 @@ fn spawn_water(
 /// old ribbons/ellipses again) — the A/B for the road look.
 fn paving_enabled() -> bool {
     !matches!(
-        std::env::var("VIBER_PAVING").as_deref(),
-        Ok("0") | Ok("false")
+        bevy_ext_core::envs::var_lossy("PAVING").as_deref(),
+        Some("0") | Some("false")
     )
 }
 

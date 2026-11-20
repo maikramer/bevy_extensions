@@ -59,7 +59,7 @@ impl Locale {
 /// `locale/.json`, que não existe, e deixava a tabela vazia — todas as chaves
 /// `@…` apareciam cruas, sem aviso nenhum.
 pub fn lang_from_env() -> String {
-    pick_lang(std::env::var("VIBER_LANG").ok().as_deref())
+    pick_lang(crate::envs::var_lossy("LANG").as_deref())
 }
 
 fn pick_lang(raw: Option<&str>) -> String {

@@ -308,8 +308,7 @@ impl TerrainSpec {
 /// valid when set and parsing as a finite f32 > 0; anything else ("abc", "0",
 /// negative, "inf", "NaN") is ignored so a typo never breaks a boot.
 fn env_render_distance() -> Option<f32> {
-    std::env::var("VIBER_RENDER_DISTANCE")
-        .ok()
+    bevy_ext_core::envs::var_lossy("RENDER_DISTANCE")
         .and_then(|raw| raw.parse::<f32>().ok())
         .filter(|distance| distance.is_finite() && *distance > 0.0)
 }

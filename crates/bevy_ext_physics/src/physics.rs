@@ -456,8 +456,7 @@ pub struct ColliderResolved;
 /// are finished by [`resolve_pending_colliders`].
 /// Substeps do solver (`VIBER_PHYSICS_SUBSTEPS`, default 4).
 fn physics_substeps() -> u32 {
-    std::env::var("VIBER_PHYSICS_SUBSTEPS")
-        .ok()
+    bevy_ext_core::envs::var_lossy("PHYSICS_SUBSTEPS")
         .and_then(|v| v.trim().parse::<u32>().ok())
         .filter(|n| (1..=16).contains(n))
         .unwrap_or(4)

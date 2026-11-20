@@ -205,8 +205,7 @@ fn effective_mode() -> ReflectionMode {
 }
 
 pub fn water_ssr_requested() -> bool {
-    match std::env::var("VIBER_WATER_SSR")
-        .ok()
+    match bevy_ext_core::envs::var_lossy("WATER_SSR")
         .map(|v| v.trim().to_ascii_lowercase())
         .as_deref()
     {
@@ -234,8 +233,7 @@ fn ground_strength() -> f32 {
     // `VIBER_WATER_SSR=water` documenta "só água": o passe liga, mas o
     // raymarch do chão não pode correr.
     let water_only = matches!(
-        std::env::var("VIBER_WATER_SSR")
-            .ok()
+        bevy_ext_core::envs::var_lossy("WATER_SSR")
             .map(|v| v.trim().to_ascii_lowercase())
             .as_deref(),
         Some("water" | "water-only" | "cheap")
@@ -247,8 +245,7 @@ fn ground_strength() -> f32 {
 }
 
 fn ssr_steps() -> u32 {
-    std::env::var("VIBER_WATER_SSR_STEPS")
-        .ok()
+    bevy_ext_core::envs::var_lossy("WATER_SSR_STEPS")
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|steps| *steps > 0)
         .or(profile().steps)
@@ -258,8 +255,7 @@ fn ssr_steps() -> u32 {
 }
 
 fn ssr_max_distance() -> f32 {
-    std::env::var("VIBER_WATER_SSR_MAX_DIST")
-        .ok()
+    bevy_ext_core::envs::var_lossy("WATER_SSR_MAX_DIST")
         .and_then(|v| v.parse::<f32>().ok())
         .filter(|distance| distance.is_finite() && *distance > 0.0)
         .or(profile().max_distance)

@@ -224,8 +224,7 @@ pub fn auto_cull_radius(radius: f32, scale: f32) -> f32 {
 fn auto_cull_per_radius() -> f32 {
     static FACTOR: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *FACTOR.get_or_init(|| {
-        std::env::var("VIBER_AUTO_CULL_PX")
-            .ok()
+        bevy_ext_core::envs::var_lossy("AUTO_CULL_PX")
             .and_then(|v| v.parse::<f32>().ok())
             .filter(|px| *px > 0.0)
             .map_or(AUTO_CULL_PER_RADIUS, |px| AUTO_CULL_PER_RADIUS * 8.0 / px)
@@ -334,8 +333,7 @@ pub const LOD_CROSSFADE_SECS: f32 = 0.12;
 fn swap_budget() -> usize {
     static BUDGET: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     let read = || {
-        std::env::var("VIBER_LOD_SWAP_BUDGET")
-            .ok()
+        bevy_ext_core::envs::var_lossy("LOD_SWAP_BUDGET")
             .and_then(|v| v.parse().ok())
             .unwrap_or(MAX_LOD_SWAPS_PER_FRAME)
     };
@@ -350,8 +348,7 @@ fn swap_budget() -> usize {
 fn lod_scan_interval() -> f32 {
     static INTERVAL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     let read = || {
-        let hz = std::env::var("VIBER_LOD_SCAN_HZ")
-            .ok()
+        let hz = bevy_ext_core::envs::var_lossy("LOD_SCAN_HZ")
             .and_then(|raw| raw.parse::<f32>().ok())
             .filter(|hz| hz.is_finite() && *hz >= 0.0)
             .unwrap_or(10.0);
@@ -556,7 +553,7 @@ fn propagate_cull_ranges(
     // malhas estáticas; luzes e skinned continuam no caminho CPU. Opt-in
     // porque em backends sem GPU culling (DX12/WebGL) o `NoCpuCulling` não
     // tem rede — aí não se liga.
-    let gpu_culling = std::env::var("VIBER_GPU_CULLING").as_deref() == Ok("1");
+    let gpu_culling = bevy_ext_core::envs::var_lossy("GPU_CULLING").as_deref() == Some("1");
     for (root, cull) in &roots {
         let range = VisibilityRange::abrupt(0.0, cull.radius.max(1.0));
         let mut found = 0usize;

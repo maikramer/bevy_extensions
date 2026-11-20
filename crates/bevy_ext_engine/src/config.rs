@@ -180,9 +180,9 @@ impl GameConfig {
     /// pinado, ou `"0"` = nenhuma.
     pub fn asset_roots(&self, world_dir: &Path) -> Vec<PathBuf> {
         let mut roots = vec![world_dir.to_path_buf()];
-        let extras: Vec<PathBuf> = match std::env::var("VIBER_ASSET_POOL") {
-            Ok(pinned) if pinned == "0" => Vec::new(),
-            Ok(pinned) => vec![PathBuf::from(pinned)],
+        let extras: Vec<PathBuf> = match bevy_ext_core::envs::var_lossy("ASSET_POOL") {
+            Some(pinned) if pinned == "0" => Vec::new(),
+            Some(pinned) => vec![PathBuf::from(pinned)],
             _ => self
                 .assets
                 .roots

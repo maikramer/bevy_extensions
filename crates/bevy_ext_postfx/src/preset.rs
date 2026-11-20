@@ -47,8 +47,7 @@ static PRESET: OnceLock<GraphicsPreset> = OnceLock::new();
 /// caem no default (`equilibrado`) se ninguém tiver resolvido — é o que
 /// acontece nos testes e nas tools headless, que não bootam a lente.
 pub fn resolve(config_value: Option<&str>) -> GraphicsPreset {
-    let from_env = std::env::var("VIBER_GRAPHICS")
-        .ok()
+    let from_env = bevy_ext_core::envs::var_lossy("GRAPHICS")
         .and_then(|raw| GraphicsPreset::parse(&raw));
     let from_config = config_value.and_then(GraphicsPreset::parse);
     let preset = from_env

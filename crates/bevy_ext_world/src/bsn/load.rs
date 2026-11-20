@@ -266,7 +266,10 @@ mod memo {
     }
 
     fn disabled() -> bool {
-        std::env::var("VIBER_BSN_MEMO").is_ok_and(|v| v == "0")
+        // (sem dep ao core neste crate: dupla leitura inline, `VAEL_` ganha)
+        std::env::var_os("VAEL_BSN_MEMO")
+            .or_else(|| std::env::var_os("VIBER_BSN_MEMO"))
+            .is_some_and(|v| v == "0")
     }
 
     pub(super) fn get(path: &Path, root_dir: &Path) -> Option<LoadedWorld> {

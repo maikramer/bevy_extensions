@@ -178,9 +178,8 @@ pub struct GrassSettings {
 
 impl Default for GrassSettings {
     fn default() -> Self {
-        let enabled = std::env::var("VIBER_GRASS").as_deref() != Ok("0");
-        let density_scale = std::env::var("VIBER_GRASS_DENSITY")
-            .ok()
+        let enabled = bevy_ext_core::envs::var_lossy("GRASS").as_deref() != Some("0");
+        let density_scale = bevy_ext_core::envs::var_lossy("GRASS_DENSITY")
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or_else(crate::graphics::grass_density_scale)
             .clamp(0.0, 4.0);

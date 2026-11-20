@@ -137,7 +137,7 @@ pub const NO_NEIGHBOUR: u8 = u8::MAX;
 /// visual e shots.
 fn refine_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("VIBER_VOXEL_REFINE").as_deref() == Ok("1"))
+    *ENABLED.get_or_init(|| bevy_ext_core::envs::var_lossy("VOXEL_REFINE").as_deref() == Some("1"))
 }
 
 /// A coluna `coords` refina? Gate ON, ao LOD 0, TODOS os vizinhos também ao
@@ -701,7 +701,7 @@ mod tests {
     /// LOD 0, dobram as células; longe dos mods ou ao LOD 1, não.
     #[test]
     fn test_refinement_halves_the_cell_only_near_mods() {
-        if std::env::var("VIBER_VOXEL_REFINE").as_deref() != Ok("1") {
+        if bevy_ext_core::envs::var_lossy("VOXEL_REFINE").as_deref() != Some("1") {
             return; // gate é opt-in: sem a env, nada a provar aqui
         }
         let world_size = 256.0_f32;

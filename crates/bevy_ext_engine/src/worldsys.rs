@@ -545,8 +545,7 @@ pub const INTERIOR_AMBIENT_BRIGHTNESS: f32 = 2000.0;
 /// Ambiente de interior efetivo (`VIBER_INTERIOR_AMBIENT`, para afinar sem
 /// recompilar).
 pub fn interior_ambient_brightness() -> f32 {
-    std::env::var("VIBER_INTERIOR_AMBIENT")
-        .ok()
+    bevy_ext_core::envs::var_lossy("INTERIOR_AMBIENT")
         .and_then(|raw| raw.parse::<f32>().ok())
         .filter(|v| v.is_finite() && *v > 0.0)
         .unwrap_or(INTERIOR_AMBIENT_BRIGHTNESS)
