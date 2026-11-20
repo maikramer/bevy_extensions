@@ -391,7 +391,10 @@ use bevy_ext_world::xml::XmlNode;
 /// Returns an error only when the host has no `viber` table yet — every other
 /// failure would be a bug in this function.
 pub fn install_ui_api(lua: &Lua, state: &UiScriptState) -> mlua::Result<()> {
-    let viber: Table = lua.globals().get("viber")?;
+    let viber: Table = lua
+        .globals()
+        .get("vael")
+        .or_else(|_| lua.globals().get("viber"))?;
     let ui = lua.create_table()?;
 
     /// Every setter is the same shape: take args, queue one command.
@@ -1831,7 +1834,8 @@ mod tests {
     fn host() -> (Lua, UiScriptState) {
         let lua = Lua::new();
         let viber = lua.create_table().unwrap();
-        lua.globals().set("viber", viber).unwrap();
+        lua.globals().set("viber", viber.clone()).unwrap();
+        lua.globals().set("vael", viber).unwrap();
         let state = UiScriptState::default();
         install_ui_api(&lua, &state).expect("install");
         (lua, state)

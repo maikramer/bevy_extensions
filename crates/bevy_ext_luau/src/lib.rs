@@ -3221,7 +3221,11 @@ fn install_viber_api_with(
         })?,
     )?;
 
-    lua.globals().set("viber", viber)?;
+    lua.globals().set("viber", viber.clone())?;
+    // Alias de transição: a MESMA tabela sob o nome novo — tudo o que se
+    // instala num nome é visível no outro. Os scripts migram para `vael.*`
+    // por ondas; `viber.*` continua a funcionar.
+    lua.globals().set("vael", viber.clone())?;
     Ok(())
 }
 

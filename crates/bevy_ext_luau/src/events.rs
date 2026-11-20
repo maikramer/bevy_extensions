@@ -256,7 +256,8 @@ mod tests {
         let lua = Lua::new();
         let api = lua.create_table().expect("tabela viber");
         install(&lua, &api).expect("instala events");
-        lua.globals().set("viber", api).expect("globals");
+        lua.globals().set("viber", api.clone()).expect("globals");
+        lua.globals().set("vael", api).expect("globals");
         lua.set_named_registry_value("viber_events", lua.create_table().expect("fila"))
             .expect("registry");
         lua

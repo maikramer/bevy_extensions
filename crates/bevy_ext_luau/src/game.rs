@@ -427,7 +427,10 @@ pub fn game_to_json(_lua: &Lua) -> BTreeMap<String, serde_json::Value> {
 /// `raw_get`/`raw_set` — os primitivos estão atrás do `__index`/`__newindex`
 /// e uma leitura crua via a tabela vazia. `set(k, Nil)` remove a chave.
 pub fn game_proxy(lua: &Lua) -> mlua::Result<Table> {
-    let viber: Table = lua.globals().get("viber")?;
+    let viber: Table = lua
+        .globals()
+        .get("vael")
+        .or_else(|_| lua.globals().get("viber"))?;
     let game: Function = viber.get("game")?;
     game.call(())
 }
@@ -1398,6 +1401,7 @@ mod tests {
             let lua = Lua::new();
             let viber = lua.create_table().expect("viber");
             lua.globals().set("viber", viber.clone()).expect("global");
+            lua.globals().set("vael", viber.clone()).expect("global");
             install(&lua, &viber, shared.clone()).expect("instala");
             lua
         };
@@ -1524,7 +1528,8 @@ mod tests {
         let lua = Lua::new();
         let viber = lua.create_table().expect("viber");
         install(&lua, &viber, store.clone()).expect("instala");
-        lua.globals().set("viber", viber).expect("global");
+        lua.globals().set("viber", viber.clone()).expect("global");
+        lua.globals().set("vael", viber.clone()).expect("global");
         lua.load("viber.game().tabela = { 1, 2 }")
             .exec()
             .expect("overlay");
@@ -1581,6 +1586,7 @@ mod tests {
         let lua = Lua::new();
         let viber = lua.create_table().expect("viber");
         lua.globals().set("viber", viber.clone()).expect("global");
+        lua.globals().set("vael", viber.clone()).expect("global");
         install(&lua, &viber, fresh_store()).expect("instala");
         let game = game_proxy(&lua).expect("proxy");
         // `set` atravessa o `__newindex`; `get` o `__index` — os raw_* liam
@@ -1615,6 +1621,7 @@ mod tests {
             )
             .expect("viber.state");
         lua.globals().set("viber", viber.clone()).expect("global");
+        lua.globals().set("vael", viber.clone()).expect("global");
         install(&lua, &viber, fresh_store()).expect("instala");
         let called: mlua::Table = lua.load("return viber.state()").eval().expect("state");
         assert_eq!(called.to_pointer(), per_entity.to_pointer());
@@ -1642,6 +1649,7 @@ mod tests {
         let lua = Lua::new();
         let viber = lua.create_table().expect("viber");
         lua.globals().set("viber", viber.clone()).expect("global");
+        lua.globals().set("vael", viber.clone()).expect("global");
         install(&lua, &viber, fresh_store()).expect("instala");
         lua.load(
             r#"local g = viber.game()
