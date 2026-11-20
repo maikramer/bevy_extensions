@@ -193,11 +193,11 @@ pub fn active_camera_eye<'w>(
     })
 }
 
-/// Câmara livre de editor, ligada por `viber run --camera free`. Aditivo por
+/// Câmara livre de editor (plugin opt-in do anfitrião/editor). Aditivo por
 /// natureza: com `enabled == false` o `build` regressa de imediato e não
 /// insere recursos, sistemas nem entidades — o comportamento é o de sempre.
 pub struct EditorCameraPlugin {
-    /// `--camera free` chegou ao CLI.
+    /// Opt-in do anfitrião (câmara livre).
     pub enabled: bool,
 }
 

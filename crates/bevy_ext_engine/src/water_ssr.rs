@@ -274,7 +274,7 @@ fn ssr_max_distance() -> f32 {
 #[extract_app(RenderApp)]
 pub struct WaterSsr;
 
-/// Template WGSL do passe — `viber run` escreve-o em `shaders/water_ssr.wesl`
+/// Template WGSL do passe — o jogo escreve-o em `shaders/water_ssr.wesl`
 /// (contrato de conteúdo como sky/water; sem especialização por mundo, o
 /// ficheiro é estático). Self-contained: zero `#import` — as matrizes e as
 /// cotas chegam por uniforms próprios, o que o deixa compilável pelo harness

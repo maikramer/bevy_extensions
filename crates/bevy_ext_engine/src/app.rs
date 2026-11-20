@@ -6,7 +6,7 @@ use bevy::prelude::*;
 /// Para quê a App é montada.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
 pub enum RunMode {
-    /// `viber run`: o jogo.
+    /// `RunMode::Game`: o jogo.
     #[default]
     Game,
     /// Modo de edição in-process: cena congelada.

@@ -24,6 +24,12 @@ pub struct ElementsSettings {
     pub start_hour: f64,
     /// Segundos de jogo por segundo real (72 = dia de 20 min).
     pub time_scale: f32,
+    /// Regime que determina a temperatura e a frequência de cada tipo de tempo.
+    #[reflect(default)]
+    pub climate: ClimateProfile,
+    /// Semente da sequência meteorológica horária.
+    #[reflect(default)]
+    pub weather_seed: u32,
     /// Clima forçado no arranque; `Auto` deixa o diretor do crate decidir.
     pub start_weather: StartWeather,
     /// Orçamento de GPU do céu/nuvens/névoa.
@@ -41,10 +47,25 @@ impl Default for ElementsSettings {
             start_day: 21,
             start_hour: 8.0,
             time_scale: 72.0,
+            climate: ClimateProfile::Temperate,
+            weather_seed: 0,
             start_weather: StartWeather::Auto,
             quality: ElementsQualityLevel::Medium,
         }
     }
+}
+
+/// Perfis climáticos do `bevy_elements`.
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[reflect(Default, Debug, Clone)]
+#[type_path = "bevy_ext_elements"]
+pub enum ClimateProfile {
+    #[default]
+    Temperate,
+    Alpine,
+    Desert,
+    Tropical,
+    Tundra,
 }
 
 /// Os presets de clima do `bevy_elements` (mesmos nomes) mais `Auto`.
@@ -171,6 +192,7 @@ pub struct ElementsSettingsPlugin;
 impl Plugin for ElementsSettingsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<ElementsSettings>()
+            .register_type::<ClimateProfile>()
             .register_type::<StartWeather>()
             .register_type::<ElementsQualityLevel>();
     }

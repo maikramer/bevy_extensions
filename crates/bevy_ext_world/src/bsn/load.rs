@@ -349,6 +349,8 @@ struct Loader {
 /// Uma entidade do `.bsn` sem `WorldNode` que traz componentes próprios.
 #[derive(Debug, Clone)]
 pub struct NativeEntity {
+    /// Identidade da entidade de definições no documento resolvido (Play do Jackdaw).
+    pub node_id: Option<u64>,
     pub name: Option<String>,
     /// `(type_path, valor)` de cada componente que não é da camada de
     /// edição (pose, visibilidade, ids do Jackdaw, previews).
@@ -620,6 +622,7 @@ impl Loader {
             .collect();
         if !components.is_empty() {
             self.native.push(NativeEntity {
+                node_id: ast.stable_id_of(patches_entity),
                 name: ast.get_name(patches_entity).map(str::to_owned),
                 components,
             });

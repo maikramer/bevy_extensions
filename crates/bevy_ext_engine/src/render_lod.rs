@@ -339,7 +339,9 @@ fn swap_budget() -> usize {
             .and_then(|v| v.parse().ok())
             .unwrap_or(MAX_LOD_SWAPS_PER_FRAME)
     };
-    if cfg!(test) { return read(); }
+    if cfg!(test) {
+        return read();
+    }
     *BUDGET.get_or_init(read)
 }
 
@@ -355,7 +357,9 @@ fn lod_scan_interval() -> f32 {
             .unwrap_or(10.0);
         if hz == 0.0 { 0.0 } else { 1.0 / hz }
     };
-    if cfg!(test) { return read(); }
+    if cfg!(test) {
+        return read();
+    }
     *INTERVAL.get_or_init(read)
 }
 
@@ -576,14 +580,18 @@ fn propagate_cull_ranges(
     }
 }
 
-/// Dá [`CullDistance`] às raízes [`AutoCull`] assim que a cena tem malhas
-/// com `Aabb`: o raio é o da maior esfera envolvente das malhas (em espaço
-/// de mundo, com a escala da instância), medido à origem da raiz.
+/// Dá [`CullDistance`] às raízes [`AutoCull`] quando TODAS as malhas da
+/// cena já têm `Aabb`: o raio é o da maior esfera envolvente (em espaço
+/// de mundo, com a escala da instância), medido à origem da raiz. Fechar
+/// na primeira malha media só um pormenor e cortava o resto do GLB.
 pub fn auto_cull_from_bounds(
     mut commands: Commands,
     roots: Query<(Entity, &GlobalTransform), With<AutoCull>>,
     children: Query<&Children>,
-    meshes: Query<(&GlobalTransform, &bevy::camera::primitives::Aabb), With<Mesh3d>>,
+    // `Option<&Aabb>`: uma malha da cena pode ganhar bounds um frame antes
+    // das outras. Fechar o raio na primeira escondia o resto do GLB (muro,
+    // casa) aos 40 m — o piso do corte — com a peça grande ainda por medir.
+    meshes: Query<(&GlobalTransform, Option<&bevy::camera::primitives::Aabb>), With<Mesh3d>>,
     time: Res<Time<Real>>,
     mut report: Local<(f32, usize)>,
 ) {
@@ -603,8 +611,13 @@ pub fn auto_cull_from_bounds(
         let origin = root_xf.translation();
         let mut radius = 0.0_f32;
         let mut found = false;
+        let mut incomplete = false;
         for node in children.iter_descendants(root) {
             let Ok((xf, aabb)) = meshes.get(node) else {
+                continue;
+            };
+            let Some(aabb) = aabb else {
+                incomplete = true;
                 continue;
             };
             found = true;
@@ -612,7 +625,7 @@ pub fn auto_cull_from_bounds(
             let extent = Vec3::from(aabb.half_extents) * xf.scale().abs();
             radius = radius.max(center.distance(origin) + extent.length());
         }
-        if found {
+        if found && !incomplete {
             report.1 += 1;
             commands
                 .entity(root)
@@ -797,6 +810,59 @@ mod tests {
             let island = tri[0] / per_island;
             assert!(tri.iter().all(|&v| v / per_island == island), "{tri:?}");
         }
+    }
+
+    /// Uma malha pequena com bounds não pode fechar o raio enquanto a
+    /// peça grande da mesma cena ainda não tem `Aabb`.
+    #[test]
+    fn test_auto_cull_waits_until_every_mesh_has_bounds() {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>();
+        app.add_systems(Update, auto_cull_from_bounds);
+        let root = app
+            .world_mut()
+            .spawn((AutoCull, GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d::default(),
+            GlobalTransform::IDENTITY,
+            bevy::camera::primitives::Aabb {
+                center: Vec3A::ZERO,
+                half_extents: Vec3A::splat(0.2),
+            },
+            ChildOf(root),
+        ));
+        let big = app
+            .world_mut()
+            .spawn((Mesh3d::default(), GlobalTransform::IDENTITY, ChildOf(root)))
+            .id();
+        app.update();
+        assert!(
+            app.world().get::<CullDistance>(root).is_none(),
+            "bounds a meio não fecham o corte"
+        );
+        assert!(app.world().get::<AutoCull>(root).is_some());
+        app.world_mut()
+            .entity_mut(big)
+            .insert(bevy::camera::primitives::Aabb {
+                center: Vec3A::ZERO,
+                half_extents: Vec3A::new(8.0, 4.0, 0.4),
+            });
+        app.update();
+        let cull = app
+            .world()
+            .get::<CullDistance>(root)
+            .expect("com todas as malhas medidas, o corte fecha");
+        let expected = auto_cull_radius(
+            Vec3::new(8.0, 4.0, 0.4).length(),
+            crate::graphics::cull_scale(),
+        );
+        assert!(
+            (cull.radius - expected).abs() < 0.05,
+            "{} vs {expected}",
+            cull.radius
+        );
+        assert!(app.world().get::<AutoCull>(root).is_none());
     }
 
     /// Arbusto sai cedo, muralha fica até ao teto, nada abaixo do piso.

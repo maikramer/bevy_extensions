@@ -1,0 +1,42 @@
+[package]
+name = "bevy_ext_puppet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Dynamic motion synthesis for humanoids (Euphoria-style): an active ragdoll driven by muscles that track the animation, a balance controller with recovery steps and a network of reactive behaviours (balance, stagger, catch-fall, windmill, writhe, get-up) on Avian"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "ragdoll", "animation", "physics", "avian"]
+categories = ["game-development"]
+
+[features]
+default = ["gizmos"]
+# Debug drawing (bodies, centre of mass, capture point, support polygon).
+gizmos = ["bevy/bevy_gizmos"]
+# Learning hooks: observation recorder (`.jsonl`) for training a policy.
+ml = ["dep:serde", "dep:serde_json"]
+# Interactive example (`puppet_sandbox`): full Bevy + Avian debug render.
+sandbox = ["gizmos", "bevy/default", "avian3d/debug-plugin"]
+
+[dependencies]
+bevy = { workspace = true, features = ["std", "bevy_log", "bevy_mesh"] }
+# Sem os defaults do avian (cena, picking, collider-from-mesh): o crate só
+# precisa do backend parry, das juntas e do solver. O jogo unifica-os.
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+    "xpbd_joints",
+    "parallel",
+] }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[[example]]
+name = "puppet_sandbox"
+required-features = ["sandbox"]
+
+[dev-dependencies]
+# System names in validation errors.
+bevy = { workspace = true, features = ["std", "bevy_log", "debug"] }

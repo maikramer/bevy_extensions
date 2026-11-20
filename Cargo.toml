@@ -26,6 +26,7 @@ members = [
     "crates/bevy_ext_grass",
     "crates/bevy_ext_physics",
     "crates/bevy_ext_engine",
+    "crates/bevy_ext_puppet",
 ]
 # Standalone (fora do workspace): o plugin Jackdaw WIP. (O scene_runtime foi
 # apagado a 2026-11-15: órfão, zero consumidores — ver DELETE-MONOLITH.md no
@@ -76,6 +77,7 @@ bevy_ext_gradmesh = { version = "0.1.0", path = "crates/bevy_ext_gradmesh" }
 bevy_ext_scene = { version = "0.1.0", path = "crates/bevy_ext_scene" }
 bevy_ext_physics = { version = "0.1.0", path = "crates/bevy_ext_physics" }
 bevy_ext_engine = { version = "0.1.0", path = "crates/bevy_ext_engine" }
+bevy_ext_puppet = { version = "0.1.0", path = "crates/bevy_ext_puppet" }
 # Linha do Vael/monólito (bevy 0.20); todos os crates da família já são
 # Avian — o Rapier saiu do workspace por inteiro.
 avian3d = "0.8"

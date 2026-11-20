@@ -2607,6 +2607,19 @@ fn spawn_paving(
                 group.base_color[1],
                 group.base_color[2],
             ),
+            // Only a mixed mouth shares triangles. Order its PBR layers at
+            // the same surface elevation, including their transparent rims.
+            depth_bias: if group.setts || group.trail {
+                let (stone, id) = paving.material_order(gid as u16);
+                1.0 + id as f32
+                    + if stone {
+                        paving.groups().len() as f32
+                    } else {
+                        0.0
+                    }
+            } else {
+                0.0
+            },
             metallic: 0.0,
             perceptual_roughness: group.roughness,
             alpha_mode: bevy::material::AlphaMode::Blend,

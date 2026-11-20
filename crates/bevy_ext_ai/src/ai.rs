@@ -163,6 +163,16 @@ pub fn apply_ai_locomotion(
     time: Res<Time>,
     ground: Option<Res<Ground>>,
     interior: Option<Res<InteriorSceneConfig>>,
+    obstacles: Query<
+        (&GlobalTransform, &avian3d::prelude::Collider),
+        (
+            Without<bevy_ext_core::VoxelCollider>,
+            Without<AiLocomotion>,
+            Without<Player>,
+            Without<avian3d::prelude::Sensor>,
+            Without<bevy_ext_core::RagdollBodyOf>,
+        ),
+    >,
     mut movers: Query<
         (
             &mut Transform,
@@ -173,6 +183,8 @@ pub fn apply_ai_locomotion(
         Without<Corpse>,
     >,
 ) {
+    const AI_BODY_RADIUS: f32 = 0.35;
+    const AI_WAIST_HEIGHT: f32 = 0.45;
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
@@ -205,6 +217,45 @@ pub fn apply_ai_locomotion(
             let world = transform.translation + offset;
             let mut x = world.x + step.x;
             let mut z = world.z + step.y;
+            for (obs_global, collider) in &obstacles {
+                let obs = obs_global.compute_transform();
+                if (obs.translation.x - x).abs() > 16.0
+                    || (obs.translation.z - z).abs() > 16.0
+                    || (obs.translation.y - world.y).abs() > 16.0
+                {
+                    continue;
+                }
+                let probe = Vec3::new(x, world.y + AI_WAIST_HEIGHT, z);
+                let (surface_pt, is_inside) =
+                    collider.project_point(obs.translation, obs.rotation, probe, false);
+                if !is_inside && (surface_pt.y - probe.y).abs() > 0.25 {
+                    continue;
+                }
+                let delta_xz = Vec2::new(x - surface_pt.x, z - surface_pt.z);
+                let dist_xz = delta_xz.length();
+                if is_inside {
+                    let outward = (-delta_xz)
+                        .try_normalize()
+                        .or_else(|| {
+                            Vec2::new(world.x - obs.translation.x, world.z - obs.translation.z)
+                                .try_normalize()
+                        })
+                        .unwrap_or(Vec2::X);
+                    let pushed = Vec2::new(surface_pt.x, surface_pt.z) + outward * AI_BODY_RADIUS;
+                    x = pushed.x;
+                    z = pushed.y;
+                } else if dist_xz < AI_BODY_RADIUS {
+                    let outward = delta_xz
+                        .try_normalize()
+                        .or_else(|| {
+                            Vec2::new(world.x - surface_pt.x, world.z - surface_pt.z).try_normalize()
+                        })
+                        .unwrap_or(Vec2::X);
+                    let pushed = Vec2::new(surface_pt.x, surface_pt.z) + outward * AI_BODY_RADIUS;
+                    x = pushed.x;
+                    z = pushed.y;
+                }
+            }
             // A bolsa de interior vive DECLARADAMENTE fora do disco do mundo
             // (ver `InteriorSceneConfig`): clampar ali teleportava os NPCs da
             // sala para a borda do vale — a mesma exceção (pela posição ATUAL)
@@ -862,6 +913,47 @@ mod tests {
         assert!(
             border_pos.distance(outside) < 0.05,
             "sem script não é puxada para o disco: {border_pos:?}"
+        );
+    }
+
+    #[test]
+    fn test_locomotion_slides_around_static_rock_colliders_instead_of_entering() {
+        let mut app = locomotion_app();
+        let rock_radius = 0.80_f32;
+        let rock = avian3d::prelude::Collider::cylinder(rock_radius, 0.80);
+        app.world_mut().spawn((
+            Transform::from_xyz(0.0, 0.40, 0.0),
+            GlobalTransform::from(Transform::from_xyz(0.0, 0.40, 0.0)),
+            rock,
+        ));
+        let enemy = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.15, 0.0, -2.0),
+                GlobalTransform::from(Transform::from_xyz(0.15, 0.0, -2.0)),
+                AiLocomotion::default(),
+                LocomotionProfile::authored(1.0, 4.0),
+            ))
+            .id();
+
+        for _ in 0..80 {
+            app.world_mut()
+                .entity_mut(enemy)
+                .get_mut::<AiLocomotion>()
+                .unwrap()
+                .drive(Vec2::new(0.0, 4.0));
+            tick(&mut app, 25);
+            let pos = app.world().entity(enemy).get::<Transform>().unwrap().translation;
+            let dist_xz = Vec2::new(pos.x, pos.z).length();
+            assert!(
+                dist_xz >= rock_radius + 0.34,
+                "enemy entered rock collider: pos={pos:?} (dist_xz={dist_xz:.3})"
+            );
+        }
+        let end_pos = app.world().entity(enemy).get::<Transform>().unwrap().translation;
+        assert!(
+            end_pos.z > 0.5,
+            "enemy slid past the rock instead of getting stuck: end_pos={end_pos:?}"
         );
     }
 }

@@ -78,9 +78,9 @@ pub(crate) fn build(world: &mut World, parent: Entity) {
         ui::row(root, &[("Sol de preview (liga/desliga)", "vael.env.toggle_sun")]);
         ui::label(
             root,
-            "Latitude, data, escala do tempo e qualidade: inspector (Definições › \
-             Ambiente). Céu, nuvens e chuva só no Play. Grava (Ctrl+S) e o jogo \
-             a correr segue.",
+            "Em Definições › Ambiente, o inspector permite editar o perfil climático, \
+             a semente da previsão, a latitude, a data, a escala do tempo e a qualidade. \
+             Grava (Ctrl+S) para ver o resultado no Play.",
         );
     });
 }
@@ -101,7 +101,7 @@ pub(crate) fn refresh(
             let minutes = (hour * 60.0).round() as u32;
             format!(
                 "{:02}:{:02} · {:02}/{:02}/{} · {:.1}°{} · clima {} · ×{:.0}\n\
-                 Sol a {:.0}° de elevação · preview {}",
+                 Perfil {:?} · semente {} · Sol a {:.0}° de elevação · preview {}",
                 (minutes / 60) % 24,
                 minutes % 60,
                 s.start_day,
@@ -111,6 +111,8 @@ pub(crate) fn refresh(
                 if s.latitude_deg >= 0.0 { "N" } else { "S" },
                 s.start_weather.label(),
                 s.time_scale,
+                s.climate,
+                s.weather_seed,
                 elevation,
                 if sun.enabled { "ligado" } else { "desligado" },
             )

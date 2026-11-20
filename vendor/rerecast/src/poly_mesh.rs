@@ -308,7 +308,7 @@ impl ContourSet {
                     let mut best_pb = 0;
                     let mut best_ea = 0;
                     let mut best_eb = 0;
-                    for j in 0..(npolys - 1) {
+                    for j in 0..npolys.saturating_sub(1) {
                         let pj = &polys[(j * nvp)..];
                         for k in (j + 1)..npolys {
                             let pk = &polys[(k * nvp)..];
@@ -374,8 +374,9 @@ impl ContourSet {
             }
         }
 
-        mesh.polygons.truncate(mesh.npolys * nvp * 2);
-        // Remove edge vertices.
+        // Remove edge vertices before truncating `mesh.polygons`: `remove_vertex`
+        // may leave more triangles than it removed when convexity checks reject
+        // a merge, growing `mesh.npolys` past the post-contour count.
         let mut i = 0;
         while i < mesh.nvertices as usize {
             if vflags[i] {
@@ -387,12 +388,17 @@ impl ContourSet {
                 // Remove vertex
                 // Note: nverts is already decremented inside removeVertex()!
                 // Fixup vertex flags
-                vflags.copy_within((i + 1)..=mesh.nvertices as usize, i);
-                i -= 1;
+                let nv = mesh.nvertices as usize;
+                if i < nv {
+                    vflags.copy_within((i + 1)..=nv, i);
+                }
+                vflags[nv] = false;
+                continue;
             }
 
             i += 1;
         }
+        mesh.polygons.truncate(mesh.npolys * nvp * 2);
         // Calculate adjacency.
         mesh.build_mesh_adjacency()?;
 
@@ -570,7 +576,8 @@ impl InternalPolygonNavmesh {
                     continue;
                 }
                 // Collect edges which does not touch the removed vertex.
-                for (j, k) in (0..nv).zip(nv - 1..) {
+                for j in 0..nv {
+                    let k = prev(j, nv);
                     if p[j] != rem && p[k] != rem {
                         let e = &mut edges[nedges];
                         e.polygon1 = p[k];
@@ -644,20 +651,20 @@ impl InternalPolygonNavmesh {
                     push_front(r, &mut hreg, &mut nhreg);
                     push_front(a, &mut harea, &mut nharea);
                     add = true;
-                    i += 1;
                 } else if hole[nhole - 1] == ea {
                     // The segment matches the end of the hole boundary.
                     push_back(eb, &mut hole, &mut nhole);
                     push_back(r, &mut hreg, &mut nhreg);
                     push_back(a, &mut harea, &mut nharea);
                     add = true;
-                    i += 1;
                 }
                 if add {
                     // The edge segment was added, remove it.
                     edges[i] = edges[nedges - 1].clone();
                     nedges -= 1;
                     match_ = true;
+                } else {
+                    i += 1;
                 }
             }
             if !match_ {
@@ -722,7 +729,7 @@ impl InternalPolygonNavmesh {
                 let mut best_pb = 0;
                 let mut best_ea = 0;
                 let mut best_eb = 0;
-                for j in 0..npolys - 1 {
+                for j in 0..npolys.saturating_sub(1) {
                     let pj = &polys[j * nvp..];
                     for k in (j + 1)..npolys {
                         let pk = &polys[k * nvp..];
@@ -772,7 +779,7 @@ impl InternalPolygonNavmesh {
 
         // Store polygons.
         for i in 0..npolys {
-            if self.npolys >= max_tris {
+            if self.npolys >= max_tris || (self.npolys + 1) * nvp * 2 > self.polygons.len() {
                 break;
             }
             let face = &polys[i * nvp..];
@@ -838,7 +845,8 @@ impl InternalPolygonNavmesh {
             let nv = count_poly_verts(p, nvp);
 
             // Collect edges which touches the removed vertex.
-            for (j, k) in (0..nv).zip((nv - 1)..) {
+            for j in 0..nv {
+                let k = prev(j, nv);
                 if !(p[j] == rem || p[k] == rem) {
                     continue;
                 }
@@ -870,7 +878,7 @@ impl InternalPolygonNavmesh {
         // There should be no more than 2 open edges.
         // This catches the case that two non-adjacent polygons
         // share the removed vertex. In that case, do not remove the vertex.
-        let num_open_edges = edges.iter().filter(|e| e[2] < 2).count();
+        let num_open_edges = edges.iter().take(nedges).filter(|e| e[2] < 2).count();
         num_open_edges <= 2
     }
 }
@@ -927,6 +935,9 @@ impl InternalPolygonNavmesh {
     // Test the same XZ coordinates the consumer receives after dequantization.
     // A straight boundary is valid; a zero-length edge or a reversal is not.
     fn convex_world_ring(&self, len: usize, index: impl Fn(usize) -> u16) -> bool {
+        if len < 3 {
+            return false;
+        }
         let point = |i| {
             self.aabb.min.xz()
                 + self.vertices[usize::from(index(i))].as_vec3().xz() * self.cell_size
@@ -1506,5 +1517,131 @@ mod viber_patch_tests {
         assert!(wound_right(&verts, U16Vec3::new(0, 2, 3)));
         // Índice fora: fora.
         assert!(!wound_right(&verts, U16Vec3::new(0, 1, 9)));
+    }
+
+    #[test]
+    fn convex_world_ring_rejects_short_rings_without_underflow() {
+        let mut mesh = InternalPolygonNavmesh::default();
+        mesh.vertices = vec![U16Vec3::new(0, 0, 0), U16Vec3::new(2, 0, 0)];
+        assert!(!mesh.valid_face(&[]));
+        assert!(!mesh.valid_face(&[0]));
+        assert!(!mesh.valid_face(&[0, 1]));
+    }
+
+    #[test]
+    fn remove_vertex_at_zero_and_expanding_past_pre_removal_count_succeeds() {
+        let nv_per_poly = 6usize;
+        let max_tris = 18usize;
+        // Interior vertex 0 is shared by four convex hexagons (`npolys = 4`),
+        // with all incident edges internal so `can_remove_vertex(0)` is true.
+        // Removing 0 yields a 16-gon hole: four 5-gon pockets plus a central
+        // quad that cannot merge with any 5-gon (`5 + 4 - 2 = 7 > 6`), and
+        // the reflex notches block ear-to-triangle merges (`after > before = 4`).
+        let mut mesh = InternalPolygonNavmesh {
+            aabb: Aabb3d {
+                min: glam::Vec3::ZERO,
+                ..Default::default()
+            },
+            cell_size: 1.0,
+            cell_height: 0.1,
+            max_vertices_per_polygon: nv_per_poly as u16,
+            nvertices: 17,
+            npolys: 4,
+            vertices: vec![
+                U16Vec3::new(100, 0, 100), // 0: interior vertex to remove
+                U16Vec3::new(65, 0, 100),  // 1 (reflex)
+                U16Vec3::new(40, 0, 125),  // 2
+                U16Vec3::new(60, 0, 155),  // 3
+                U16Vec3::new(85, 0, 155),  // 4
+                U16Vec3::new(100, 0, 135), // 5 (reflex)
+                U16Vec3::new(125, 0, 160), // 6
+                U16Vec3::new(155, 0, 140), // 7
+                U16Vec3::new(155, 0, 115), // 8
+                U16Vec3::new(135, 0, 100), // 9 (reflex)
+                U16Vec3::new(160, 0, 75),  // 10
+                U16Vec3::new(140, 0, 45),  // 11
+                U16Vec3::new(115, 0, 45),  // 12
+                U16Vec3::new(100, 0, 65),  // 13 (reflex)
+                U16Vec3::new(75, 0, 40),   // 14
+                U16Vec3::new(45, 0, 60),   // 15
+                U16Vec3::new(45, 0, 85),   // 16
+            ],
+            polygons: vec![u16::MAX; max_tris * nv_per_poly * 2],
+            regions: vec![RegionId::from(1); max_tris],
+            areas: vec![AreaType::DEFAULT_WALKABLE; max_tris],
+            ..Default::default()
+        };
+        let p0 = &mut mesh.polygons[0..nv_per_poly];
+        p0[..6].copy_from_slice(&[0, 1, 2, 3, 4, 5]);
+        let p1 = &mut mesh.polygons[nv_per_poly * 2..nv_per_poly * 2 + nv_per_poly];
+        p1[..6].copy_from_slice(&[0, 5, 6, 7, 8, 9]);
+        let p2 = &mut mesh.polygons[nv_per_poly * 4..nv_per_poly * 4 + nv_per_poly];
+        p2[..6].copy_from_slice(&[0, 9, 10, 11, 12, 13]);
+        let p3 = &mut mesh.polygons[nv_per_poly * 6..nv_per_poly * 6 + nv_per_poly];
+        p3[..6].copy_from_slice(&[0, 13, 14, 15, 16, 1]);
+        mesh.build_mesh_adjacency().unwrap();
+
+        assert!(mesh.can_remove_vertex(0));
+        let before = mesh.npolys;
+        mesh.remove_vertex(0, max_tris).unwrap();
+        assert!(
+            mesh.npolys > before,
+            "hole triangulation must grow polygon count ({before} -> {})",
+            mesh.npolys
+        );
+        assert!(mesh.npolys <= max_tris);
+
+        // Full ContourSet::into_polygon_mesh with vertex 0 flagged as
+        // BORDER_VERTEX shared by 3 contours meeting at (4, 4), so the
+        // while-loop removes index 0 cleanly without i -= 1 underflow.
+        let bv = RegionVertexId::BORDER_VERTEX.bits();
+        let pt = |x, z, r| (U16Vec3::new(x, 0, z), r);
+        let contours = ContourSet {
+            contours: vec![
+                crate::Contour {
+                    vertices: vec![
+                        pt(4, 4, bv),
+                        pt(0, 4, 0),
+                        pt(0, 8, 0),
+                        pt(4, 8, 0),
+                    ],
+                    area: AreaType::DEFAULT_WALKABLE,
+                    region: RegionId::from(1),
+                    ..Default::default()
+                },
+                crate::Contour {
+                    vertices: vec![
+                        pt(4, 4, bv),
+                        pt(4, 8, 0),
+                        pt(8, 8, 0),
+                        pt(8, 4, 0),
+                    ],
+                    area: AreaType::DEFAULT_WALKABLE,
+                    region: RegionId::from(1),
+                    ..Default::default()
+                },
+                crate::Contour {
+                    vertices: vec![
+                        pt(4, 4, bv),
+                        pt(8, 4, 0),
+                        pt(4, 0, 0),
+                        pt(0, 4, 0),
+                    ],
+                    area: AreaType::DEFAULT_WALKABLE,
+                    region: RegionId::from(1),
+                    ..Default::default()
+                },
+            ],
+            aabb: Aabb3d {
+                min: glam::Vec3::ZERO,
+                max: glam::Vec3::new(10., 10., 10.),
+            },
+            cell_size: 1.0,
+            cell_height: 0.5,
+            ..Default::default()
+        };
+        let built = contours.into_polygon_mesh(6).unwrap();
+        assert!(built.polygon_count() >= 1);
+        assert!(built.vertices.len() < 7, "border vertex at index 0 should be removed, verts={}", built.vertices.len());
     }
 }

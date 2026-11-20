@@ -5,7 +5,7 @@
 //! `dlss_wgpu` exige o SDK da NVIDIA em compile time (env `DLSS_SDK` → clone
 //! de github.com/NVIDIA/DLSS na tag v310.9.1, + `VULKAN_SDK` com headers e
 //! libclang para o bindgen). O binário jogável constrói-se com
-//! `cargo build --release --features dlss` ou `viber run --dlss`; sem a
+//! `cargo build --release --features dlss` no anfitrião; sem a
 //! feature, este módulo reduz-se ao parser (testável em CI sem SDK).
 //!
 //! **Contrato de runtime**: com a feature compilada, o DLSS fica LIGADO por

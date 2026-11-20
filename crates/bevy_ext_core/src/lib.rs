@@ -74,7 +74,7 @@ impl MenusOpen {
 /// que também o lia, foi apagado a 2026-11-15 — órfão.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Resource)]
 pub enum RunMode {
-    /// `viber run`: o jogo.
+    /// `RunMode::Game`: o jogo.
     #[default]
     Game,
     /// Modo de edição in-process: cena congelada.

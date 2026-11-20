@@ -46,3 +46,21 @@ Deltas de vendor em relação ao crate publicado:
    na borda. A fusão exige uma aresta em sentidos opostos e convexidade em
    coordenadas finais f32. Um triângulo de área zero que sobrar é descartado
    antes da construção das adjacências e do detail mesh.
+5. `poly_mesh.rs`: mover `mesh.polygons.truncate` para depois do ciclo de
+   `remove_vertex` (com guarda contra estouro se a checagem de convexidade
+   impedir a re-fusão), corrigir subfluxo de `i -= 1` quando o vértice `0` é
+   removido, corrigir a iteração circular de arestas em `remove_vertex` e
+   `can_remove_vertex` (`prev(j, nv)` em vez de `nv - 1..`, avanço do ciclo
+   de arestas e `edges.iter().take(nedges)`), e guardar `len < 3` em
+   `convex_world_ring` e `npolys == 0` nos ciclos de fusão (`Task polled
+   after completion` em tiles do mundo).
+6. `detail_mesh.rs`: `DetailNavmesh::new` passava o buffer local de sub-malha
+   `&verts` (`[Vec3A; 256]`) em vez de `&mesh.vertices` (`&[U16Vec3]`) para
+   `HeightPatch::get_height_data` / `seed_array_with_poly_center`. Quando um
+   polígono caía no seed pelo centro (`RegionId::NONE` ou região vazia no
+   patch) com índice de vértice global `>= 256`, panicava com `index out of
+   bounds: the len is 256 but the index is ...` (também reproduzido ao vivo no
+   tile `#1`). Corrigida a assinatura para `&[U16Vec3]` passando `&mesh.vertices`,
+   com guardas de borda em `chf.cells`, retorno antecipado quando não há span
+   inicial e preenchimento/guarda de `hull` em `triangulate_hull` para
+   `sample_distance <= 0`.

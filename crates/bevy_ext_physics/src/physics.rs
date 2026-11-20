@@ -465,7 +465,7 @@ fn physics_substeps() -> u32 {
 
 #[derive(Default)]
 pub struct PhysicsPlugin {
-    /// Draw collider wireframes (`viber run --physics-debug`).
+    /// Draw collider wireframes (opt-in do anfitrião).
     pub debug: bool,
 }
 
@@ -682,6 +682,7 @@ pub fn resolve_pending_colliders(
     server: Res<AssetServer>,
     mut cache: ResMut<ColliderCache>,
     gltfs: Res<Assets<bevy::gltf::Gltf>>,
+    gltf_nodes: Res<Assets<bevy::gltf::GltfNode>>,
     gltf_meshes: Res<Assets<bevy::gltf::GltfMesh>>,
     meshes: Res<Assets<Mesh>>,
     mut pending: Query<
@@ -805,8 +806,10 @@ pub fn resolve_pending_colliders(
                     Some(cached) => cached.clone(),
                     None => {
                         let (built, reason) =
-                            collider_from_gltf(gltf, &gltf_meshes, &meshes, convex);
-                        if built.is_none() && gltf_meshes_pending(gltf, &gltf_meshes, &meshes) {
+                            collider_from_gltf(gltf, &gltf_nodes, &gltf_meshes, &meshes, convex);
+                        if built.is_none()
+                            && gltf_meshes_pending(gltf, &gltf_nodes, &gltf_meshes, &meshes)
+                        {
                             // Meshes derivados ainda a materializar — o bake
                             // é retry no próximo tick; NÃO cachear o None
                             // (uma corrida no arranque envenenava o asset
@@ -960,9 +963,17 @@ fn bounds_cuboid(
 /// empty bake right now is a race, not malformed geometry.
 fn gltf_meshes_pending(
     gltf: &bevy::gltf::Gltf,
+    gltf_nodes: &Assets<bevy::gltf::GltfNode>,
     gltf_meshes: &Assets<bevy::gltf::GltfMesh>,
     meshes: &Assets<Mesh>,
 ) -> bool {
+    if gltf
+        .nodes
+        .iter()
+        .any(|node_handle| gltf_nodes.get(node_handle).is_none())
+    {
+        return true;
+    }
     gltf.meshes.iter().any(|mesh_handle| {
         let Some(gltf_mesh) = gltf_meshes.get(mesh_handle) else {
             return true;
@@ -979,12 +990,51 @@ fn gltf_meshes_pending(
 /// `Err` carries the reason every attempt failed — used only for the
 /// warn-once log in the resolver.
 pub fn collider_from_mesh_with_reason(mesh: &Mesh, convex: bool) -> Result<Collider, String> {
-    let (vertices, indices) = mesh_vertices_indices(mesh).ok_or_else(|| {
+    collider_from_mesh_transformed(mesh, bevy::math::Affine3A::IDENTITY, convex)
+}
+
+fn collider_from_mesh_transformed(
+    mesh: &Mesh,
+    affine: bevy::math::Affine3A,
+    convex: bool,
+) -> Result<Collider, String> {
+    let (mut vertices, mut indices) = mesh_vertices_indices(mesh).ok_or_else(|| {
         "mesh sem vértices/índices utilizáveis (POSITION em falta ou topologia não-TriangleList)"
             .to_string()
     })?;
+    if affine != bevy::math::Affine3A::IDENTITY {
+        for v in &mut vertices {
+            *v = affine.transform_point3(*v);
+        }
+        if !convex && affine.matrix3.determinant() < 0.0 {
+            for tri in &mut indices {
+                tri.swap(1, 2);
+            }
+        }
+    }
     if convex {
-        Collider::convex_hull(&vertices)
+        let min_y = vertices.iter().map(|v| v.y).fold(f32::INFINITY, f32::min);
+        let max_y = vertices
+            .iter()
+            .map(|v| v.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let height = max_y - min_y;
+        // Props com `shape: precompute` (pedras, afloramentos e monólitos) têm
+        // frequentemente bojo equatorial baixo e chanfros superiores < 55° onde
+        // a cápsula flutuante do herói subia ou atravessava a saia inferior.
+        // Extrudimos o contorno horizontal da base até 75% da altura.
+        let hull_points = if height > 0.15 {
+            let wall_top = min_y + height * 0.75;
+            let mut extruded = Vec::with_capacity(vertices.len() * 2);
+            for &v in &vertices {
+                extruded.push(Vec3::new(v.x, min_y.min(0.0), v.z));
+                extruded.push(Vec3::new(v.x, v.y.max(wall_top), v.z));
+            }
+            extruded
+        } else {
+            vertices
+        };
+        Collider::convex_hull(&hull_points)
             .ok_or_else(|| "convex hull falhou: sem volume convexo".to_string())
     } else {
         bake_trimesh_escalating(vertices, indices)
@@ -1056,13 +1106,60 @@ pub fn bake_trimesh_escalating(
 
 fn collider_from_gltf(
     gltf: &bevy::gltf::Gltf,
+    gltf_nodes: &Assets<bevy::gltf::GltfNode>,
     gltf_meshes: &Assets<bevy::gltf::GltfMesh>,
     meshes: &Assets<Mesh>,
     convex: bool,
 ) -> (Option<Collider>, Option<String>) {
+    // Os GLBs quantizados (`KHR_mesh_quantization`) guardam vértices
+    // normalizados em [-1, 1] centrados na origem e colocam a escala real e o
+    // pivô da base no `GltfNode::transform`. Compor a hierarquia de nós aplica
+    // o mesmo transform que a cena renderizada (`GltfScene`).
+    let mut instances: Vec<(Handle<bevy::gltf::GltfMesh>, bevy::math::Affine3A)> = Vec::new();
+    let mut child_ids = std::collections::HashSet::new();
+    for node_handle in &gltf.nodes {
+        if let Some(node) = gltf_nodes.get(node_handle) {
+            for child in &node.children {
+                child_ids.insert(child.id());
+            }
+        }
+    }
+    fn collect_node_meshes(
+        node_handle: &Handle<bevy::gltf::GltfNode>,
+        parent_affine: bevy::math::Affine3A,
+        gltf_nodes: &Assets<bevy::gltf::GltfNode>,
+        out: &mut Vec<(Handle<bevy::gltf::GltfMesh>, bevy::math::Affine3A)>,
+    ) {
+        let Some(node) = gltf_nodes.get(node_handle) else {
+            return;
+        };
+        let world = parent_affine * node.transform.compute_affine();
+        if let Some(mesh_handle) = &node.mesh {
+            out.push((mesh_handle.clone(), world));
+        }
+        for child in &node.children {
+            collect_node_meshes(child, world, gltf_nodes, out);
+        }
+    }
+    for node_handle in &gltf.nodes {
+        if !child_ids.contains(&node_handle.id()) {
+            collect_node_meshes(
+                node_handle,
+                bevy::math::Affine3A::IDENTITY,
+                gltf_nodes,
+                &mut instances,
+            );
+        }
+    }
+    if instances.is_empty() {
+        for gltf_mesh_handle in &gltf.meshes {
+            instances.push((gltf_mesh_handle.clone(), bevy::math::Affine3A::IDENTITY));
+        }
+    }
+
     let mut parts: Vec<(Vec3, Quat, Collider)> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
-    for gltf_mesh_handle in &gltf.meshes {
+    for (gltf_mesh_handle, affine) in &instances {
         let Some(gltf_mesh) = gltf_meshes.get(gltf_mesh_handle) else {
             failures.push("GltfMesh derivado ainda não carregado".to_string());
             continue;
@@ -1072,7 +1169,7 @@ fn collider_from_gltf(
                 failures.push("Mesh derivado ainda não carregado".to_string());
                 continue;
             };
-            match collider_from_mesh_with_reason(mesh, convex) {
+            match collider_from_mesh_transformed(mesh, *affine, convex) {
                 Ok(collider) => parts.push((Vec3::ZERO, Quat::IDENTITY, collider)),
                 Err(reason) => failures.push(reason),
             }

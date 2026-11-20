@@ -237,11 +237,15 @@ impl DetailNavmesh {
             hp.zmin = bounds_i.zmin;
             hp.width = bounds_i.width();
             hp.height = bounds_i.height();
+            // Viber patch: `poly` holds global indices into `mesh.vertices`
+            // (voxel grid U16Vec3), not the local 256-slot submesh buffer
+            // `&verts`; passing `&verts` panicked on meshes with >256 vertices
+            // whenever a polygon fell back to `seed_array_with_poly_center`.
             hp.get_height_data(
                 chf,
                 p,
                 npoly,
-                &verts,
+                &mesh.vertices,
                 border_size,
                 &mut arr,
                 mesh.regions[i],
@@ -446,6 +450,11 @@ fn build_poly_detail(
             }
             j = i;
         }
+    } else {
+        for (i, slot) in hull.iter_mut().enumerate().take(nin) {
+            *slot = i;
+        }
+        nhull = nin;
     }
 
     // If the polygon minimum extent is small (sliver or small triangle), do not try to add internal points.
@@ -1082,6 +1091,9 @@ fn triangulate_hull(
     tris: &mut Vec<[u8; 3]>,
     flags: &mut Vec<u8>,
 ) {
+    if nhull < 3 {
+        return;
+    }
     let mut start = 0;
     let mut left = 1;
     let mut right = nhull - 1;
@@ -1249,7 +1261,7 @@ impl HeightPatch {
         chf: &CompactHeightfield,
         poly: &[u16],
         npoly: usize,
-        verts: &[Vec3A],
+        verts: &[U16Vec3],
         bs: u16,
         queue: &mut Vec<(i32, i32, usize)>,
         region: RegionId,
@@ -1271,8 +1283,14 @@ impl HeightPatch {
             // as seed points to fill the rest.
             for hz in 0..self.height {
                 let z = self.zmin + hz + bs;
+                if z >= chf.height {
+                    continue;
+                }
                 for hx in 0..self.width {
                     let x = self.xmin + hx + bs;
+                    if x >= chf.width {
+                        continue;
+                    }
                     let c = &chf.cells[x as usize + z as usize * chf.width as usize];
                     for i in c.index_range() {
                         let s = &chf.spans[i];
@@ -1358,13 +1376,18 @@ impl HeightPatch {
         chf: &CompactHeightfield,
         poly: &[u16],
         npoly: usize,
-        verts: &[Vec3A],
+        verts: &[U16Vec3],
         bs: u16,
         array: &mut Vec<(i32, i32, usize)>,
     ) {
         // Note: Reads to the compact heightfield are offset by border size (bs)
         // since border size offset is already removed from the polymesh vertices.
         const OFFSET: [i32; 9 * 2] = [0, 0, -1, -1, 0, -1, 1, -1, 1, 0, 1, 1, 0, 1, -1, 1, -1, 0];
+
+        if npoly == 0 {
+            array.clear();
+            return;
+        }
 
         // Find cell closest to a poly vertex
         let mut start_cell_x = 0;
@@ -1375,13 +1398,16 @@ impl HeightPatch {
             if dmin <= 0 {
                 break;
             }
+            let Some(&v) = verts.get(poly_j) else {
+                continue;
+            };
             for k in 0..9 {
                 if dmin <= 0 {
                     break;
                 }
-                let ax = verts[poly_j].x as i32 + OFFSET[k * 2];
-                let ay = verts[poly_j].y as i32;
-                let az = verts[poly_j].z as i32 + OFFSET[k * 2 + 1];
+                let ax = v.x as i32 + OFFSET[k * 2];
+                let ay = v.y as i32;
+                let az = v.z as i32 + OFFSET[k * 2 + 1];
                 if ax < self.xmin as i32
                     || ax >= self.xmin as i32 + self.width as i32
                     || az < self.zmin as i32
@@ -1389,8 +1415,13 @@ impl HeightPatch {
                 {
                     continue;
                 };
-                let c =
-                    &chf.cells[((ax + bs as i32) + (az + bs as i32) * chf.width as i32) as usize];
+                let cx_bs = ax + bs as i32;
+                let cz_bs = az + bs as i32;
+                if cx_bs < 0 || cx_bs >= chf.width as i32 || cz_bs < 0 || cz_bs >= chf.height as i32
+                {
+                    continue;
+                }
+                let c = &chf.cells[(cx_bs + cz_bs * chf.width as i32) as usize];
                 for i in c.index_range() {
                     let s = &chf.spans[i];
                     let d = (ay - s.y as i32).abs();
@@ -1405,17 +1436,29 @@ impl HeightPatch {
         }
 
         // Jan: Original code also asserts this.
-        let start_span_index = start_span_index.expect("Internal error: found no start span");
+        let Some(start_span_index) = start_span_index else {
+            array.clear();
+            return;
+        };
         // Find center of the polygon
         let mut pcx = 0;
         let mut pcz = 0;
+        let mut count = 0;
         for poly_j in poly[..npoly].iter().map(|p| *p as usize) {
+            let Some(&v) = verts.get(poly_j) else {
+                continue;
+            };
             // Jan: shouldn't the type conversion happen only at the final value?
-            pcx += verts[poly_j].x as i32;
-            pcz += verts[poly_j].z as i32;
+            pcx += v.x as i32;
+            pcz += v.z as i32;
+            count += 1;
         }
-        pcx /= npoly as i32;
-        pcz /= npoly as i32;
+        if count == 0 {
+            array.clear();
+            return;
+        }
+        pcx /= count;
+        pcz /= count;
 
         // Use seeds array as a stack for DFS
         array.clear();
@@ -1479,11 +1522,16 @@ impl HeightPatch {
                 if *self.data_at(hpx, hpz) != 0 {
                     continue;
                 }
+                let nx_bs = new_x + bs as i32;
+                let nz_bs = new_z + bs as i32;
+                if nx_bs < 0 || nx_bs >= chf.width as i32 || nz_bs < 0 || nz_bs >= chf.height as i32
+                {
+                    continue;
+                }
                 *self.data_at_mut(hpx, hpz) = 1;
-                let new_index = chf.cells
-                    [((new_x + bs as i32) + (new_z + bs as i32) * chf.width as i32) as usize]
-                    .index() as i32
-                    + con as i32;
+                let new_index =
+                    chf.cells[(nx_bs + nz_bs * chf.width as i32) as usize].index() as i32
+                        + con as i32;
                 array.push((new_x, new_z, new_index as usize));
             }
             dirs.swap(direct_dir, 3);
@@ -1588,5 +1636,71 @@ mod viber_patch_tests {
         assert_eq!(flags, 0b11_10_01);
         // Índice fora do sub-mesh: não mexe (a validação a jusante reporta).
         assert_eq!(clockwise_xz(&verts, [0, 9, 1], 0), ([0, 9, 1], 0));
+    }
+
+    #[test]
+    fn height_patch_seeds_using_mesh_vertices_past_submesh_buffer_limit() {
+        let mut chf = CompactHeightfield {
+            width: 10,
+            height: 10,
+            cell_size: 1.0,
+            cell_height: 1.0,
+            border_size: 1,
+            aabb: Aabb3d {
+                min: Vec3::ZERO,
+                max: Vec3::new(10.0, 10.0, 10.0),
+            },
+            cells: Vec::with_capacity(100),
+            spans: Vec::with_capacity(100),
+            ..Default::default()
+        };
+        for idx in 0..100u32 {
+            let mut cell = crate::CompactCell::default();
+            cell.set_index(idx);
+            cell.set_count(1);
+            chf.cells.push(cell);
+            let mut span = crate::CompactSpan::default();
+            span.y = 4;
+            span.set_height(4);
+            chf.spans.push(span);
+        }
+
+        let mut vertices = vec![u16vec3(1, 4, 1); 305];
+        vertices[300] = u16vec3(2, 4, 2);
+        vertices[301] = u16vec3(6, 4, 2);
+        vertices[302] = u16vec3(2, 4, 6);
+
+        let mesh = PolygonNavmesh {
+            vertices,
+            polygons: vec![300, 301, 302],
+            polygon_neighbors: vec![PolygonNavmesh::NO_CONNECTION; 3],
+            flags: vec![0],
+            max_vertices_per_polygon: 3,
+            regions: vec![RegionId::NONE],
+            areas: vec![crate::AreaType::DEFAULT_WALKABLE],
+            aabb: chf.aabb,
+            cell_size: 1.0,
+            cell_height: 1.0,
+            border_size: 1,
+            max_edge_error: 1.0,
+        };
+
+        let dmesh = DetailNavmesh::new(&mesh, &chf, 1.0, 1.0).expect("detail mesh");
+        assert_eq!(dmesh.meshes.len(), 1);
+        assert!(dmesh.meshes[0].triangle_count >= 1);
+
+        let dmesh_zero_sample =
+            DetailNavmesh::new(&mesh, &chf, 0.0, 1.0).expect("detail mesh with sample_distance=0");
+        assert_eq!(dmesh_zero_sample.meshes.len(), 1);
+        assert!(dmesh_zero_sample.meshes[0].triangle_count >= 1);
+
+        // Also ensure no panic when a RegionId::NONE poly has no spans under any nearby cell.
+        let mut empty_chf = chf;
+        for cell in &mut empty_chf.cells {
+            cell.set_count(0);
+        }
+        let dmesh_empty =
+            DetailNavmesh::new(&mesh, &empty_chf, 1.0, 1.0).expect("detail mesh without spans");
+        assert_eq!(dmesh_empty.meshes.len(), 1);
     }
 }

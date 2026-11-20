@@ -6,9 +6,10 @@ spawn → terreno → Luau → física; port do simple-rpg feito em 10 loops).
 Nomenclatura segue **Bevy** (`translation`, `euler`, `half-size`, `base-color`),
 não Unity/three.js.
 
-> **Movido do checkout `Viber` aposentado a 2026-11-13** (o repo irmão foi
-> removido; o runtime vive em `crates/bevy_ext_viber_engine/`). Os caminhos
-> `src/…`, `vendor/…` e `tests/…` do texto são relativos a essa pasta. O
+> **Movido do checkout irmão aposentado a 2026-11-13** (o monólito
+> `bevy_ext_viber_engine` foi apagado daqui a 2026-11-15; o runtime de
+> gameplay do jogo vive em `Vael/crates/vael_engine`). Os caminhos
+> `src/…`, `vendor/…` e `tests/…` do texto são relativos a esta pasta. O
 > arquivo dos docs antigos está em [`docs/viber/`](docs/viber/); a política de
 > crates em [`docs/CRATES.md`](docs/CRATES.md).
 
@@ -22,6 +23,14 @@ não Unity/three.js.
   terreno, colliders avian→`WaterObstacles`, partículas, `WaterBodied`) vivem em
   `crates/bevy_ext_viber_engine/src/terrain/water_bridge.rs`. Os caminhos
   históricos `viber::terrain::water*` são shims (`pub use`) — não duplicar tipos.
+- **`crates/bevy_ext_puppet`** — personagens físicos estilo Euphoria (só `bevy`
+  + `avian3d`, 2026-11-19): ragdoll activo de 16 corpos montado a partir do
+  esqueleto (nomes UE/Mixamo), músculos como restrições XPBD dentro do solver
+  do avian (`drive.rs`; torques externos por junta são instáveis), sentidos de
+  equilíbrio (CoM, capture point, polígono de apoio) e behaviours
+  (`BodyBalance`, `StaggerFall`, `HitReaction`, `ArmsWindmill`, `CatchFall`,
+  `BodyWrithe`, `Relax`) com FSM `Animated→Active→Falling→Down→GettingUp`/`Dead`.
+  Estado e lições em `crates/bevy_ext_puppet/README.md`; ainda não ligado ao Vael.
 
 ## Mundos estáticos + edição por agentes (2026-10-13) — LER PRIMEIRO
 

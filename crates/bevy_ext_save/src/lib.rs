@@ -29,10 +29,10 @@ pub struct WorldSaveKey(pub Option<String>);
 /// `pasta-ficheiro` para os restantes — mundos irmãos na mesma pasta
 /// (`worlds/qa-agua.xml`, `worlds/qa-cliffs.xml`) deixam de partilhar o save.
 /// O sufixo `.static` do stem é removido (`world.static.xml`, o default
-/// pós-`viber bake`, partilha a chave do `world.xml` de onde veio — a
+/// pós-conversão, partilha a chave do `world.xml` de onde veio — a
 /// continuidade dos saves não pode depender do caminho de arranque; só o
 /// sufixo exato conta, `qa-static.xml` fica `qa-static`).
-/// O caminho é tornado absoluto: `viber run world.xml` a partir da pasta do
+/// O caminho é tornado absoluto: o jogo a arrancar a partir da pasta do
 /// jogo tem `parent()` vazio e caía no nome global.
 pub fn world_save_key(world_file: &Path) -> Option<String> {
     let abs = world_file

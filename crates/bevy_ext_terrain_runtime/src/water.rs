@@ -292,6 +292,8 @@ pub struct IslandSpec {
     pub radius: f32,
     /// Altura do domo ACIMA da lâmina (m).
     pub height: f32,
+    /// Authored shoreline, resolved once. None preserves radial islands.
+    pub shape: Option<LakeShape>,
 }
 
 impl Default for IslandSpec {
@@ -300,7 +302,24 @@ impl Default for IslandSpec {
             at: Vec2::ZERO,
             radius: 5.0,
             height: 1.2,
+            shape: None,
         }
+    }
+}
+
+impl IslandSpec {
+    // Express distance in the island's radial profile so the bed and both
+    // water meshes meet the same irregular shore.
+    fn profile_distance(&self, p: Vec2) -> f32 {
+        let delta = p - self.at;
+        let d = delta.length();
+        self.shape
+            .map_or(d, |shape| d / shape.radius_frac(delta.y.atan2(delta.x)))
+    }
+
+    fn surface_mask(&self, p: Vec2) -> f32 {
+        let t = (self.profile_distance(p) - self.radius * 0.75) / (self.radius * 0.25 + 0.8);
+        smoothstep01(t.clamp(0.0, 1.0))
     }
 }
 
@@ -653,13 +672,16 @@ pub fn carve_lake(grid: &mut BrushGrid, spec: &LakeSpec, index: usize) -> Option
         }
         let theta = (island.at.y - spec.at.y).atan2(island.at.x - spec.at.x);
         let contour = shape.contour(spec.radius, theta) * CARVE_MARGIN;
-        if island.at.distance(spec.at) + island.radius > contour * 0.9 {
+        let max_scale = island
+            .shape
+            .map_or(1.0, |shape| shape.radius_frac_bounds().1.min(CONTOUR_PEAK));
+        if island.at.distance(spec.at) + island.radius * max_scale > contour * 0.9 {
             continue;
         }
         let beach = (island.radius * 0.5).max(1.5);
         grid.begin_stroke(&format!("{owner}:island:{j}"));
         let mut island_weight = |p: Vec2| {
-            let d = p.distance(island.at);
+            let d = island.profile_distance(p);
             if d >= island.radius + beach {
                 return 0.0;
             }
@@ -669,11 +691,11 @@ pub fn carve_lake(grid: &mut BrushGrid, spec: &LakeSpec, index: usize) -> Option
             1.0 - smoothstep01((d - island.radius) / beach)
         };
         let mut island_target = |p: Vec2| {
-            let t = (p.distance(island.at) / island.radius).clamp(0.0, 1.0);
+            let t = (island.profile_distance(p) / island.radius).clamp(0.0, 1.0);
             // Mesmo perfil da taça: C1 no topo, praia a aplanar na base.
             water_y + island.height * (1.0 - t * t).max(0.0).powf(1.5)
         };
-        let iextent = island.radius + beach + texel * 2.0;
+        let iextent = (island.radius + beach) * max_scale + texel * 2.0;
         grid.apply(BrushRequest {
             mode: BrushMode::Raise,
             min_x: island.at.x - iextent,
@@ -1383,15 +1405,11 @@ pub fn lake_water_mesh(spec: &LakeSpec, water_y: f32, grid: &BrushGrid) -> Chunk
     let mut mesh = ChunkMeshData::default();
     // Fade de ILHAS: a lâmina some sobre cada ilha (a praia da ilha é o
     // próprio domo do carve — o espelho não pode cortá-la).
-    let island_mask = |p: Vec2| -> f32 {
-        let mut a = 1.0f32;
-        for island in &spec.islands {
-            let d = p.distance(island.at);
-            // 0 dentro de 0.75·raio, 1 além de raio + 0.8 m (praia seca).
-            let t = ((d - island.radius * 0.75) / (island.radius * 0.25 + 0.8)).clamp(0.0, 1.0);
-            a *= smoothstep01(t);
-        }
-        a
+    let island_mask = |p: Vec2| {
+        spec.islands
+            .iter()
+            .map(|island| island.surface_mask(p))
+            .product::<f32>()
     };
     // Center vertex.
     push(&mut mesh, spec.at, 0.0, 1.0 * island_mask(spec.at));
@@ -1609,14 +1627,11 @@ pub fn lake_water_mesh_dense(spec: &LakeSpec, water_y: f32, grid: &BrushGrid) ->
         .clamp(72.0, 256.0) as usize;
 
     let mut data = WaterMeshData::default();
-    let island_mask = |p: Vec2| -> f32 {
-        let mut a = 1.0f32;
-        for island in &spec.islands {
-            let d = p.distance(island.at);
-            let t = ((d - island.radius * 0.75) / (island.radius * 0.25 + 0.8)).clamp(0.0, 1.0);
-            a *= smoothstep01(t);
-        }
-        a
+    let island_mask = |p: Vec2| {
+        spec.islands
+            .iter()
+            .map(|island| island.surface_mask(p))
+            .product::<f32>()
     };
     let push = |out: &mut WaterMeshData, p: Vec2, mask: f32| {
         let depth = (water_y - grid.sample(p.x, p.y)).clamp(0.02, 40.0);
@@ -3137,6 +3152,7 @@ mod tests {
                 at: Vec2::new(0.0, 0.0),
                 radius: 4.0,
                 height: 1.5,
+                ..Default::default()
             }],
             ..LakeSpec::default()
         };
@@ -3168,6 +3184,48 @@ mod tests {
     /// Ilha que não cabe no contorno harmónico é ignorada (o RAISE não
     /// sai para a encosta seca).
     #[test]
+    fn island_headland_and_cove_match_the_water_meshes() {
+        let mut grid = flat_grid();
+        let island = IslandSpec {
+            radius: 8.0,
+            height: 3.0,
+            shape: Some(LakeShape {
+                stretch: 0.35,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let lake = LakeSpec {
+            radius: 30.0,
+            depth: 5.0,
+            islands: vec![island.clone()],
+            ..Default::default()
+        };
+        let water_y = carve_lake(&mut grid, &lake, 0).unwrap().water_y;
+        // Same distance from the centre, dry on the long axis and wet on the short axis.
+        assert!(grid.sample(8.0, 0.0) > water_y);
+        assert!(grid.sample(0.0, 8.0) < water_y);
+        let coarse = lake_water_mesh(&lake, water_y, &grid);
+        let dense = lake_water_mesh_dense(&lake, water_y, &grid).mesh;
+        for mesh in [coarse, dense] {
+            let mut transitions = 0;
+            for (pos, color) in mesh.positions.iter().zip(&mesh.colors) {
+                let p = Vec2::new(pos[0], pos[2]);
+                if p.length() < 12.0 {
+                    let theta = p.y.atan2(p.x);
+                    let radial = p.length() / (1.0 + 0.35 * (2.0 * theta).cos());
+                    let expected = smoothstep01(((radial - 6.0) / 2.8).clamp(0.0, 1.0));
+                    assert!((color[3] - expected).abs() < 1e-4);
+                    if expected > 0.0 && expected < 1.0 {
+                        transitions += 1;
+                    }
+                }
+            }
+            assert!(transitions > 0);
+        }
+    }
+
+    #[test]
     fn test_island_outside_the_bowl_is_skipped() {
         let mut grid = flat_grid();
         let spec = LakeSpec {
@@ -3178,6 +3236,7 @@ mod tests {
                 at: Vec2::new(32.0, 0.0), // 32 m do centro, fora do carve todo
                 radius: 5.0,
                 height: 2.0,
+                ..Default::default()
             }],
             ..LakeSpec::default()
         };

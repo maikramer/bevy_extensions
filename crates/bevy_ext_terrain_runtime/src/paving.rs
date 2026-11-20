@@ -129,6 +129,8 @@ const WELD: f32 = 1e-4;
 pub struct PavingStyle {
     /// Mesh a crowned street with fitted stone borders and blended junctions.
     pub setts: bool,
+    /// Unkerbed trail meshed continuously with adjoining streets.
+    pub trail: bool,
     /// Optional stone face material for the border blocks.
     pub kerb_texture: Option<String>,
     /// Lattice module (meters). `0` inherits the world default
@@ -167,6 +169,7 @@ impl Default for PavingStyle {
     fn default() -> Self {
         Self {
             setts: false,
+            trail: false,
             kerb_texture: None,
             cell: 0.0,
             corner: -1.0,
@@ -271,6 +274,7 @@ impl Default for PavingSpec {
             name: None,
             style: PavingStyle {
                 setts: false,
+                trail: false,
                 kerb_texture: None,
                 cell: 0.0,
                 corner: -1.0,
@@ -359,7 +363,11 @@ impl PavingSpec {
         let widest = path.half_width.iter().copied().fold(0.0f32, f32::max);
         // `edge-feather` is authored as a fraction of the half width for
         // ribbons; the lattice wants meters.
-        let feather = (spec.edge_feather * widest).clamp(0.0, 3.0);
+        let feather = if style.trail {
+            spec.edge_feather.max(0.0)
+        } else {
+            (spec.edge_feather * widest).clamp(0.0, 3.0)
+        };
         let seed = spec
             .name
             .as_deref()
@@ -399,6 +407,8 @@ impl PavingSpec {
 #[type_path = "viber::terrain::paving"]
 pub struct PavingGroup {
     pub setts: bool,
+    /// Unkerbed trail meshed continuously with adjoining streets.
+    pub trail: bool,
     /// Optional stone face material for the border blocks.
     pub kerb_texture: Option<String>,
     pub texture: Option<String>,
@@ -428,6 +438,7 @@ impl PavingGroup {
     /// material share one mesh however far apart they sit in the file.
     fn same_material(&self, other: &Self) -> bool {
         self.setts == other.setts
+            && self.trail == other.trail
             && self.kerb_texture == other.kerb_texture
             && self.texture == other.texture
             && self.normal == other.normal
@@ -497,6 +508,11 @@ impl PavingGrid {
         &self.groups
     }
 
+    /// Order of the PBR passes in a mixed road mouth. Trails underlie stone.
+    pub(crate) fn material_order(&self, gid: u16) -> (bool, u16) {
+        (self.groups[gid as usize].setts, gid)
+    }
+
     /// Group id owning a cell (lattice indices).
     pub fn group_at_cell(&self, i: i32, j: i32) -> Option<u16> {
         self.cells.get(&(i, j)).copied()
@@ -559,6 +575,7 @@ impl PavingGrid {
         for (index, spec) in specs.iter().enumerate() {
             let group = PavingGroup {
                 setts: spec.style.setts,
+                trail: spec.style.trail,
                 kerb_texture: spec.style.kerb_texture.clone(),
                 texture: spec.texture.clone(),
                 normal: spec.normal.clone(),
@@ -625,6 +642,7 @@ impl PavingGrid {
                 texture: street.kerb_texture.clone(),
                 normal: None,
                 setts: false,
+                trail: false,
                 base_color: street.base_color.map(|v| v * 0.9 + 0.09),
                 ..street.clone()
             };
@@ -2120,7 +2138,8 @@ fn emit_corridors(
     pieces: &mut Vec<((u16, i32, i32), ChunkMeshData)>,
 ) {
     for (ri, corridor) in paving.corridors.iter().enumerate() {
-        if paving.groups[corridor.group as usize].setts {
+        let group = &paving.groups[corridor.group as usize];
+        if group.setts || group.trail {
             continue;
         }
         let secs = ribbon_sections(corridor);
@@ -3000,6 +3019,54 @@ mod tests {
             },
             ..PavingSpec::default()
         }
+    }
+
+    #[test]
+    fn dirt_branch_blends_on_the_same_bed_and_opens_only_the_near_kerb() {
+        let terrain = test_grid();
+        let mut main = run_spec(vec![Vec2::new(-14.0, 0.0), Vec2::new(14.0, 0.0)], 2.0);
+        main.style.setts = true;
+        main.style.cell = 0.75;
+        let mut side = run_spec(vec![Vec2::new(0.0, 1.3), Vec2::new(0.0, 12.0)], 2.0);
+        side.style.trail = true;
+        let grid = PavingGrid::build(&[main, side]);
+        let meshes = paving_meshes(&terrain, &grid);
+        let get = |gid| &meshes.iter().find(|(group, _)| *group == gid).unwrap().1;
+        let (stone, dirt, kerb) = (get(0), get(1), get(2));
+        let mut shared = 0;
+        for (i, &[x, y, z]) in stone.positions.iter().enumerate() {
+            let alpha = stone.colors[i][3];
+            if x.abs() > 0.8 || z < 0.0 || !(0.01..0.99).contains(&alpha) {
+                continue;
+            }
+            let j = dirt
+                .positions
+                .iter()
+                .position(|p| *p == [x, y, z])
+                .expect("continuous bed");
+            assert_eq!(stone.normals[i], dirt.normals[j]);
+            assert_eq!(dirt.colors[j][3], 1.0, "terrain shows through the mouth");
+            shared += 1;
+        }
+        assert!(shared > 2);
+        assert!(
+            kerb.positions
+                .iter()
+                .any(|p| p[0].abs() < 0.5 && p[2] < -1.8)
+        );
+        assert!(
+            !kerb
+                .positions
+                .iter()
+                .any(|p| p[0].abs() < 1.3 && p[2] > 0.0)
+        );
+        assert!(
+            stone
+                .positions
+                .iter()
+                .zip(&stone.colors)
+                .all(|(p, c)| p[2] >= -2.1 || c[3] == 0.0)
+        );
     }
 
     #[test]

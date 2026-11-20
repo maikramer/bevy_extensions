@@ -320,6 +320,19 @@ fn obstacle_trimesh(
         }
         return Some(mesh);
     }
+    if let Some(compound) = collider.shape_scaled().as_compound() {
+        for (sub_pose, sub_shape) in compound.shapes() {
+            let sub = sub_shape.compute_aabb(sub_pose);
+            let sub_min = Vec3::new(sub.mins.x, sub.mins.y, sub.mins.z);
+            let sub_max = Vec3::new(sub.maxs.x, sub.maxs.y, sub.maxs.z);
+            if sub_max.y - sub_min.y >= MIN_OBSTACLE_HEIGHT {
+                mesh.extend(box_trimesh(&iso, sub_min, sub_max));
+            }
+        }
+        if !mesh.indices.is_empty() {
+            return Some(mesh);
+        }
+    }
     Some(box_trimesh(&iso, local_min, local_max))
 }
 
@@ -354,11 +367,14 @@ fn box_trimesh(iso: &Transform, local_min: Vec3, local_max: Vec3) -> TriMesh {
     for corner in aabb_corners(local_min, local_max) {
         mesh.vertices.push(iso.transform_point(corner).into());
     }
-    // bottom, top, and the four sides — winding does not matter: every face is
-    // NOT_WALKABLE, and rerecast only needs them to voxelise as solid.
+    // `generate_navmesh` corre `TriMesh::mark_walkable_triangles`, que promove
+    // a `DEFAULT_WALKABLE` todo o triângulo cuja normal aponte para +Y. A tampa
+    // +Y vai enrolada com normal -Y ([4, 5, 6, 4, 6, 7]): o voxelizador de
+    // spans continua a fechar o topo da caixa, mas `mark_walkable_triangles`
+    // preserva `AreaType::NOT_WALKABLE` para que pedras baixas nunca virem chão.
     const FACES: [[u32; 6]; 6] = [
         [0, 1, 2, 0, 2, 3], // -Y
-        [4, 6, 5, 4, 7, 6], // +Y
+        [4, 5, 6, 4, 6, 7], // +Y (normal para baixo: topo nunca caminhável)
         [0, 4, 5, 0, 5, 1], // -Z
         [3, 2, 6, 3, 6, 7], // +Z
         [0, 3, 7, 0, 7, 4], // -X
@@ -371,4 +387,34 @@ fn box_trimesh(iso: &Transform, local_min: Vec3, local_max: Vec3) -> TriMesh {
             .extend([AreaType::NOT_WALKABLE, AreaType::NOT_WALKABLE]);
     }
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn box_and_compound_obstacles_stay_not_walkable_after_mark_walkable_triangles() {
+        let compound = Collider::compound(vec![
+            (Vec3::ZERO, Quat::IDENTITY, Collider::cuboid(0.8, 0.7, 0.8)),
+            (
+                Vec3::new(0.6, 0.0, 0.3),
+                Quat::IDENTITY,
+                Collider::cuboid(0.5, 0.5, 0.5),
+            ),
+        ]);
+        let mut mesh = obstacle_trimesh(
+            &GlobalTransform::IDENTITY,
+            &compound,
+            Vec3::splat(-10.0),
+            Vec3::splat(10.0),
+        )
+        .expect("compound rock produces obstacle trimesh");
+        assert_eq!(mesh.indices.len(), 24, "two segments -> two 12-tri boxes");
+        mesh.mark_walkable_triangles(50.0_f32.to_radians());
+        assert!(
+            mesh.area_types.iter().all(|&a| a == AreaType::NOT_WALKABLE),
+            "no face of a rock obstacle may be promoted to walkable by mark_walkable_triangles"
+        );
+    }
 }

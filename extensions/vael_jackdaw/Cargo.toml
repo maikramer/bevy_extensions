@@ -1,6 +1,6 @@
 [package]
 name = "vael_jackdaw"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Jackdaw editor extension for Vael: environment (bevy_elements), post-processing and flora (bevy_flora) panels with viewport previews"

@@ -541,7 +541,9 @@ impl RoadNetworkSpec {
             // centreline da vizinha deixava uma cunha de chão nu no canto
             // externo da junção. Estende as pontas em ways partilhados
             // (grau ≥ 2) — as ribbons sobrepõem-se e o alpha feather funde.
-            if profile != RoadProfile::Bridge && !self.paving.as_ref().is_some_and(|s| s.setts) {
+            if profile != RoadProfile::Bridge
+                && !self.paving.as_ref().is_some_and(|s| s.setts || s.trail)
+            {
                 let ext = (width.unwrap_or(self.default_width) * 0.75).min(6.0);
                 if degree.get(first_id.as_str()).copied().unwrap_or(0) >= 2 {
                     extend_path_end(&mut points, ext, false);
@@ -662,6 +664,75 @@ fn extend_path_end(points: &mut Vec<Vec2>, amount: f32, at_end: bool) {
         points.push(p);
     } else {
         points.insert(0, p);
+    }
+}
+
+/// Fit a terminating ground trail into the near half of a stone street. Use
+/// the same smoothed receiver the carver uses, before generating the trail's
+/// terrain mask, navigation path or mesh, so all three end in the same place.
+pub(crate) fn fit_trail_mouths(roads: &mut [RoadSpec]) {
+    let ground = |r: &RoadSpec| {
+        r.profile != RoadProfile::Bridge
+            && r.elevations.is_none()
+            && r.widths.is_none()
+            && !r.closed
+            && r.path.len() >= 2
+    };
+    let streets: Vec<_> = roads
+        .iter()
+        .filter(|r| ground(r) && r.paving.as_ref().is_some_and(|s| s.setts))
+        .map(|r| {
+            (
+                chaikin_smooth_channels(&r.path, &mut [], r.smoothing, false),
+                r.width * 0.5,
+            )
+        })
+        .collect();
+    for trail in roads
+        .iter_mut()
+        .filter(|r| ground(r) && r.paving.as_ref().is_some_and(|s| s.trail))
+    {
+        let last = trail.path.len() - 1;
+        for (end, next) in [(0, 1), (last, last - 1)] {
+            let tip = trail.path[end];
+            let incoming = tip - trail.path[next];
+            let Some(dir) = incoming.try_normalize() else {
+                continue;
+            };
+            let mut best = f32::INFINITY;
+            let mut mouth = None;
+            for (street, half) in &streets {
+                for pair in street.windows(2) {
+                    let side = pair[1] - pair[0];
+                    let det = dir.perp_dot(side);
+                    // A parallel verge or an oblique through-road isn't a T.
+                    if det.abs() < 0.35 * side.length().max(0.001) {
+                        continue;
+                    }
+                    let offset = pair[0] - tip;
+                    let along = offset.perp_dot(side) / det;
+                    let t = offset.perp_dot(dir) / det;
+                    let incidence = det.abs() / side.length();
+                    let from_axis = along * incidence;
+                    if !(0.0..=1.0).contains(&t)
+                        || from_axis < -(*half + 0.5 * trail.width)
+                        || from_axis > *half + 0.25
+                        || along.abs() >= best
+                    {
+                        continue;
+                    }
+                    let shift = along - (0.65 * half / incidence);
+                    if shift < -0.8 * incoming.length() {
+                        continue;
+                    }
+                    best = along.abs();
+                    mouth = Some(tip + dir * shift);
+                }
+            }
+            if let Some(mouth) = mouth {
+                trail.path[end] = mouth;
+            }
+        }
     }
 }
 
@@ -2016,6 +2087,44 @@ mod tests {
                 Vec2::new(0.0, 0.0),
             ]
         );
+    }
+
+    #[test]
+    fn trail_mouth_trims_overshoot_but_preserves_a_through_road_and_bridge() {
+        let road = |a, b| RoadSpec {
+            path: vec![a, b],
+            width: 4.0,
+            ..Default::default()
+        };
+        let street = RoadSpec {
+            paving: Some(super::super::paving::PavingStyle {
+                setts: true,
+                ..Default::default()
+            }),
+            ..road(Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0))
+        };
+        let branch = RoadSpec {
+            paving: Some(super::super::paving::PavingStyle {
+                trail: true,
+                ..Default::default()
+            }),
+            ..road(Vec2::new(-2.0, -3.4), Vec2::new(1.0, 15.0))
+        };
+        let through = RoadSpec {
+            paving: branch.paving.clone(),
+            ..road(Vec2::new(5.0, -15.0), Vec2::new(5.0, 15.0))
+        };
+        let bridge = RoadSpec {
+            profile: RoadProfile::Bridge,
+            ..branch.clone()
+        };
+        let mut roads = [street, branch.clone(), through.clone(), bridge.clone()];
+        fit_trail_mouths(&mut roads);
+        assert!(roads[1].paving.as_ref().unwrap().trail);
+        assert!((roads[1].path[0].y - 1.3).abs() < 0.001);
+        assert_eq!(roads[1].path[1], branch.path[1]);
+        assert_eq!(roads[2], through);
+        assert_eq!(roads[3], bridge);
     }
 
     #[test]

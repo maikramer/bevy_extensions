@@ -58,7 +58,7 @@ pub struct AttackAlert {
 /// A mensagem [`DamageNumberEvent`] continua a ser emitida de qualquer forma:
 /// um jogo que desenha o seu próprio texto no mundo (o Vael usa
 /// `bevy_rich_text3d`) põe isto a `false` para não duplicar os números. O
-/// default é `true` — o `viber run` e os mundos sem feedback próprio ficam
+/// default é `true` — o jogo e os mundos sem feedback próprio ficam
 /// como sempre.
 #[derive(Resource, Debug, Clone, Copy, Reflect)]
 #[reflect(Resource)]

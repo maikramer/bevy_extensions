@@ -228,6 +228,7 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
     for network in &features.networks {
         specs.extend(network.expand());
     }
+    super::roads::fit_trail_mouths(&mut specs);
     specs.sort_by_key(|r| matches!(r.profile, RoadProfile::Bridge));
     let pad_cores: Vec<(Vec2, Vec2, f32)> = result
         .pads
@@ -285,7 +286,10 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
                     .then_with(|| a.2.total_cmp(&b.2))
             })
             .expect("junction has at least three arms");
-        if arms.iter().all(|arm| paving_specs[arm.0].style.setts) {
+        if arms.iter().all(|arm| {
+            let style = &paving_specs[arm.0].style;
+            style.setts || style.trail
+        }) {
             // The continuous street surface already includes the junction.
             continue;
         }

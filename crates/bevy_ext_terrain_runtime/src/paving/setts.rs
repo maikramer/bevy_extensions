@@ -40,12 +40,16 @@ fn stamp(field: &mut Field, run: &PavingCorridor, step: f32, margin: f32) {
             .and_modify(|old| {
                 // A compact smooth union rounds the inside of a junction, while
                 // leaving the width and camber of an isolated approach untouched.
-                let k = 2.2;
-                let h = (1.0 - (*old - depth).abs() / k).max(0.0);
-                *old = old.max(depth) + k * h * h * 0.25;
+                *old = join(*old, depth);
             })
             .or_insert(depth);
     }
+}
+
+fn join(a: f32, b: f32) -> f32 {
+    let radius = 2.2;
+    let overlap = (1.0 - (a - b).abs() / radius).max(0.0);
+    a.max(b) + radius * overlap * overlap * 0.25
 }
 
 fn bed(depth: f32) -> f32 {
@@ -54,7 +58,11 @@ fn bed(depth: f32) -> f32 {
 
 fn allowed(grid: &PavingGrid, gid: u16, p: Vec2) -> bool {
     let cell = grid.cell_index(p);
-    !grid.area_cells.contains(&cell) && grid.cells.get(&cell).is_none_or(|&g| g == gid)
+    !grid.area_cells.contains(&cell)
+        && grid.cells.get(&cell).is_none_or(|&g| {
+            let owner = &grid.groups[g as usize];
+            g == gid || owner.setts || owner.trail
+        })
 }
 
 // Integer millimetres weld the same interpolated crossing from either
@@ -230,75 +238,186 @@ fn kerbs(
     }
 }
 
+// Each point has one elevation and outside edge. The mix only controls which
+// material shades it. Stone reaches a little farther into a trail at the mouth.
+struct SurfacePoint {
+    depth: f32,
+    layers: Vec<(u16, f32)>,
+    alpha: f32,
+    lift: f32,
+}
+
+impl SurfacePoint {
+    fn resolve(&mut self, grid: &PavingGrid, p: Vec2) {
+        let mut peak = f32::NEG_INFINITY;
+        for (gid, score) in &mut self.layers {
+            if grid.groups[*gid as usize].setts {
+                *score += 0.65;
+            }
+            peak = peak.max(*score);
+        }
+        let mut sum = 0.0;
+        self.layers.retain_mut(|(_, score)| {
+            *score = smootherstep01((1.0 + (*score - peak) / 1.6).clamp(0.0, 1.0));
+            sum += *score;
+            *score > 0.0
+        });
+        let mut feather = 0.0;
+        for (gid, weight) in &mut self.layers {
+            *weight /= sum;
+            let g = &grid.groups[*gid as usize];
+            feather += *weight * feather_width(g, p);
+            self.lift += *weight * g.lift;
+        }
+        self.alpha = smootherstep01((1.0 + self.depth / feather.max(0.001)).clamp(0.0, 1.0));
+    }
+}
+
+fn surface(grid: &PavingGrid, step: f32) -> BTreeMap<Key, SurfacePoint> {
+    let mut layers = BTreeMap::new();
+    for run in &grid.corridors {
+        let g = &grid.groups[run.group as usize];
+        if g.setts || g.trail {
+            stamp(
+                layers.entry(run.group).or_default(),
+                run,
+                step,
+                g.feather * 1.5 + 2.2 + step * 2.0,
+            );
+        }
+    }
+    let mut surface = BTreeMap::new();
+    for (gid, field) in layers {
+        for (key, depth) in field {
+            let v = surface.entry(key).or_insert_with(|| SurfacePoint {
+                depth,
+                layers: Vec::new(),
+                alpha: 0.0,
+                lift: 0.0,
+            });
+            if !v.layers.is_empty() {
+                v.depth = join(v.depth, depth);
+            }
+            v.layers.push((gid, depth));
+        }
+    }
+    for (&key, v) in &mut surface {
+        v.resolve(grid, point(key, step));
+    }
+    surface
+}
+
 pub(super) fn emit(
     terrain: &BrushGrid,
     grid: &PavingGrid,
     pieces: &mut Vec<((u16, i32, i32), ChunkMeshData)>,
 ) {
-    for (gid, group) in grid.groups.iter().enumerate().filter(|(_, g)| g.setts) {
-        let gid = gid as u16;
-        let step = grid.module / (grid.module / 0.48).ceil().max(1.0);
-        let mut field = Field::new();
-        for run in grid.corridors.iter().filter(|r| r.group == gid) {
-            stamp(
-                &mut field,
-                run,
-                step,
-                group.feather * 1.5 + 2.2 + step * 2.0,
-            );
+    let step = grid.module / (grid.module / 0.48).ceil().max(1.0);
+    let field = surface(grid, step);
+    let empty = SurfacePoint {
+        depth: -100.0,
+        layers: Vec::new(),
+        alpha: 0.0,
+        lift: 0.0,
+    };
+    let mut meshes = BTreeMap::new();
+    let mut contours: BTreeMap<u16, Contour> = BTreeMap::new();
+    let mut vertices = BTreeMap::new();
+    for &(x, z) in field.keys() {
+        let keys = [(x, z), (x + 1, z), (x + 1, z + 1), (x, z + 1)];
+        let samples = keys.map(|k| field.get(&k).unwrap_or(&empty));
+        if samples.iter().all(|s| s.alpha == 0.0) {
+            continue;
         }
-        let mut meshes = BTreeMap::new();
-        let mut contours = Contour::new();
-        let mut vertices = BTreeMap::new();
-        for &(x, z) in field.keys() {
-            let keys = [(x, z), (x + 1, z), (x + 1, z + 1), (x, z + 1)];
-            let depths = keys.map(|k| field.get(&k).copied().unwrap_or(-100.0));
-            if depths.iter().all(|&d| d < -group.feather * 1.45) {
-                continue;
+        let points = keys.map(|k| point(k, step));
+        let center = (points[0] + points[2]) * 0.5;
+        let mut groups = Vec::new();
+        for sample in samples {
+            for &(gid, _) in &sample.layers {
+                if !groups.contains(&gid) {
+                    groups.push(gid);
+                }
             }
-            let center = point((x, z), step) + Vec2::splat(step * 0.5);
-            if !allowed(grid, gid, center) {
-                continue;
-            }
+        }
+        groups.sort_by_key(|&gid| grid.material_order(gid));
+        if !allowed(grid, groups[0], center) {
+            continue;
+        }
+
+        // Composite the material transition on identical triangles. The base
+        // fills the bed. Only the narrow transition emits a second material.
+        let mut remaining = [1.0_f32; 4];
+        for (layer, &gid) in groups.iter().enumerate().rev() {
+            let group = &grid.groups[gid as usize];
             let bucket = chunk_key(group, gid, center);
             let mesh = meshes.entry(bucket).or_insert_with(ChunkMeshData::default);
             let mut idx = [0u32; 4];
-            let points = keys.map(|k| point(k, step));
             for (i, &(u, v)) in keys.iter().enumerate() {
-                idx[i] = *vertices.entry((bucket, u, v)).or_insert_with(|| {
-                    let p = points[i];
-                    let d = depths[i];
-                    let alpha = smootherstep01(
-                        (1.0 + d / feather_width(group, p).max(0.001)).clamp(0.0, 1.0),
-                    );
-                    let tint = 0.84 + 0.16 * smootherstep01((d / 1.25).clamp(0.0, 1.0));
-                    let id = push_vertex(
-                        mesh,
-                        terrain,
-                        p.x,
-                        p.y,
-                        group.lift + bed(d),
-                        group.texture_scale.max(0.01),
-                        tint,
-                        alpha,
-                    );
-                    let h = |k| bed(field.get(&k).copied().unwrap_or(d));
-                    let n = Vec3::from_array(mesh.normals[id as usize]);
-                    let grad = Vec3::new(
-                        h((u + 1, v)) - h((u - 1, v)),
-                        0.0,
-                        h((u, v + 1)) - h((u, v - 1)),
-                    ) / (2.0 * step);
-                    mesh.normals[id as usize] = (n - grad * n.y).normalize().to_array();
-                    id
-                });
+                let sample = samples[i];
+                let weight = sample
+                    .layers
+                    .iter()
+                    .find(|(g, _)| *g == gid)
+                    .map_or(0.0, |s| s.1);
+                let amount = sample.alpha * weight;
+                let alpha = if layer == 0 && sample.alpha >= 1.0 {
+                    1.0
+                } else {
+                    (amount / remaining[i].max(1e-6_f32)).clamp(0.0, 1.0)
+                };
+                remaining[i] -= amount;
+                idx[i] = *vertices
+                    .entry((bucket, u, v, alpha.to_bits()))
+                    .or_insert_with(|| {
+                        let d = sample.depth;
+                        let tint = 0.84 + 0.16 * smootherstep01((d / 1.25).clamp(0.0, 1.0));
+                        let id = push_vertex(
+                            mesh,
+                            terrain,
+                            points[i].x,
+                            points[i].y,
+                            sample.lift + bed(d),
+                            group.texture_scale.max(0.01),
+                            tint,
+                            alpha,
+                        );
+                        let h = |k| bed(field.get(&k).map_or(d, |v| v.depth));
+                        let n = Vec3::from_array(mesh.normals[id as usize]);
+                        let grad = Vec3::new(
+                            h((u + 1, v)) - h((u - 1, v)),
+                            0.0,
+                            h((u, v + 1)) - h((u, v - 1)),
+                        ) / (2.0 * step);
+                        mesh.normals[id as usize] = (n - grad * n.y).normalize().to_array();
+                        id
+                    });
             }
             strip(mesh, [idx[0], idx[1]], [idx[3], idx[2]]);
-            for tri in [[0, 1, 2], [0, 2, 3]] {
-                contour_triangle(&mut contours, tri.map(|i| (points[i], depths[i] - 0.06)));
+        }
+        for tri in [[0, 1, 2], [0, 2, 3]] {
+            let owner = groups
+                .iter()
+                .max_by(|a, b| {
+                    let total = |gid: u16| {
+                        tri.iter()
+                            .flat_map(|&i| &samples[i].layers)
+                            .filter(|(g, _)| *g == gid)
+                            .map(|s| s.1)
+                            .sum::<f32>()
+                    };
+                    total(**a).total_cmp(&total(**b))
+                })
+                .unwrap();
+            if grid.groups[*owner as usize].setts {
+                contour_triangle(
+                    contours.entry(*owner).or_default(),
+                    tri.map(|i| (points[i], samples[i].depth - 0.06)),
+                );
             }
         }
-        kerbs(contours, terrain, grid, gid, &mut meshes);
-        pieces.extend(meshes);
     }
+    for (gid, contour) in contours {
+        kerbs(contour, terrain, grid, gid, &mut meshes);
+    }
+    pieces.extend(meshes);
 }
