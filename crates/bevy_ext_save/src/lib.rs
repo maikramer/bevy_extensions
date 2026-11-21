@@ -52,7 +52,7 @@ pub fn world_save_key(world_file: &Path) -> Option<String> {
 }
 
 /// Diretório de saves do `config.yaml` do jogo (`save.dir`); `None` = o
-/// histórico `~/.local/share/viber` (apps mínimas de teste).
+/// histórico `~/.local/share/vael` (apps mínimas de teste).
 #[derive(Debug, Clone, Resource, Default, Reflect)]
 #[reflect(Resource)]
 #[type_path = "viber::save"]
@@ -61,11 +61,28 @@ pub struct SaveDir(pub Option<PathBuf>);
 /// Nome do ficheiro de save fallback (quando o mundo é desconhecido).
 pub const SAVE_FILENAME: &str = "simple-rpg.save.json";
 
-/// Caminho do save: `save.dir` do config do jogo (fallback histórico
-/// `~/.local/share/viber` via `dirs::home_dir` — semântica `$HOME` exata,
-/// NÃO `XDG_DATA_HOME`, os saves históricos vivem aí; último fallback: cwd).
+/// Caminho do save: `save.dir` do config do jogo (fallback
+/// `~/.local/share/vael` via `dirs::home_dir` — semântica `$HOME` exata,
+/// NÃO `XDG_DATA_HOME`; último fallback: cwd). Na primeira leitura o dir
+/// legado `~/.local/share/viber` é RENOMEADO para o novo ([`migrate_legacy_dir`]).
 pub fn save_path() -> PathBuf {
     save_path_for(None, None)
+}
+
+/// Migração única dos dados do utilizador: os saves históricos viviam em
+/// `~/.local/share/viber`; se o dir novo ainda não existe e o legado sim,
+/// renomeia (preserva autosave/slots/save legado num passo atómico, mesmo
+/// filesystem). Falhures são silenciosas — o jogo cria o dir novo e começa
+/// vazio em vez de falhar o arranque.
+fn migrate_legacy_dir(home: &Path, new_dir: &Path) {
+    let legacy = home.join(".local/share/viber");
+    if new_dir.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = new_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::rename(&legacy, new_dir);
 }
 
 /// Caminho do save do mundo (`world_key` = [`world_save_key`]): gravar no
@@ -83,7 +100,8 @@ pub fn save_path_for(world_key: Option<&str>, save_dir: Option<&Path>) -> PathBu
         }
         None => dirs::home_dir()
             .map(|home| {
-                let dir = home.join(".local/share/viber");
+                let dir = home.join(".local/share/vael");
+                migrate_legacy_dir(&home, &dir);
                 let _ = std::fs::create_dir_all(&dir);
                 dir
             })
@@ -776,5 +794,34 @@ mod tests {
             paint: std::sync::Arc::new(bevy_ext_terrain_runtime::PaintGrid::default()),
             splat_tuning: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod vael_dir_tests {
+    use super::*;
+
+    /// A migração única move o dir legado e é no-op nas corridas seguintes.
+    #[test]
+    fn migrate_move_o_dir_legado_uma_vez() {
+        let home = std::env::temp_dir().join(format!("vael-save-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let legacy = home.join(".local/share/viber");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("0.autosave.save.json"), b"x").unwrap();
+
+        let new_dir = home.join(".local/share/vael");
+        migrate_legacy_dir(&home, &new_dir);
+        assert!(new_dir.join("0.autosave.save.json").exists(), "save migrado");
+        assert!(!legacy.exists(), "dir legado saiu");
+
+        // Segunda corrida: no-op (não apaga o que o jogo já gravou no novo).
+        std::fs::write(new_dir.join("novo.save.json"), b"y").unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        migrate_legacy_dir(&home, &new_dir);
+        assert!(new_dir.join("novo.save.json").exists());
+        assert!(legacy.exists(), "legado recriado não é apagado");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

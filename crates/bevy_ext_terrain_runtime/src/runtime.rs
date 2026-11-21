@@ -503,7 +503,7 @@ fn splat_cache_key(
     hasher.finish()
 }
 
-/// Onde vive a cache do splat de um heightmap: `~/.cache/viber/splat/<hash
+/// Onde vive a cache do splat de um heightmap: `~/.cache/vael/splat/<hash
 /// do caminho>.splat` — FORA da pasta do mundo (são ~64 MB por mundo de 4 km
 /// e o `world.data/` vai para o git). Um ficheiro por heightmap; o conteúdo
 /// traz a chave e é reescrito quando ela muda.
@@ -516,7 +516,7 @@ fn splat_cache_path(heightmap: &Path) -> Option<std::path::PathBuf> {
     abs.hash(&mut hasher);
     let dir = bevy_ext_core::envs::var("SPLAT_CACHE")
         .map(std::path::PathBuf::from)
-        .or_else(|| dirs::cache_dir().map(|d| d.join("viber").join("splat")))?;
+        .or_else(|| dirs::cache_dir().map(|d| d.join("vael").join("splat")))?;
     Some(dir.join(format!("{:016x}.splat", hasher.finish())))
 }
 
