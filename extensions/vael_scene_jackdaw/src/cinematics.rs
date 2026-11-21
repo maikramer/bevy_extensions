@@ -496,7 +496,7 @@ pub fn play(_params: In<OperatorParameters>, world: &mut World) -> OperatorResul
         warn_caller(world, "vael: nenhuma cinemática em foco");
         return OperatorResult::Cancelled;
     };
-    match crate::bridge::call("viber.cinematic.play", serde_json::json!({ "id": id })) {
+    match crate::bridge::call("vael.cinematic.play", serde_json::json!({ "id": id })) {
         Ok(result) => {
             let duration = result
                 .get("duration")
@@ -520,7 +520,7 @@ pub fn play(_params: In<OperatorParameters>, world: &mut World) -> OperatorResul
     allows_undo = false
 )]
 pub fn stop(_params: In<OperatorParameters>, world: &mut World) -> OperatorResult {
-    match crate::bridge::call("viber.cinematic.stop", serde_json::json!({})) {
+    match crate::bridge::call("vael.cinematic.stop", serde_json::json!({})) {
         Ok(result) => {
             let stopped = result
                 .get("stopped")
