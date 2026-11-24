@@ -1469,3 +1469,82 @@ fn look_at_command_steers_gaze_and_turns_head() {
         head_fwd.dot(Vec3::X)
     );
 }
+
+#[test]
+fn extreme_impulse_respects_bone_lengths_and_never_stretches_skin() {
+    let mut app = app();
+    let e = spawn_puppet(&mut app, PuppetConfig::default());
+    run(&mut app, 0.25);
+
+    let rig = app.world().get::<PuppetRig>(e).unwrap().clone();
+    let rest_locals: [Vec3; 16] = std::array::from_fn(|i| {
+        app.world()
+            .get::<Transform>(rig.parts[i].bone)
+            .unwrap()
+            .translation
+    });
+
+    // Slam a tiny distal limb (HandR) and the torso with extreme impulses.
+    command(
+        &mut app,
+        e,
+        PuppetCommand::Hit {
+            part: PuppetPart::HandR,
+            impulse: Vec3::new(3000.0, -2500.0, 1500.0),
+            point: None,
+            kind: HitKind::Blunt,
+        },
+    );
+    command(
+        &mut app,
+        e,
+        PuppetCommand::Push {
+            impulse: Vec3::new(-4000.0, 1200.0, 3000.0),
+        },
+    );
+
+    for step in 0..90 {
+        run(&mut app, 1.0 / 60.0);
+        let s = sense(&app, e);
+        for part in PuppetPart::ALL {
+            let i = part.index();
+            let b = s.body(part);
+            assert!(
+                b.pos.is_finite() && b.rot.is_finite(),
+                "step {step} part {part:?} became non-finite: pos={:?}",
+                b.pos
+            );
+            assert!(
+                b.pos.y > -5.0 && b.pos.length() < 100.0,
+                "step {step} part {part:?} exploded out of world: pos={:?}",
+                b.pos
+            );
+            if let Some(parent) = part.parent() {
+                let pb = s.body(parent);
+                let anchor = pb.pos + pb.rot * rig.parts[i].anchor_in_parent;
+                let sep = b.pos.distance(anchor);
+                assert!(
+                    sep <= 0.28,
+                    "step {step} part {part:?} tore away from parent {parent:?}: sep={sep:.3}m"
+                );
+                let bone_tf = app.world().get::<Transform>(rig.parts[i].bone).unwrap();
+                let dev = bone_tf.translation.distance(rest_locals[i]);
+                let state_mode = mode(&app, e);
+                let max_dev = if matches!(
+                    state_mode,
+                    PuppetMode::Falling | PuppetMode::Down | PuppetMode::Dead
+                ) {
+                    0.23
+                } else {
+                    0.03
+                };
+                assert!(
+                    dev <= max_dev,
+                    "step {step} bone {part:?} stretched past anatomical bound ({state_mode:?}): rest={:?} actual={:?} diff={dev:.4}m",
+                    rest_locals[i],
+                    bone_tf.translation
+                );
+            }
+        }
+    }
+}

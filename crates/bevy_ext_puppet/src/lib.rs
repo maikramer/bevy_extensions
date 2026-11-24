@@ -155,6 +155,10 @@ impl Plugin for PuppetPlugin {
                 .in_set(PuppetSystems::Control),
         );
         app.add_systems(
+            schedule,
+            contact::clamp_joint_separation.after(PhysicsSystems::StepSimulation),
+        );
+        app.add_systems(
             PhysicsSchedule,
             contact::resolve_floor_overlap
                 .after(SolverSystems::Finalize)

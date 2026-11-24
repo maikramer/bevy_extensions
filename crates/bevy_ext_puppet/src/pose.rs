@@ -17,6 +17,7 @@ use bevy::prelude::*;
 
 use crate::part::{PART_COUNT, PuppetPart};
 use crate::rig::PuppetRig;
+use crate::state::PuppetState;
 
 /// Target (animated) pose of every part, in world space.
 #[derive(Component, Clone, Debug)]
@@ -156,9 +157,19 @@ pub fn capture_targets(
                     (targets.world_rot[p.index()].inverse() * targets.world_rot[i]).normalize();
             }
             if dt > 0.0 && targets.initialized {
-                targets.lin_vel[i] = (targets.world_pos[i] - targets.prev_pos[i]) / dt;
+                let raw_lin = (targets.world_pos[i] - targets.prev_pos[i]) / dt;
+                targets.lin_vel[i] = if raw_lin.is_finite() {
+                    raw_lin.clamp_length_max(20.0)
+                } else {
+                    Vec3::ZERO
+                };
                 let dq = (targets.world_rot[i] * targets.prev_rot[i].inverse()).normalize();
-                targets.ang_vel[i] = shortest(dq).to_scaled_axis() / dt;
+                let raw_ang = shortest(dq).to_scaled_axis() / dt;
+                targets.ang_vel[i] = if raw_ang.is_finite() {
+                    raw_ang.clamp_length_max(30.0)
+                } else {
+                    Vec3::ZERO
+                };
             }
             targets.prev_pos[i] = targets.world_pos[i];
             targets.prev_rot[i] = targets.world_rot[i];
@@ -176,13 +187,19 @@ pub fn shortest(q: Quat) -> Quat {
 /// Writes the blended physics pose into the bones.
 #[allow(clippy::type_complexity)]
 pub fn write_back_pose(
-    mut puppets: Query<(Entity, &PuppetRig, &mut PuppetTargets, &PuppetBlend)>,
+    mut puppets: Query<(
+        Entity,
+        &PuppetRig,
+        &mut PuppetTargets,
+        &PuppetBlend,
+        Option<&PuppetState>,
+    )>,
     bodies: Query<(&Position, &Rotation)>,
     mut transforms: Query<&mut Transform>,
     parents: Query<&ChildOf>,
     gts: Query<&GlobalTransform>,
 ) {
-    for (root, rig, mut targets, blend) in &mut puppets {
+    for (root, rig, mut targets, blend, state) in &mut puppets {
         if !blend.any() {
             // Hand the bones back to the animation (an unanimated rig would
             // otherwise keep the last physical pose).
@@ -198,14 +215,25 @@ pub fn write_back_pose(
             }
             continue;
         }
+        let fall_contacts = state.is_some_and(|s| s.mode.uses_fall_contacts());
         let root_local = transforms.get(root).ok().copied();
         let root_aff = root_affine(root, root_local.as_ref(), &parents, &gts);
         for part in PuppetPart::ALL {
             let i = part.index();
             let w = blend.physics_weight[i].clamp(0.0, 1.0);
             let Ok((pos, rot)) = bodies.get(rig.parts[i].body) else { continue };
-            let want_rot = targets.world_rot[i].slerp(rot.0, w).normalize();
-            let want_pos = targets.world_pos[i].lerp(pos.0, w);
+            let body_pos = if pos.0.is_finite() {
+                pos.0
+            } else {
+                targets.world_pos[i]
+            };
+            let body_rot = if rot.0.is_finite() {
+                rot.0.normalize()
+            } else {
+                targets.world_rot[i]
+            };
+            let want_rot = targets.world_rot[i].slerp(body_rot, w).normalize();
+            let want_pos = targets.world_pos[i].lerp(body_pos, w);
             // Parent affine from the (possibly just rewritten) locals.
             let path = &rig.parts[i].path;
             let mut parent_aff = root_aff;
@@ -221,15 +249,39 @@ pub fn write_back_pose(
             );
             let (_, r, t) = (parent_aff.inverse() * want).to_scale_rotation_translation();
             let Ok(mut tf) = transforms.get_mut(rig.parts[i].bone) else { continue };
-            tf.rotation = r.normalize();
-            // Follow the solved anchors as well as their rotations. At
-            // impact the compliant joints can compress; rebuilding the
-            // chain solely from rest lengths puts the skin below contact.
+            if r.is_finite() {
+                tf.rotation = r.normalize();
+            }
+            // Follow the solved anchors as well as their rotations, while
+            // respecting bone lengths so heavy hits never stretch the skinned
+            // mesh like elastic rubber.
+            // - While standing/active (`!fall_contacts`), lock closely to the
+            //   anatomical bone length (≤ 2.5 cm).
+            // - During falls/ragdoll (`fall_contacts`), allow up to 22 cm of
+            //   socket compliance so `FallCollider` / `resolve_floor_overlap`
+            //   keeps bulky skinned limbs (gloves, boots) above ramps/floors,
+            //   while still strictly forbidding infinite elastic stretching.
             if part == PuppetPart::Pelvis {
-                tf.translation = t;
+                if t.is_finite() {
+                    tf.translation = t;
+                }
             } else {
-                let physical = parent_aff.inverse().transform_point3(pos.0);
-                tf.translation = targets.anim_local[i].translation.lerp(physical, w);
+                let anim_t = targets.anim_local[i].translation;
+                let rest_len = anim_t.length();
+                let physical = parent_aff.inverse().transform_point3(body_pos);
+                let bounded = if physical.is_finite() {
+                    if fall_contacts {
+                        anim_t + (physical - anim_t).clamp_length_max(0.22)
+                    } else {
+                        let max_dev = (rest_len * 0.06).clamp(0.005, 0.025);
+                        let max_len = rest_len * 1.05 + 0.01;
+                        (anim_t + (physical - anim_t).clamp_length_max(max_dev))
+                            .clamp_length_max(max_len)
+                    }
+                } else {
+                    anim_t
+                };
+                tf.translation = anim_t.lerp(bounded, w);
             }
             targets.written[i] = Some(*tf);
         }

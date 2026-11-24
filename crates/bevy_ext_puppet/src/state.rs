@@ -304,19 +304,22 @@ pub fn process_inbox(
                     );
                 }
                 PuppetCommand::Bump { part, impulse, bumper_pos } => {
+                    if !impulse.is_finite() {
+                        continue;
+                    }
                     // Spread glancing bump 70% on struck shoulder/part + 30% on upper spine
                     // so the ribcage turns cleanly without snapping the shoulder joint.
                     if part == PuppetPart::SpineUpper || part == PuppetPart::SpineLower {
-                        if let Ok(mut f) = forces.get_mut(rig.part(part).body) {
-                            f.apply_linear_impulse(impulse);
-                        }
+                        apply_capped_impulse(rig, &mut forces, part, impulse, None);
                     } else {
-                        if let Ok(mut f) = forces.get_mut(rig.part(part).body) {
-                            f.apply_linear_impulse(impulse * 0.70);
-                        }
-                        if let Ok(mut f) = forces.get_mut(rig.part(PuppetPart::SpineUpper).body) {
-                            f.apply_linear_impulse(impulse * 0.30);
-                        }
+                        apply_capped_impulse(rig, &mut forces, part, impulse * 0.70, None);
+                        apply_capped_impulse(
+                            rig,
+                            &mut forces,
+                            PuppetPart::SpineUpper,
+                            impulse * 0.30,
+                            None,
+                        );
                     }
                     let mag = impulse.length();
                     let intensity = (mag / (rig.total_mass * 0.65)).clamp(0.15, 1.0);
@@ -346,16 +349,21 @@ pub fn process_inbox(
                     }
                 }
                 PuppetCommand::Trip { side, impulse } => {
+                    if !impulse.is_finite() {
+                        continue;
+                    }
                     let calf = PuppetPart::calf(side);
                     let dir = impulse.reject_from(sense.up).normalize_or(sense.heading);
-                    let mag = impulse.length().max(24.0);
+                    let mag = impulse.length().clamp(24.0, rig.total_mass * MAX_WHOLE_BODY_DV);
                     // Snag the lower leg backward/sideways while pitching the chest forward!
-                    if let Ok(mut f) = forces.get_mut(rig.part(calf).body) {
-                        f.apply_linear_impulse(-dir * (mag * 0.40));
-                    }
-                    if let Ok(mut f) = forces.get_mut(rig.part(PuppetPart::SpineUpper).body) {
-                        f.apply_linear_impulse(dir * (mag * 0.85));
-                    }
+                    apply_capped_impulse(rig, &mut forces, calf, -dir * (mag * 0.40), None);
+                    apply_capped_impulse(
+                        rig,
+                        &mut forces,
+                        PuppetPart::SpineUpper,
+                        dir * (mag * 0.85),
+                        None,
+                    );
                     if matches!(state.mode, PuppetMode::Animated | PuppetMode::Active) {
                         enter(&mut state, PuppetMode::Active, puppet, &mut events);
                         let sev = (mag / (rig.total_mass * 1.1)).clamp(0.45, 1.0);
@@ -373,19 +381,27 @@ pub fn process_inbox(
                     neuro.set_gaze(point, priority::GAZE + 1, duration, sense.time);
                 }
                 PuppetCommand::Push { impulse } => {
+                    if !impulse.is_finite() {
+                        continue;
+                    }
+                    let clamped = impulse.clamp_length_max(rig.total_mass * MAX_WHOLE_BODY_DV);
                     let parts = [PuppetPart::Pelvis, PuppetPart::SpineLower, PuppetPart::SpineUpper];
                     for p in parts {
-                        if let Ok(mut f) = forces.get_mut(rig.part(p).body) {
-                            f.apply_linear_impulse(impulse / parts.len() as f32);
-                        }
+                        apply_capped_impulse(
+                            rig,
+                            &mut forces,
+                            p,
+                            clamped / parts.len() as f32,
+                            None,
+                        );
                     }
                     if matches!(state.mode, PuppetMode::Animated | PuppetMode::Active) {
                         enter(&mut state, PuppetMode::Active, puppet, &mut events);
                         let mass = rig.total_mass.max(1.0);
-                        let dv = impulse.length() / mass;
+                        let dv = clamped.length() / mass;
                         if dv > 1.2 {
                             behaviours.stop(BodyBalance::NAME);
-                            behaviours.start(Box::new(StaggerFall::new(impulse)));
+                            behaviours.start(Box::new(StaggerFall::new(clamped)));
                         }
                         if dv > 0.55 {
                             behaviours.start(Box::new(ArmsWindmill::default()));
@@ -422,6 +438,50 @@ pub fn process_inbox(
     }
 }
 
+/// Max single-step delta-v (m/s) applied to an individual body part. Prevents
+/// a massive impulse on a light distal limb (hand/forearm/foot) from blasting
+/// it at supersonic speeds and tearing the XPBD joint apart.
+const MAX_PART_HIT_DV: f32 = 18.0;
+/// Max whole-body delta-v (m/s) for pushes, trips, and overflow momentum
+/// spilled into the torso from extreme hits.
+const MAX_WHOLE_BODY_DV: f32 = 14.0;
+
+fn apply_capped_impulse(
+    rig: &PuppetRig,
+    forces: &mut Query<Forces>,
+    part: PuppetPart,
+    impulse: Vec3,
+    point: Option<Vec3>,
+) {
+    if !impulse.is_finite() {
+        return;
+    }
+    let part_mass = rig.part(part).mass.max(0.25);
+    let max_part_impulse = part_mass * MAX_PART_HIT_DV;
+    let clamped = impulse.clamp_length_max(max_part_impulse);
+    if let Ok(mut f) = forces.get_mut(rig.part(part).body) {
+        match point.filter(|p| p.is_finite()) {
+            Some(p) => f.apply_linear_impulse_at_point(clamped, p),
+            None => f.apply_linear_impulse(clamped),
+        }
+    }
+    // If the blow exceeded what this single part can safely absorb, spill the
+    // remainder into the core torso (capped to whole-body delta-v) so heavy
+    // hits still knock the whole character back without ripping limbs loose.
+    let overflow = impulse - clamped;
+    if overflow.length_squared() > 1e-4 && !matches!(part, PuppetPart::Pelvis | PuppetPart::SpineUpper)
+    {
+        let core_mass = (rig.part(PuppetPart::SpineUpper).mass + rig.part(PuppetPart::Pelvis).mass)
+            .max(1.0);
+        let spilled = overflow.clamp_length_max(core_mass * MAX_WHOLE_BODY_DV);
+        for core in [PuppetPart::SpineUpper, PuppetPart::Pelvis] {
+            if let Ok(mut f) = forces.get_mut(rig.part(core).body) {
+                f.apply_linear_impulse(spilled * 0.5);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_hit_command(
     puppet: Entity,
@@ -438,12 +498,10 @@ fn apply_hit_command(
     point: Option<Vec3>,
     kind: HitKind,
 ) {
-    if let Ok(mut f) = forces.get_mut(rig.part(part).body) {
-        match point {
-            Some(p) => f.apply_linear_impulse_at_point(impulse, p),
-            None => f.apply_linear_impulse(impulse),
-        }
+    if !impulse.is_finite() {
+        return;
     }
+    apply_capped_impulse(rig, forces, part, impulse, point);
     let body = sense.body(part);
     let local_offset = point
         .map(|p| body.rot.inverse() * (p - body.pos))

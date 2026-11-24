@@ -7,8 +7,118 @@ use avian3d::dynamics::joints::joint_graph::JointGraph;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::rig::PuppetBody;
+use crate::part::PuppetPart;
+use crate::rig::{PuppetBody, PuppetRig};
 use crate::state::PuppetState;
+
+/// Maximum allowed distance (m) between a child body's origin and its parent's
+/// joint anchor after the physics step. Stays above legitimate fall-collider
+/// floor-contact lifts while catching any catastrophic joint dislocation or
+/// floor-tunneling blow-up before it can run away.
+const MAX_JOINT_SEPARATION: f32 = 0.25;
+/// Hard linear speed ceiling (m/s) applied only when a violent impact or
+/// solver ejection spikes a puppet limb to supersonic speed.
+const MAX_BODY_LINEAR_SPEED: f32 = 30.0;
+
+/// Post-step safety pass: uses read-only queries in the fast path (zero
+/// change-detection churn during normal motion) and only writes back via
+/// [`Commands`] if a body becomes non-finite, spikes past
+/// [`MAX_BODY_LINEAR_SPEED`], or tears past [`MAX_JOINT_SEPARATION`] from its
+/// parent joint socket.
+#[allow(clippy::type_complexity)]
+pub(crate) fn clamp_joint_separation(
+    mut commands: Commands,
+    puppets: Query<&PuppetRig>,
+    bodies: Query<(&Position, &Rotation, &LinearVelocity, &AngularVelocity), With<PuppetBody>>,
+) {
+    let max_speed_sq = MAX_BODY_LINEAR_SPEED * MAX_BODY_LINEAR_SPEED;
+    for rig in &puppets {
+        let mut solved_pos = [Vec3::ZERO; crate::part::PART_COUNT];
+        let mut solved_rot = [Quat::IDENTITY; crate::part::PART_COUNT];
+        let mut solved_vel = [Vec3::ZERO; crate::part::PART_COUNT];
+
+        // PuppetPart::ALL is ordered parents-first.
+        for part in PuppetPart::ALL {
+            let i = part.index();
+            let body = rig.parts[i].body;
+            let Ok((pos, rot, lin, ang)) = bodies.get(body) else {
+                continue;
+            };
+            let mut p = pos.0;
+            let mut r = rot.0;
+            let mut lv = lin.0;
+            let mut av = ang.0;
+            let mut dirty = false;
+
+            if let Some(parent_part) = part.parent() {
+                let pi = parent_part.index();
+                let anchor = solved_pos[pi] + solved_rot[pi] * rig.parts[i].anchor_in_parent;
+                if !p.is_finite() || !r.is_finite() {
+                    p = anchor;
+                    r = solved_rot[pi];
+                    lv = solved_vel[pi];
+                    av = Vec3::ZERO;
+                    dirty = true;
+                } else {
+                    if !lv.is_finite() {
+                        lv = solved_vel[pi];
+                        dirty = true;
+                    } else if lv.length_squared() > max_speed_sq {
+                        lv = lv.clamp_length_max(MAX_BODY_LINEAR_SPEED);
+                        dirty = true;
+                    }
+                    if !av.is_finite() {
+                        av = Vec3::ZERO;
+                        dirty = true;
+                    }
+                    let diff = p - anchor;
+                    let dist = diff.length();
+                    if dist > MAX_JOINT_SEPARATION {
+                        let dir = diff / dist;
+                        p = anchor + dir * MAX_JOINT_SEPARATION;
+                        let rel_v = lv - solved_vel[pi];
+                        let outward = rel_v.dot(dir);
+                        if outward > 0.0 {
+                            lv -= dir * outward;
+                        }
+                        dirty = true;
+                    }
+                }
+            } else {
+                if !p.is_finite() {
+                    p = Vec3::ZERO;
+                    lv = Vec3::ZERO;
+                    dirty = true;
+                }
+                if !r.is_finite() {
+                    r = Quat::IDENTITY;
+                    av = Vec3::ZERO;
+                    dirty = true;
+                }
+                if !lv.is_finite() {
+                    lv = Vec3::ZERO;
+                    dirty = true;
+                } else if lv.length_squared() > max_speed_sq {
+                    lv = lv.clamp_length_max(MAX_BODY_LINEAR_SPEED);
+                    dirty = true;
+                }
+                if !av.is_finite() {
+                    av = Vec3::ZERO;
+                    dirty = true;
+                }
+            }
+
+            if dirty {
+                commands
+                    .entity(body)
+                    .insert((Position(p), Rotation(r), LinearVelocity(lv), AngularVelocity(av)));
+            }
+            solved_pos[i] = p;
+            solved_rot[i] = r;
+            solved_vel[i] = lv;
+        }
+    }
+}
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn resolve_floor_overlap(
