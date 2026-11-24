@@ -47,7 +47,7 @@ pub struct WaterUniforms {
     pub sky_horizon_time: Vec4,
     /// `(wind_x, wind_z, wind_strength, wave_amp)`.
     pub wind_params: Vec4,
-    /// `(pass_mode [0=absorb, 1=add], caustic_gain, scatter_gain, depth_fade_max)`.
+    /// `(pass_mode [0=absorb, 1=add], caustic_gain, scatter_gain, ocean [0 or 1])`.
     pub pass_params: Vec4,
 }
 
@@ -61,7 +61,7 @@ impl WaterUniforms {
     /// Uniform defaults configured for Pass 1 (`AlphaMode::Multiply` absorption).
     pub fn absorb_default() -> Self {
         Self {
-            pass_params: Vec4::new(0.0, 1.15, 1.0, 55.0),
+            pass_params: Vec4::new(0.0, 1.15, 1.0, 0.0),
             ..Self::surface_default()
         }
     }
@@ -75,7 +75,7 @@ impl WaterUniforms {
             sky_zenith_rain: Vec4::new(0.085, 0.255, 0.62, 0.0),
             sky_horizon_time: Vec4::new(0.60, 0.755, 0.90, 0.0),
             wind_params: Vec4::new(0.7, 0.25, 1.5, 1.0),
-            pass_params: Vec4::new(1.0, 1.15, 1.0, 55.0),
+            pass_params: Vec4::new(1.0, 1.15, 1.0, 0.0),
         }
     }
 }

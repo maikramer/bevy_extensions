@@ -42,6 +42,7 @@ pub mod cut;
 pub mod decal;
 pub mod delta;
 pub mod features;
+pub mod ocean;
 pub mod ground;
 pub mod heightmap;
 pub mod host;

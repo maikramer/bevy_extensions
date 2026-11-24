@@ -26,7 +26,7 @@ use super::plateau::{PlateauSpec, carve_plateau};
 use super::roads::{RoadGuards, RoadNetworkSpec, RoadPath, RoadProfile, RoadSpec, carve_road};
 use super::spec::TerrainPadSpec;
 use super::water::{
-    LakeSpec, RiverSpec, WaterBody, WaterKind, carve_lake, carve_river_with_falls,
+    LakeSpec, RiverSpec, WaterBody, carve_lake, carve_river_with_falls, fill_river_section,
     river_cliff_crossings,
 };
 
@@ -39,6 +39,7 @@ pub struct TerrainFeatures {
     pub plateaus: Vec<PlateauSpec>,
     pub pads: Vec<TerrainPadSpec>,
     pub lakes: Vec<LakeSpec>,
+    pub oceans: Vec<crate::ocean::OceanSpec>,
     pub rivers: Vec<RiverSpec>,
     /// Trincheiras/cânions secos (`<Cut>`) — LOWER no heightfield + paredes
     /// voxel. Depois da água (a vala pode abrir num vale) e ANTES das
@@ -77,6 +78,7 @@ impl TerrainFeatures {
         self.plateaus.is_empty()
             && self.pads.is_empty()
             && self.lakes.is_empty()
+            && self.oceans.is_empty()
             && self.rivers.is_empty()
             && self.cuts.is_empty()
             && self.cliffs.is_empty()
@@ -105,7 +107,7 @@ impl TerrainFeatures {
 pub struct FeatureResult {
     /// Water bodies for `avoid-water` / `near-water` / surface queries.
     pub water: Vec<WaterBody>,
-    /// Spec de origem paralela a [`FeatureResult::water`] — `(é_lago,
+    /// Specs dos lagos e rios no início de [`FeatureResult::water`] — `(é_lago,
     /// índice_na_spec)`. Um lago/rio degenerado (carve falhou) não entra em
     /// `water`; sem este alinhamento por identidade, o emparelhamento
     /// posicional em `spawn_water` desalinha TODOS os corpos seguintes.
@@ -180,14 +182,11 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
         }
     }
     for (i, river) in features.rivers.iter().enumerate() {
-        // Cópia dos corpos de lago (poucos) — a confluência usa as cotas do
-        // registry, e `result.water` é mutado dentro do loop.
-        let lake_bodies: Vec<WaterBody> = result
-            .water
-            .iter()
-            .filter(|b| b.kind == WaterKind::Lake)
-            .cloned()
-            .collect();
+        // Cópia dos corpos já carvados (poucos) — a confluência usa as cotas
+        // dos LAGOS do registry e a passagem de margens não levanta dentro
+        // da lâmina de nenhum deles (lagos e rios anteriores); `result.water`
+        // é mutado dentro do loop.
+        let lake_bodies: Vec<WaterBody> = result.water.clone();
         // Pre-pass cachoeiras de parede: cruza o path do rio com os cliffs
         // autorados (2D, specs) — as bandas de cliff só existem DEPOIS do
         // carve, portanto as travessias têm de vir daqui como hints.
@@ -347,6 +346,24 @@ pub fn apply_features(grid: &mut BrushGrid, features: &TerrainFeatures) -> Featu
         }
     }
 
+    // 6. Secção molhada dos rios, sobre a grelha FINAL (as estradas mexem nas
+    //    margens): a lâmina enche o canal até tocar o terreno de cada lado e
+    //    a hidráulica (corrente, remanso, regime) sai dessa secção — a malha,
+    //    o domínio e as queries leem todos o mesmo `WaterBody::section`.
+    result.water.extend(features.oceans.iter().map(crate::ocean::OceanSpec::body));
+    let bodies_snapshot = result.water.clone();
+    for (body, &(is_lake, spec_i)) in result.water.iter_mut().zip(&result.water_specs) {
+        if is_lake {
+            continue;
+        }
+        let others: Vec<WaterBody> = bodies_snapshot
+            .iter()
+            .filter(|o| o.stations != body.stations || o.kind != body.kind)
+            .cloned()
+            .collect();
+        fill_river_section(grid, &features.rivers[spec_i], body, &others);
+    }
+
     result
 }
 
@@ -397,6 +414,7 @@ mod tests {
                 radius: 10.0,
                 ..LakeSpec::default()
             }],
+            oceans: Vec::new(),
             rivers: vec![RiverSpec {
                 path: vec![Vec2::new(10.0, -50.0), Vec2::new(50.0, -50.0)],
                 width: 6.0,

@@ -4,6 +4,8 @@
 
 use bevy::math::Vec2;
 
+use crate::hydro::{RiverSection, StationHydro, section_flow};
+
 /// Amplitude MÍNIMA do alongamento — até o lago mais redondo do mundo tem
 /// um oval subtil (o utilizador viu "círculos" nos lagos antigos).
 const LAKE_STRETCH_MIN: f32 = 0.10;
@@ -184,10 +186,13 @@ pub struct CascadeInfo {
 }
 
 /// Kind of a registered [`WaterBody`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, bevy::prelude::Reflect)]
+#[derive(Debug, Clone, Copy, PartialEq, bevy::prelude::Reflect)]
 pub enum WaterKind {
     Lake,
     River,
+    /// A lâmina sobre um fundo costeiro autorado. A linha de costa é a
+    /// intersecção com o terreno, não o rectângulo exterior do espelho.
+    Ocean { min: Vec2, max: Vec2 },
 }
 
 /// Query registry entry produced by every water carve.
@@ -245,6 +250,16 @@ pub struct WaterBody {
     /// contígua = UMA entrada). Vazio = rio sem quedas. Ver
     /// [`CascadeInfo`] para o contrato por consumidor.
     pub cascades: Vec<CascadeInfo>,
+    /// Rio: secção MOLHADA por estação (meia-largura de cada lado até a
+    /// lâmina tocar o terreno carvado) e a hidráulica que sai dela — ver
+    /// [`crate::hydro`]. Vazia = contrato antigo (`half_width` simétrica,
+    /// corrente só pelo declive).
+    pub section: RiverSection,
+}
+
+fn distance_to_rectangle(p: Vec2, min: Vec2, max: Vec2) -> f32 {
+    let d = (min - p).max(p - max);
+    d.max(Vec2::ZERO).length() + d.max_element().min(0.0)
 }
 
 impl WaterBody {
@@ -273,6 +288,77 @@ impl WaterBody {
             station_lerp(&self.half_width, hit)
         }
     }
+    /// O rio tem secção molhada válida (uma entrada por estação)?
+    pub fn has_section(&self) -> bool {
+        self.kind == WaterKind::River && self.section.matches(self.stations.len())
+    }
+
+    /// Offset lateral assinado de `p` relativo ao caminho em `hit`, ao longo
+    /// de `perp = (−dir.y, dir.x)` do segmento: `< 0` = lado esquerdo
+    /// (`section.wet_left`), `≥ 0` = direito. Mesma convenção da malha.
+    pub fn lateral_of(&self, hit: &PathHit, p: Vec2) -> f32 {
+        let n = self.stations.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let seg = hit.segment.min(n - 2);
+        let dir = (self.stations[seg + 1] - self.stations[seg]).normalize_or_zero();
+        (p - hit.point).dot(Vec2::new(-dir.y, dir.x))
+    }
+
+    /// Meia-largura molhada do lado de `lateral` (sem secção: a simétrica).
+    pub fn wet_half_lerp(&self, hit: &PathHit, lateral: f32) -> f32 {
+        if !self.has_section() {
+            return self.half_width_lerp(hit);
+        }
+        let side = if crate::hydro::side_is_left(lateral) {
+            &self.section.wet_left
+        } else {
+            &self.section.wet_right
+        };
+        station_lerp(side, hit)
+    }
+
+    /// Meia-largura da linha de água do lado onde `p` está — a métrica de
+    /// todas as queries de rio ("dentro da lâmina?", distância à margem).
+    pub fn water_half_at(&self, hit: &PathHit, p: Vec2) -> f32 {
+        if !self.has_section() {
+            return self.half_width_lerp(hit);
+        }
+        self.wet_half_lerp(hit, self.lateral_of(hit, p))
+    }
+
+    /// Hidráulica interpolada no `hit` (só com secção).
+    pub fn hydro_lerp(&self, hit: &PathHit) -> Option<StationHydro> {
+        if !self.has_section() {
+            return None;
+        }
+        let n = self.stations.len();
+        let s = hit.station(n);
+        let i = (s.floor() as usize).min(n - 1);
+        let j = (i + 1).min(n - 1);
+        let h = &self.section.hydro;
+        Some(StationHydro::lerp(&h[i], &h[j], s - i as f32))
+    }
+
+    /// Maior meia-largura de água de qualquer lado (casco/índices).
+    pub fn max_water_half(&self) -> f32 {
+        let nominal = self
+            .half_width
+            .iter()
+            .copied()
+            .fold(self.water_width * 0.5, f32::max);
+        if !self.has_section() {
+            return nominal;
+        }
+        self.section
+            .wet_left
+            .iter()
+            .chain(self.section.wet_right.iter())
+            .copied()
+            .fold(nominal, f32::max)
+    }
+
     /// Contorno orgânico do lago na direção `delta` (a partir do centro) —
     /// a métrica radial partilhada pelas queries de espelho.
     fn contour_at_delta(&self, delta: Vec2) -> f32 {
@@ -289,6 +375,7 @@ impl WaterBody {
     /// Point is inside the carve zone (spawner `avoid-water`).
     pub fn contains(&self, p: Vec2) -> bool {
         match self.kind {
+            WaterKind::Ocean { min, max } => p.cmpge(min).all() && p.cmple(max).all(),
             WaterKind::Lake => (p - self.at).length_squared() <= self.carve_radius * self.carve_radius,
             WaterKind::River => {
                 !self.stations.is_empty()
@@ -309,6 +396,7 @@ impl WaterBody {
     /// Point is inside the carve zone plus `margin` (spawner `near-water`).
     pub fn is_near(&self, p: Vec2, margin: f32) -> bool {
         match self.kind {
+            WaterKind::Ocean { min, max } => distance_to_rectangle(p, min, max) <= margin,
             WaterKind::Lake => {
                 let r = (self.carve_radius + margin).max(0.0);
                 (p - self.at).length_squared() <= r * r
@@ -328,6 +416,7 @@ impl WaterBody {
     /// design radius). `None` when the point is on dry land.
     pub fn surface_y_at(&self, p: Vec2) -> Option<f32> {
         match self.kind {
+            WaterKind::Ocean { .. } => self.contains(p).then_some(self.water_y),
             WaterKind::Lake => {
                 // Linha de água REAL (contorno × reach): um lóbulo de água
                 // no contorno orgânico tem de responder "água" mesmo fora
@@ -354,7 +443,7 @@ impl WaterBody {
                 }
                 let hit = nearest_on_path(&self.stations, p)?;
                 let d_sq = hit.point.distance_squared(p);
-                let hw = self.half_width_lerp(&hit);
+                let hw = self.water_half_at(&hit, p);
                 // Meia-largura EFETIVA da estação — a ribbon acaba em
                 // `half · reach` (guardado no carve); usar a nominal punha a
                 // lâmina/queries sobre a margem seca.
@@ -379,6 +468,7 @@ impl WaterBody {
     /// areia/lama do splat para lá (fundo) ou para dentro (raso) da água.
     pub fn distance_to_waterline(&self, p: Vec2) -> f32 {
         match self.kind {
+            WaterKind::Ocean { min, max } => distance_to_rectangle(p, min, max),
             WaterKind::Lake => {
                 let delta = p - self.at;
                 let theta = delta.y.atan2(delta.x);
@@ -386,7 +476,7 @@ impl WaterBody {
                 delta.length() - contour
             }
             WaterKind::River => match nearest_on_path(&self.stations, p) {
-                Some(hit) => hit.point.distance(p) - self.half_width_lerp(&hit),
+                Some(hit) => hit.point.distance(p) - self.water_half_at(&hit, p),
                 None => f32::INFINITY,
             },
         }
@@ -398,6 +488,7 @@ impl WaterBody {
     /// waterline-plus-margin band. `None` far from any water.
     pub fn blend_surface_y(&self, p: Vec2, margin: f32) -> Option<f32> {
         match self.kind {
+            WaterKind::Ocean { .. } => self.is_near(p, margin).then_some(self.water_y),
             WaterKind::Lake => {
                 // Mesma métrica de [`WaterBody::surface_y_at`] + margem.
                 let delta = p - self.at;
@@ -421,7 +512,7 @@ impl WaterBody {
                 }
                 let hit = nearest_on_path(&self.stations, p)?;
                 let d_sq = hit.point.distance_squared(p);
-                let hw_m = self.half_width_lerp(&hit) + margin;
+                let hw_m = self.water_half_at(&hit, p) + margin;
                 // Meia-largura EFETIVA + margem (mesma métrica de
                 // [`WaterBody::surface_y_at`]).
                 (d_sq <= hw_m * hw_m).then(|| {
@@ -459,6 +550,18 @@ impl WaterBody {
         F: FnOnce() -> Option<f32>,
     {
         match self.kind {
+            WaterKind::Ocean { .. } => {
+                if !self.contains(p) {
+                    return None;
+                }
+                let depth = bed_y_fn().map_or(35.0, |bed| self.water_y - bed);
+                (depth > 0.01).then_some(WaterDomainSample {
+                    surface_y: self.water_y,
+                    depth: depth.min(40.0),
+                    flow: Vec2::ZERO,
+                    plunge: 0.0,
+                })
+            }
             WaterKind::Lake => {
                 let delta = p - self.at;
                 let dist_sq = delta.length_squared();
@@ -522,7 +625,8 @@ impl WaterBody {
     where
         F: FnOnce() -> Option<f32>,
     {
-        let hw = self.half_width_lerp(&hit);
+        let lateral = self.lateral_of(&hit, p);
+        let hw = self.wet_half_lerp(&hit, lateral);
         let dist_sq = hit.point.distance_squared(p);
         if dist_sq > hw * hw {
             return None;
@@ -561,9 +665,17 @@ impl WaterBody {
         } else {
             0.0
         };
-        let speed = (1.15_f32 + slope * 14.0).clamp(0.9, 3.8);
-        let profile = 0.45 + 0.55 * (1.0 - bank_u * bank_u);
-        let flow = dir * (speed * profile);
+        let flow = match self.hydro_lerp(&hit) {
+            // Secção molhada: a MESMA corrente que a malha desenha
+            // (`hydro::section_flow` — Manning + continuidade + perfil por
+            // faixa vertical + remanso).
+            Some(h) => section_flow(dir, &h, lateral, hw, depth).flow,
+            None => {
+                let speed = (1.15_f32 + slope * 14.0).clamp(0.9, 3.8);
+                let profile = 0.45 + 0.55 * (1.0 - bank_u * bank_u);
+                dir * (speed * profile)
+            }
+        };
 
         let mut plunge = 0.0_f32;
         if !self.cascades.is_empty() {
@@ -827,6 +939,13 @@ pub struct WaterBodyIndex {
 impl WaterBodyIndex {
     pub fn for_body(body: &WaterBody) -> Self {
         match body.kind {
+            WaterKind::Ocean { min, max } => Self {
+                bounds_min: min,
+                bounds_max: max,
+                max_hw: 0.0,
+                path: None,
+                cascade_bounds: None,
+            },
             WaterKind::Lake => {
                 let (_, max_frac) = body.shape.radius_frac_bounds();
                 let reach = body
@@ -841,11 +960,7 @@ impl WaterBodyIndex {
                 }
             }
             WaterKind::River => {
-                let max_hw = body
-                    .half_width
-                    .iter()
-                    .copied()
-                    .fold(body.water_width * 0.5, f32::max);
+                let max_hw = body.max_water_half();
                 let expand = max_hw.max(body.carve_radius);
                 let path = PathSpatialIndex::build(&body.stations);
                 let (pmin, pmax) = path
@@ -1008,14 +1123,14 @@ impl WaterBodyIndex {
             return None;
         }
         match body.kind {
-            WaterKind::Lake => body.surface_y_at(p),
+            WaterKind::Lake | WaterKind::Ocean { .. } => body.surface_y_at(p),
             WaterKind::River => {
                 let hit = match &self.path {
                     Some(idx) => idx.nearest_within(&body.stations, p, self.max_hw + 1e-4)?,
                     None => nearest_on_path(&body.stations, p)?,
                 };
                 let d_sq = hit.point.distance_squared(p);
-                let hw = body.half_width_lerp(&hit);
+                let hw = body.water_half_at(&hit, p);
                 (d_sq <= hw * hw).then(|| {
                     if body.surface_y.is_empty() {
                         body.water_y
@@ -1036,7 +1151,7 @@ impl WaterBodyIndex {
             return None;
         }
         match body.kind {
-            WaterKind::Lake => body.blend_surface_y(p, margin),
+            WaterKind::Lake | WaterKind::Ocean { .. } => body.blend_surface_y(p, margin),
             WaterKind::River => {
                 let hit = match &self.path {
                     Some(idx) => {
@@ -1045,7 +1160,7 @@ impl WaterBodyIndex {
                     None => nearest_on_path(&body.stations, p)?,
                 };
                 let d_sq = hit.point.distance_squared(p);
-                let hw_m = body.half_width_lerp(&hit) + margin;
+                let hw_m = body.water_half_at(&hit, p) + margin;
                 (d_sq <= hw_m * hw_m).then(|| {
                     if body.surface_y.is_empty() {
                         body.water_y
@@ -1059,10 +1174,10 @@ impl WaterBodyIndex {
 
     pub fn distance_to_waterline(&self, body: &WaterBody, p: Vec2) -> f32 {
         match body.kind {
-            WaterKind::Lake => body.distance_to_waterline(p),
+            WaterKind::Lake | WaterKind::Ocean { .. } => body.distance_to_waterline(p),
             WaterKind::River => match &self.path {
                 Some(idx) => match idx.nearest(&body.stations, p) {
-                    Some(hit) => hit.point.distance(p) - body.half_width_lerp(&hit),
+                    Some(hit) => hit.point.distance(p) - body.water_half_at(&hit, p),
                     None => f32::INFINITY,
                 },
                 None => body.distance_to_waterline(p),
@@ -1088,7 +1203,7 @@ impl WaterBodyIndex {
             return None;
         }
         match body.kind {
-            WaterKind::Lake => body.sample_domain_with_bed(p, bed_y_fn, default_depth),
+            WaterKind::Lake | WaterKind::Ocean { .. } => body.sample_domain_with_bed(p, bed_y_fn, default_depth),
             WaterKind::River => {
                 let hit = match &self.path {
                     Some(idx) => idx.nearest_within(&body.stations, p, self.max_hw + 1e-4)?,
@@ -1303,6 +1418,7 @@ mod tests {
                 top_y: 11.5,
                 bot_y: 8.5,
             }],
+            section: Default::default(),
         }
     }
 
@@ -1323,6 +1439,7 @@ mod tests {
             half_width: Vec::new(),
             depths: Vec::new(),
             cascades: Vec::new(),
+            section: Default::default(),
         }
     }
 

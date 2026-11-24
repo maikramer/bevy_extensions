@@ -530,6 +530,10 @@ impl Bounds {
 
 fn water_bounds(body: &WaterBody, margin: f32) -> Bounds {
     match body.kind {
+        WaterKind::Ocean { min, max } => Bounds {
+            min: min - Vec2::splat(margin),
+            max: max + Vec2::splat(margin),
+        },
         WaterKind::Lake => {
             // A linha de água real chega a `radius * CONTOUR_PEAK * mirror_reach`.
             // 1.28 ficava curto nos lóbulos e a praia/o leito não eram pintados.
@@ -1100,7 +1104,13 @@ fn shore_weights(x: f32, z: f32, y: f32, ctx: &mut TexelCtx) -> ShoreSample {
         if !bounds.contains(p) {
             continue;
         }
-        let d_edge = body.distance_to_waterline(p);
+        let d_edge = if matches!(body.kind, WaterKind::Ocean { .. }) {
+            // No mar, a costa é a isóbata a zero da grelha. O rectângulo
+            // inclui as praias e as ilhas secas, que mantêm o seu splat.
+            ((y - body.water_y) / 0.18).max(if body.contains(p) { f32::NEG_INFINITY } else { 0.0 })
+        } else {
+            body.distance_to_waterline(p)
+        };
         if d_edge > ctx.shore * 1.25 {
             continue;
         }
@@ -1637,6 +1647,7 @@ mod tests {
             half_width: Vec::new(),
             depths: Vec::new(),
             cascades: Vec::new(),
+            section: Default::default(),
         };
         let boxes_w: Vec<(Bounds, &WaterBody)> = vec![(water_bounds(&body, 4.0), &body)];
         let boxes_r: Vec<(Bounds, &RoadPath)> = Vec::new();

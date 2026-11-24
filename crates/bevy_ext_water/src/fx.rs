@@ -546,6 +546,7 @@ fn setup_ripple_assets(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>)
 /// molhe de facto.
 pub fn body_bounds(body: &WaterBody) -> (Vec2, Vec2) {
     match body.kind {
+        crate::body::WaterKind::Ocean { min, max } => (min, max),
         crate::body::WaterKind::Lake => {
             let reach = body
                 .carve_radius

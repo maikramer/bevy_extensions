@@ -9,6 +9,10 @@
 //   UV_0.x    = extinction murkiness (`opacity`)
 //   UV_0.y    = baked vertical bed column (fallback when prepass unavailable)
 //   UV_1.xy   = surface flow velocity `(vx, vz)` m/s (`> 3.9` or tilted normal = waterfall)
+//   TANGENT   = river hydraulics, RAW (not a tangent frame; rivers with a wetted
+//               section only — `bevy_ext_water::hydro`):
+//               x = distance to the wetted bank (m), y = section Froude number,
+//               z = eddy/backwater strength (0..1), w = open side (1 = no bank)
 
 import bevy_pbr::render::forward_io::{Vertex, UncompressedVertex, VertexOutput, FragmentOutput, decompress_vertex};
 import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
@@ -36,7 +40,7 @@ struct WaterUniforms {
     sky_horizon_time: vec4<f32>,
     // (wind_x, wind_z, wind_strength, wave_amp)
     wind_params: vec4<f32>,
-    // (pass_mode [0=absorb, 1=surface_add], caustic_gain, scatter_gain, depth_fade_max)
+    // (pass_mode [0=absorb, 1=surface_add], caustic_gain, scatter_gain, ocean)
     pass_params: vec4<f32>,
 };
 
@@ -467,12 +471,13 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
             baked_depth = vertex.uv.y;
         }
         let geom_n = normalize(out.world_normal);
-        let is_waterfall = (flow_speed > 3.9) || (abs(geom_n.y) < 0.72);
+        let is_waterfall = (flow_speed > 5.4) || (abs(geom_n.y) < 0.68);
+        let flat_damp = smoothstep(0.75, 0.96, abs(geom_n.y));
         let cam_dist = length(view.world_position - out.world_position.xyz);
         let dist_damp = 1.0 - smoothstep(45.0, 125.0, cam_dist);
         let edge_mask = smoothstep(0.14, 0.72, vertex.color.a);
-        let deep_swell = edge_mask * smoothstep(0.38, 1.35, baked_depth);
-        let mid_wave = edge_mask * smoothstep(0.08, 0.52, baked_depth);
+        let deep_swell = edge_mask * smoothstep(0.38, 1.35, baked_depth) * flat_damp;
+        let mid_wave = edge_mask * smoothstep(0.08, 0.52, baked_depth) * flat_damp;
 
         if is_waterfall {
             let ripple = sin(out.world_position.y * 1.4 - t * 8.5 + out.world_position.x * 1.7) * 0.045;
@@ -507,12 +512,10 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     @if(VERTEX_UVS_B)
     out.uv_b = vertex.uv_b;
 
+    // The tangent slot carries river hydraulics (see MESH CONTRACT): pass it
+    // through raw — `mesh_tangent_local_to_world` would normalize it away.
     @if(VERTEX_TANGENTS)
-    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(
-        world_from_local,
-        vertex.tangent,
-        vertex_no_morph.instance_index
-    );
+    out.world_tangent = vertex.tangent;
 
     @if(VERTEX_COLORS)
     out.color = vertex.color;
@@ -561,7 +564,14 @@ fn fragment(
     }
     let flow_speed = length(flow);
     let geom_n = normalize(pbr_input.N);
-    let is_waterfall = (flow_speed > 3.9) || (abs(geom_n.y) < 0.72);
+    let is_waterfall = (flow_speed > 5.4) || (abs(geom_n.y) < 0.68);
+    let slope_t = smoothstep(0.025, 0.26, 1.0 - clamp(abs(geom_n.y), 0.0, 1.0));
+    let cam_dist = length(view.world_position - world);
+    // Deep ocean is its own optical background. Only near shallows should
+    // show the scene underneath, so streaming out the seabed cannot create
+    // a visible line across the water.
+    let sea_opaque = water_params.pass_params.w
+        * max(smoothstep(1.0, 5.0, baked_depth), smoothstep(35.0, 240.0, cam_dist));
 
     // Real per-pixel underwater bed depth via DEPTH_PREPASS (water itself has enable_prepass = false).
     let to_cam = normalize(view.world_position - world);
@@ -585,12 +595,13 @@ fn fragment(
         }
     }
 
+    ray_thickness = mix(ray_thickness, MAX_PATH, sea_opaque);
+    vert_depth = mix(vert_depth, baked_depth, sea_opaque);
     let interactive = sample_interactive_wave(world.xz);
     let inter_h = interactive.x;
     let inter_grad = interactive.yz;
     let inter_foam = clamp(interactive.w, 0.0, 1.0);
 
-    let cam_dist = length(view.world_position - world);
     let damp = 1.0 / (1.0 + cam_dist * 0.011);
     let rain = clamp(water_params.sky_zenith_rain.w, 0.0, 1.0);
 
@@ -605,7 +616,31 @@ fn fragment(
     let obs_dist = obs.x;
     let obs_n = obs.yz;
     let stream_flow = dom_all.flow;
-    let bank_slow = 0.28 + 0.72 * smoothstep(0.03, 0.62, vert_depth);
+
+    // River hydraulics from the wetted section (TANGENT, raw). Without it
+    // (lakes, legacy rivers) the shallow-depth proxies below stay in charge.
+    var bank_dist = 99.0;
+    var sec_froude = -1.0;
+    var eddy_k = 0.0;
+    @if(VERTEX_TANGENTS)
+    {
+        bank_dist = max(in.world_tangent.x, 0.0);
+        sec_froude = in.world_tangent.y;
+        eddy_k = clamp(in.world_tangent.z, 0.0, 1.0);
+    }
+    let has_hydro = sec_froude >= 0.0;
+    // Boundary layer measured from the real bank (0–1.6 m), not "shallow water".
+    let bank_band = (1.0 - smoothstep(0.25, 1.6, bank_dist)) * smoothstep(0.004, 0.03, vert_depth);
+    // Calm, deep, subcritical reaches read as a glassy mirror.
+    let calm_t = select(0.0, (1.0 - smoothstep(0.12, 0.38, sec_froude)) * smoothstep(0.6, 1.4, vert_depth), has_hydro);
+
+    // The vertex flow already carries the lateral profile when the section is
+    // known: keep only a light per-pixel drag at the bank itself.
+    let bank_slow = select(
+        0.28 + 0.72 * smoothstep(0.03, 0.62, vert_depth),
+        0.62 + 0.38 * smoothstep(0.0, 0.7, bank_dist),
+        has_hydro,
+    );
     let flow_eff = stream_flow * bank_slow;
     let flow_eff_speed = length(flow_eff);
 
@@ -636,11 +671,17 @@ fn fragment(
             let cz0 = advected_capillary_height(world.xz - vec2<f32>(0.0, ec), flow_eff, t);
             let cz1 = advected_capillary_height(world.xz + vec2<f32>(0.0, ec), flow_eff, t);
             let cap_grad = vec2<f32>(cx1 - cx0, cz1 - cz0) * (0.5 / ec);
-            let cap_depth_gain = 1.40 * (0.48 + 0.52 * smoothstep(0.02, 0.28, vert_depth)) * (1.0 + 0.14 * wading_t + 0.24 * deep_t);
+            let grazing_damp = 0.35 + 0.65 * smoothstep(0.05, 0.32, abs(to_cam.y));
+            let cap_depth_gain = 1.15 * grazing_damp * (0.48 + 0.52 * smoothstep(0.02, 0.28, vert_depth)) * (1.0 + 0.14 * wading_t + 0.20 * deep_t)
+                * (1.0 - 0.45 * calm_t);
 
             // Shoreline boundary shear eddies (moving flow scraping banks/stones) + calm shore swash.
             var shear_grad = vec2<f32>(0.0);
-            let bank_shear_mask = smoothstep(0.015, 0.08, vert_depth) * (1.0 - smoothstep(0.26, 0.62, vert_depth));
+            let bank_shear_mask = select(
+                smoothstep(0.015, 0.08, vert_depth) * (1.0 - smoothstep(0.26, 0.62, vert_depth)),
+                bank_band,
+                has_hydro,
+            );
             if flow_speed > 0.18 && bank_shear_mask > 0.01 {
                 let f_dir = flow / max(flow_speed, 1e-3);
                 let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
@@ -665,20 +706,21 @@ fn fragment(
                 let v_ripples = sin(wake_phase) * v_band * clamp(obs_graze * 0.24, 0.0, 0.38);
                 obs_eddy_grad = (obs_n * bow_wave + (obs_n * 0.6 + obs_t * 0.45) * v_ripples) * smoothstep(0.01, 0.10, vert_depth);
             }
-            let swash_mask = smoothstep(0.008, 0.05, vert_depth) * (1.0 - smoothstep(0.14, 0.36, vert_depth));
+            let swash_mask = smoothstep(0.006, 0.04, vert_depth) * (1.0 - smoothstep(0.22, 0.60, vert_depth));
             let in_dir = select(
                 normalize(vec2<f32>(0.6, 0.8)),
                 normalize(dom_info.yz),
                 dom_slope > 1e-3,
             );
-            let swash_phase = dot(world.xz, in_dir) * 9.5 + t * 2.2;
-            let swash_grad = in_dir * (cos(swash_phase) * 0.095 * swash_mask * (0.65 + 0.35 * active_amp()));
+            let swash_phase = dot(world.xz, in_dir) * 7.5 + t * 2.4;
+            let swash_grad = in_dir * (cos(swash_phase) * 0.14 * swash_mask * (0.65 + 0.35 * active_amp()));
 
             let rain_grad = rain_ripple_ring_slope(world.xz, t, rain);
             let inter_slope = inter_grad * (1.70 / (1.0 + length(inter_grad) * 0.45));
             let grad = (cap_grad * cap_depth_gain + inter_slope + rain_grad * 1.30 + shear_grad + obs_eddy_grad + swash_grad) * damp * shallow_n;
             let wave_n = normalize(vec3<f32>(-grad.x, 1.0, -grad.y));
-            surf_normal = normalize(mix(geom_n, wave_n, 0.94));
+            // Preserve longitudinal slope of geom_n on tilted mountain streams while layering ripples.
+            surf_normal = normalize(mix(geom_n, normalize(geom_n + (wave_n - vec3<f32>(0.0, 1.0, 0.0))), 0.92));
         }
     }
     pbr_input.N = surf_normal;
@@ -713,8 +755,10 @@ fn fragment(
     let edge_fade = smoothstep(0.0, SHORE_FEATHER_M, min(ray_thickness, max(vert_depth * 2.2, 0.02))) * mask;
     let shallow_bed = smoothstep(0.0, 0.10, vert_depth);
     let shore_feather = select(mask, edge_fade * max(shallow_bed, smoothstep(0.0, 0.16, ray_thickness)), !is_waterfall);
+    // Crisp contact foam mask rises right at the waterline (2.5 cm) so shore foam is never erased.
+    let foam_feather = select(mask, smoothstep(0.0, 0.025, vert_depth) * mask, !is_waterfall);
 
-    let ext = EXTINCTION * (0.40 + 1.08 * murk) * mix(0.76, 1.24, deep_t);
+    let ext = EXTINCTION * (0.36 + 0.82 * murk) * mix(0.74, 1.18, deep_t);
     let beer_t = exp(-ray_thickness * ext);
     let absorb_t = mix(vec3<f32>(1.0), beer_t, shore_feather);
 
@@ -726,26 +770,36 @@ fn fragment(
         let c_r = caustic_sample(refract_uv + vec2<f32>(0.018, 0.0), t);
         let c_g = caustic_sample(refract_uv, t);
         let c_b = caustic_sample(refract_uv - vec2<f32>(0.018, 0.0), t);
-        let c_depth_fade = smoothstep(0.04, 0.26, vert_depth) * exp(-vert_depth * 0.46) * mix(1.16, 0.88, deep_t);
-        let c_gain = select(0.95, water_params.pass_params.y * 0.82, water_params.pass_params.y > 0.01);
+        let c_depth_fade = smoothstep(0.03, 0.24, vert_depth) * exp(-vert_depth * 0.44) * mix(1.18, 0.88, deep_t);
+        let c_gain = select(1.05, water_params.pass_params.y * 0.90, water_params.pass_params.y > 0.01);
         caustic = vec3<f32>(c_r, c_g, c_b) * (sun_lit_vis * c_depth_fade * c_gain * damp) * glint_color;
     }
 
     // Organic multi-scale cellular lace & froth droplets: clear water gaps between crisp foam filaments.
-    let ridge_noise = abs(fbm(world.xz * 3.4 - flow_eff * (t * 0.38), vec2<f32>(t * 0.15, -t * 0.11)));
-    let web_hi = pow(clamp(1.0 - ridge_noise * 2.8, 0.0, 1.0), 1.8);
-    let bubble_coarse = value_noise(world.xz * 6.8 - flow_eff * (t * 0.50) + vec2<f32>(t * 0.19, -t * 0.15));
-    let bubble_fine = value_noise(world.xz * 15.5 - flow_eff * (t * 0.72) + vec2<f32>(-t * 0.27, t * 0.23));
-    let foam_lace = clamp(web_hi * smoothstep(0.32, 0.78, bubble_coarse) + smoothstep(0.68, 0.94, bubble_fine) * 0.55, 0.0, 1.0);
-    let shore_zone = 1.0 - smoothstep(0.08, 0.58, baked_depth);
-    let contact_foam_band = (1.0 - smoothstep(0.008, 0.068, vert_depth)) * smoothstep(0.0, 0.014, vert_depth);
-    let shore_agitation = 0.28 + 0.72 * smoothstep(0.0, 0.08, abs(wave_crest_h) + flow_speed * 0.22);
-    let contact_foam = contact_foam_band * shore_zone * foam_lace * shore_agitation;
-    let bank_shear_foam = smoothstep(0.24, 1.85, flow_speed)
-        * (1.0 - smoothstep(0.03, 0.44, vert_depth))
-        * smoothstep(0.0, 0.015, vert_depth)
-        * (0.45 + 0.55 * clamp(dom_slope * 1.8, 0.0, 1.0))
-        * foam_lace;
+    let ridge_noise = abs(fbm(world.xz * 3.0 - flow_eff * (t * 0.42), vec2<f32>(t * 0.14, -t * 0.10)));
+    let web_hi = pow(clamp(1.0 - ridge_noise * 2.5, 0.0, 1.0), 1.6);
+    let bubble_coarse = value_noise(world.xz * 6.2 - flow_eff * (t * 0.52) + vec2<f32>(t * 0.18, -t * 0.14));
+    let bubble_fine = value_noise(world.xz * 14.5 - flow_eff * (t * 0.75) + vec2<f32>(-t * 0.25, t * 0.21));
+    let foam_lace = clamp(web_hi * smoothstep(0.24, 0.72, bubble_coarse) + smoothstep(0.62, 0.92, bubble_fine) * 0.58, 0.0, 1.0);
+
+    // Living shoreline contact foam: organic noise-modulated froth collar right where
+    // water meets sand, banks, rocks, islands, or bridge piers (uses real DEPTH_PREPASS vert_depth).
+    let shore_break = value_noise(world.xz * 1.15 - flow_eff * (t * 0.16) + vec2<f32>(t * 0.05, -t * 0.04));
+    let shore_band_m = mix(0.14, 0.38, shore_break) * (1.0 + 0.35 * slope_t);
+    let contact_edge = smoothstep(0.004, 0.032, vert_depth) * (1.0 - smoothstep(0.035, shore_band_m, vert_depth));
+    let shore_agitation = 0.55 + 0.45 * smoothstep(0.0, 0.10, abs(wave_crest_h) + flow_speed * 0.22 + active_wind().z * 0.06);
+    let contact_foam = contact_edge * (0.48 + 0.52 * foam_lace) * shore_agitation;
+
+    // Bank-scraping river edge froth along both margins.
+    let bank_shear_foam = smoothstep(0.20, 1.55, flow_speed)
+        * select(
+            smoothstep(0.006, 0.03, vert_depth) * (1.0 - smoothstep(0.16, 0.65, vert_depth)),
+            bank_band * (1.0 - smoothstep(0.6, 1.4, vert_depth) * 0.5),
+            has_hydro,
+        )
+        * (0.50 + 0.50 * clamp(dom_slope * 1.6 + slope_t * 0.8, 0.0, 1.0))
+        * (0.42 + 0.58 * foam_lace);
+
     var obs_collide_foam = 0.0;
     if obs_dist < 1.8 && flow_speed > 0.14 {
         let obs_t = vec2<f32>(-obs_n.y, obs_n.x);
@@ -758,42 +812,86 @@ fn fragment(
         let obs_wet = smoothstep(0.0, 0.025, vert_depth);
         obs_collide_foam = (bow_froth + peel_froth) * obs_wet;
     }
-    let crest_whitecap = smoothstep(0.075, 0.18, wave_crest_h) * smoothstep(0.42, 1.05, vert_depth) * foam_lace * 0.58;
+    let crest_whitecap = smoothstep(0.065, 0.16, wave_crest_h) * smoothstep(0.35, 0.95, vert_depth) * foam_lace * 0.62;
     let splash_mask = smoothstep(0.18, 0.78, inter_foam);
     let splash_bubbles = clamp(foam_lace * 0.95 + smoothstep(0.62, 0.95, inter_foam) * smoothstep(0.66, 0.92, bubble_fine) * 0.35, 0.0, 1.0);
     let splash_foam = splash_mask * splash_bubbles;
-    // Shallow, fast water folds into short standing riffles. The crests stay
-    // over the bed while flecks travel through them in the deflected current.
-    let detail_vis = (1.0 - smoothstep(28.0, 76.0, cam_dist)) * select(0.0, 1.0, is_front && !is_waterfall);
-    let froude = flow_eff_speed * inverseSqrt(9.81 * max(baked_depth, 0.08));
-    let riffle_zone = detail_vis * smoothstep(0.25, 0.78, froude) * smoothstep(0.12, 0.38, baked_depth);
+
+    // Shallow, fast water folds into short standing riffles over the stream bed.
+    let detail_vis = (1.0 - smoothstep(32.0, 96.0, cam_dist)) * select(0.0, 1.0, is_front && !is_waterfall);
+    let froude = flow_eff_speed * inverseSqrt(9.81 * max(vert_depth, 0.08));
+    let riffle_zone = detail_vis * smoothstep(0.24, 0.76, froude) * smoothstep(0.08, 0.36, vert_depth);
     var riffle = 0.0;
     if riffle_zone > 0.001 {
         let dir = flow_eff / max(flow_eff_speed, 0.001);
         let phase = dot(world.xz, dir) * 4.2 + 4.8 * value_noise(world.xz * 0.68);
-        let crest = smoothstep(0.58, 0.96, cos(phase + 0.35 * sin(t * 1.6)));
-        riffle = riffle_zone * crest * (0.18 + 0.68 * foam_lace);
+        let crest = smoothstep(0.54, 0.94, cos(phase + 0.35 * sin(t * 1.6)));
+        riffle = riffle_zone * crest * (0.24 + 0.72 * foam_lace);
     }
-    // Wind laps against calm banks in broken arcs that climb the depth
-    // contours. Use bed depth so a wader cannot generate a false shoreline.
-    let bank_zone = detail_vis * shore_zone * (1.0 - smoothstep(0.12, 0.65, flow_speed));
+
+    // Animated shore swash / lapping foam arcs climbing and receding along shallow banks.
+    let bank_zone = detail_vis * (1.0 - smoothstep(0.35, 1.65, flow_speed)) * (1.0 - smoothstep(0.35, 0.85, vert_depth));
     var lap = 0.0;
     if bank_zone > 0.001 {
-        let bank_noise = value_noise(world.xz * 0.48);
-        let beat = baked_depth * 19.0 + t * 2.1 + 2.8 * bank_noise;
-        lap = bank_zone * smoothstep(0.04, 0.15, baked_depth) * smoothstep(0.70, 0.98, cos(beat))
-            * smoothstep(0.24, 0.74, bank_noise) * (0.16 + 0.42 * foam_lace);
+        let bank_noise = value_noise(world.xz * 0.55);
+        let swash_d = min(vert_depth, baked_depth + 0.15);
+        let beat_a = swash_d * 13.5 - t * 2.25 + 3.6 * bank_noise;
+        let beat_b = swash_d * 23.0 - t * 3.05 + 5.1 * shore_break;
+        let arc_a = smoothstep(0.56, 0.96, sin(beat_a)) * smoothstep(0.02, 0.14, swash_d) * (1.0 - smoothstep(0.26, 0.76, swash_d));
+        let arc_b = smoothstep(0.64, 0.98, sin(beat_b)) * smoothstep(0.01, 0.08, swash_d) * (1.0 - smoothstep(0.14, 0.40, swash_d)) * 0.65;
+        lap = bank_zone * (arc_a + arc_b) * smoothstep(0.18, 0.70, bank_noise) * (0.34 + 0.66 * foam_lace);
     }
-    let rapid_t = smoothstep(2.0, 3.6, flow_eff_speed) * foam_lace;
-    let fall_streaks = select(0.0, 0.48 + 0.44 * fbm(vec2<f32>(world.x * 2.2 + world.z * 2.2, world.y * 0.9 + t * 5.2), vec2<f32>(0.0, t * 2.0)), is_waterfall);
-    let foam = clamp((contact_foam * 0.65 + bank_shear_foam * 0.58 + obs_collide_foam * 0.65 + crest_whitecap + splash_foam * 0.82 + rapid_t * 0.65 + fall_streaks + riffle + lap) * mask, 0.0, 0.84);
+
+    // Whitewater streaks on fast streams & steep mountain cascades (slope-hugging reaches).
+    var rapid_foam = 0.0;
+    // Supercritical sections (Froude ≳ 1) break into whitewater even on gentle slopes.
+    let rapid_drive = clamp(
+        smoothstep(1.35, 3.2, flow_eff_speed) * 0.65 + slope_t * 0.95
+            + select(0.0, smoothstep(0.75, 1.5, sec_froude) * 0.55, has_hydro),
+        0.0,
+        1.0,
+    );
+    if rapid_drive > 0.01 && !is_waterfall {
+        let f_dir = select(vec2<f32>(1.0, 0.0), flow_eff / max(flow_eff_speed, 1e-3), flow_eff_speed > 0.05);
+        let f_perp = vec2<f32>(-f_dir.y, f_dir.x);
+        let along = dot(world.xz, f_dir);
+        let across = dot(world.xz, f_perp);
+        let streak_a = fbm(vec2<f32>(across * 2.4, along * 0.55 - t * (1.8 + flow_eff_speed * 0.95)), vec2<f32>(0.0, -t * 0.45));
+        let streak_b = value_noise(vec2<f32>(across * 5.2, along * 1.2 - t * (2.6 + flow_eff_speed * 1.2)));
+        let whitewater = clamp(smoothstep(-0.12, 0.32, streak_a) * 0.72 + smoothstep(0.52, 0.90, streak_b) * 0.45, 0.0, 1.0);
+        rapid_foam = rapid_drive * whitewater * (0.48 + 0.52 * foam_lace);
+    }
+
+    // Backwater eddies: foam drifts in slow swirling lines along the bank
+    // downstream of a sudden widening (the flow there turns back upstream).
+    var eddy_foam = 0.0;
+    if eddy_k > 0.01 && !is_waterfall {
+        let swirl = vec2<f32>(
+            sin(dot(world.xz, vec2<f32>(0.9, 0.4)) + t * 0.55),
+            cos(dot(world.xz, vec2<f32>(-0.3, 1.1)) - t * 0.47),
+        );
+        let drift = world.xz * 1.6 + swirl * (0.9 * eddy_k) - flow_eff * (t * 0.35);
+        let lines = smoothstep(0.56, 0.86, value_noise(drift)) * smoothstep(0.35, 0.75, value_noise(drift * 0.45 + vec2<f32>(t * 0.03)));
+        eddy_foam = eddy_k * lines * (0.40 + 0.60 * foam_lace) * smoothstep(0.02, 0.10, vert_depth);
+    }
+
+    let fall_streaks = select(0.0, 0.52 + 0.44 * fbm(vec2<f32>(world.x * 2.2 + world.z * 2.2, world.y * 0.9 + t * 5.2), vec2<f32>(0.0, t * 2.0)), is_waterfall);
+    let foam = clamp(
+        (contact_foam * 0.88 + lap * 0.72 + bank_shear_foam * 0.72 + obs_collide_foam * 0.75 + crest_whitecap + splash_foam * 0.85 + rapid_foam * 0.86 + fall_streaks + riffle + eddy_foam * 0.70) * mask,
+        0.0,
+        0.92,
+    );
 
     // Pass 1 transmission multiplier (`AlphaMode::Multiply`, pass_mode < 0.5).
-    let pass1_mul = clamp(
-        mix(vec3<f32>(1.0), absorb_t * (vec3<f32>(1.0) + caustic) * (1.0 - fres * 0.75) * (1.0 - foam * 0.76), shore_feather),
+    // Transmits sunlit refracted bed in the shallows, absorbs toward deep water,
+    // and clears the bed behind dense foam so Pass 2 PBR foam reads bright and crisp.
+    let transmission = clamp(
+        mix(vec3<f32>(1.0), absorb_t * (vec3<f32>(1.0) + caustic * 1.15) * (1.0 - fres * 0.52), shore_feather)
+            * (1.0 - foam * 0.86 * foam_feather),
         vec3<f32>(0.0),
         vec3<f32>(1.45),
     );
+    let pass1_mul = transmission;
 
     if water_params.pass_params.x < 0.5 {
         var out: FragmentOutput;
@@ -801,61 +899,79 @@ fn fragment(
         return out;
     }
 
-    // Pass 2 (`AlphaMode::Add`): volumetric scatter + backlit wave SSS + foam + PBR/sky reflections.
-    // Liquid water has zero diffuse albedo: only foam reflects diffuse PBR light, preventing opaque milky haze over submerged beds/limbs.
-    let vol_depth_alpha = 1.0 - exp(-ray_thickness * (0.42 + 0.55 * murk));
-    let base_body = max(body, vec3<f32>(0.018, 0.068, 0.11));
-    let shallow_tint = clamp(base_body * 0.96, vec3<f32>(0.0), vec3<f32>(1.0));
-    let wading_tint = clamp(base_body * 0.82 + vec3<f32>(0.008, 0.044, 0.042), vec3<f32>(0.0), vec3<f32>(1.0));
-    let deep_tint = clamp(base_body * 0.48 + vec3<f32>(0.002, 0.020, 0.058), vec3<f32>(0.0), vec3<f32>(1.0));
-    let depth_t = clamp(1.0 - dot(absorb_t, vec3<f32>(1.0 / 3.0)), 0.0, 1.0);
-    let mid_scatter = mix(shallow_tint, wading_tint, clamp(wading_t + deep_t, 0.0, 1.0));
-    let scatter_albedo = mix(mid_scatter, deep_tint, clamp(deep_t * 0.85 + depth_t * 0.35, 0.0, 1.0))
-        * vol_depth_alpha
-        * (1.0 + 0.12 * clamp(wave_crest_h * 4.5, -1.0, 1.0));
+    // Pass 2 (`AlphaMode::Add`): volumetric PBR in-scattering + PBR foam + physical
+    // Fresnel/IBL sky & sun reflections + exposure-safe wave SSS and sun glints.
+    //
+    // IMPORTANT (EV100 / physical exposure):
+    // In Bevy PBR (`pbr_functions.wgsl`), `material.emissive.rgb` is multiplied by
+    // `mix(1.0, view.exposure, emissive.a)`. Under physical sky exposure (EV100 ~ 13.3,
+    // `view.exposure ~ 8e-5`), putting volumetric scatter or sky bounce in `emissive`
+    // with `emissive.a = 1.0` crushed them to black (~0.00001). Putting depth-weighted
+    // volumetric in-scattering and foam into `pbr_input.material.base_color` lets Bevy's
+    // real PBR sun, sky IBL, shadows, clouds, and torches light the water accurately at
+    // EVERY EV100 (day, dusk, night, indoors), while shallow water stays crystal clear.
+    let body_lin = pow(clamp(body, vec3<f32>(0.02), vec3<f32>(1.0)), vec3<f32>(2.0));
+    let base_body = max(body_lin, vec3<f32>(0.015, 0.075, 0.115));
+    let shallow_tint = clamp(base_body * 1.38 + vec3<f32>(0.010, 0.055, 0.055), vec3<f32>(0.0), vec3<f32>(1.0));
+    let wading_tint = clamp(base_body * 1.05 + vec3<f32>(0.008, 0.042, 0.058), vec3<f32>(0.0), vec3<f32>(1.0));
+    let deep_tint = clamp(base_body * 0.72 + vec3<f32>(0.006, 0.030, 0.056), vec3<f32>(0.0), vec3<f32>(1.0));
+    let absorb_loss = clamp(1.0 - dot(absorb_t, vec3<f32>(1.0 / 3.0)), 0.0, 1.0);
+    let mid_scatter = mix(shallow_tint, wading_tint, clamp(wading_t + absorb_loss * 0.6, 0.0, 1.0));
+    let s_gain = select(1.0, water_params.pass_params.z, water_params.pass_params.z > 0.01);
+    let vol_scatter_weight = clamp(
+        absorb_loss * smoothstep(0.08, 0.58, vert_depth) * (0.68 + 0.32 * murk),
+        0.0,
+        0.92,
+    );
+    let scatter_rgb = mix(mid_scatter, deep_tint, smoothstep(0.35, 1.80, vert_depth))
+        * (vol_scatter_weight * s_gain * shore_feather * (1.0 - foam * 0.85))
+        * (1.0 + 0.10 * clamp(wave_crest_h * 4.5, -1.0, 1.0));
 
-    // Backlit subsurface scattering through raised Gerstner & impact wave crests.
-    let sss_dir = normalize(glint_dir - surf_normal * 0.42);
-    let backlit = pow(clamp(dot(pbr_input.V, -sss_dir), 0.0, 1.0), 3.0);
-    let crest_thin = smoothstep(0.01, 0.14, wave_crest_h + 0.03);
-    let sss_depth_gain = mix(0.45, 1.15, smoothstep(0.22, 1.05, vert_depth));
-    let sss = vec3<f32>(0.06, 0.46, 0.40) * glint_color * (backlit * crest_thin * day_factor * (1.0 - foam) * 0.65 * sss_depth_gain);
+    // Crisp sunlit white-cream foam (lit by real PBR sun/shadows/IBL).
+    let foam_albedo = vec3<f32>(0.78, 0.84, 0.88);
+    let foam_rgb = foam_albedo * (foam * foam_feather);
 
-    let foam_albedo = vec3<f32>(0.30, 0.34, 0.38);
-    let surface_rgb = foam_albedo * (foam * shore_feather);
-
-    pbr_input.material.base_color = vec4<f32>(surface_rgb, 1.0);
-    // Keep Bevy GGX F0 tight so sunlit directional GGX tails don't wash out submerged shadows; crisp sun glints come via sparkle_lobe below.
-    pbr_input.material.reflectance = vec3<f32>(mix(0.10, 0.06, foam) * shore_feather);
+    pbr_input.material.base_color = vec4<f32>(scatter_rgb + foam_rgb, 1.0);
+    // Physical water IOR 1.333 => F0 = 0.02 => Bevy reflectance = sqrt(0.02 / 0.16) ~ 0.354.
+    // Gives true PBR sky-IBL Fresnel reflections and crisp directional sun highlights.
+    pbr_input.material.reflectance = vec3<f32>(mix(0.36, 0.14, foam) * shore_feather);
     let wind_rough = clamp(active_wind().z, 0.0, 3.0) * 0.016
-        + rain * 0.04
-        + bank_shear_foam * 0.18
-        + obs_collide_foam * 0.22;
+        + rain * 0.045
+        + slope_t * 0.14
+        + bank_shear_foam * 0.16
+        + obs_collide_foam * 0.20;
     pbr_input.material.perceptual_roughness = clamp(
-        mix(0.022 + wind_rough * 0.35, 0.72, foam),
-        0.020,
+        mix(0.038 + wind_rough * 0.40, 0.78, foam),
+        0.028,
         0.95,
     );
 
-    // Sun/moon glints + physical Fresnel sky-dome gradient reflections + volumetric in-scattering.
+    // Subtle exposure-safe (display-referred, emissive.a = 0.0) backlit wave SSS,
+    // sun micro-sparkles, and gentle grazing sky rim fallback. Scaled by day/sun so
+    // it never glows in darkness or caves.
+    let sss_dir = normalize(glint_dir - surf_normal * 0.42);
+    let backlit = pow(clamp(dot(pbr_input.V, -sss_dir), 0.0, 1.0), 3.0);
+    let crest_thin = smoothstep(0.01, 0.14, wave_crest_h + 0.03);
+    let sss_depth_gain = mix(0.40, 1.0, smoothstep(0.22, 1.05, vert_depth));
+    let sun_above = clamp(glint_dir.y * 2.2, 0.0, 1.0);
+    let sss = vec3<f32>(0.05, 0.32, 0.28) * glint_color * (backlit * crest_thin * day_factor * sun_above * (1.0 - foam) * 0.45 * sss_depth_gain);
+
     let refl = reflect(-glint_dir, surf_normal);
     let sparkle_lobe = pow(max(dot(refl, pbr_input.V), 0.0), 220.0);
     let wdir = normalize(active_wind().xy + vec2<f32>(1e-4, 0.0));
     let sparkle = pow(value_noise(world.xz * 8.5 + wdir * (t * 1.9)), 3.0);
     let view_refl = reflect(-pbr_input.V, normalize(mix(n_fres, surf_normal, 0.72)));
-    let env_zenith = max(water_params.sky_zenith_rain.rgb, vec3<f32>(0.03, 0.08, 0.18));
-    let env_horizon = max(water_params.sky_horizon_time.rgb, vec3<f32>(0.10, 0.16, 0.24));
+    let env_zenith = max(water_params.sky_zenith_rain.rgb, vec3<f32>(0.04, 0.10, 0.22));
+    let env_horizon = max(water_params.sky_horizon_time.rgb, vec3<f32>(0.12, 0.20, 0.30));
     let sky_refl = mix(env_horizon, env_zenith, pow(clamp(view_refl.y, 0.0, 1.0), 0.42));
-    let grazing_fres = pow(clamp(1.0 - nv, 0.0, 1.0), 4.5);
-    let sky_bounce = (sky_refl * grazing_fres * (0.28 + 0.50 * day_factor) + env_zenith * (0.004 + 0.008 * day_factor)) * (1.0 - 0.55 * rain) * (1.0 - foam);
-    let deep_scatter_mask = smoothstep(0.18, 0.65, ray_thickness) * smoothstep(0.12, 0.55, vert_depth);
-    let sun_above = 0.40 + 0.60 * clamp(glint_dir.y * 1.8, 0.0, 1.0);
-    let water_inscatter = scatter_albedo * (deep_scatter_mask * (0.08 + 0.18 * day_factor * sun_above) * (1.0 - 0.45 * rain) * (1.0 - foam));
-    let s_gain = select(1.0, water_params.pass_params.z, water_params.pass_params.z > 0.01);
+    let grazing_fres = pow(clamp(1.0 - nv, 0.0, 1.0), 3.8);
+    let sky_bounce = sky_refl * (grazing_fres * (0.04 + 0.16 * day_factor * (0.35 + 0.65 * sun_above)) * (1.0 - 0.50 * rain) * (1.0 - foam));
+
+    // emissive.a = 0.0 => display-referred (not crushed by EV100 physical exposure).
     pbr_input.material.emissive = vec4<f32>(
-        (sss + water_inscatter * s_gain + sky_bounce) * shore_feather
-        + glint_color * (sparkle_lobe * sparkle * 0.72 * glint_strength * damp * (1.0 - foam) * shore_feather),
-        1.0,
+        (sss + sky_bounce) * shore_feather
+        + glint_color * (sparkle_lobe * sparkle * 0.42 * glint_strength * sun_above * damp * (1.0 - foam) * shore_feather),
+        0.0,
     );
 
     let lit = vec4<f32>(apply_pbr_lighting(pbr_input).rgb, 1.0);
@@ -874,6 +990,11 @@ fn fragment(
 
     var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr_input, lit);
+    if water_params.pass_params.w > 0.5 {
+        let shallow_alpha = clamp(1.0 - dot(transmission, vec3<f32>(1.0 / 3.0)), 0.0, 1.0);
+        out.color.a = mix(shallow_alpha, 1.0, sea_opaque);
+        return out;
+    }
     out.color = vec4<f32>(max(out.color.rgb - fog_zero * pass1_mul, vec3<f32>(0.0)), out.color.a);
     return out;
 }

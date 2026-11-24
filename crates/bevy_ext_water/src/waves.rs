@@ -421,7 +421,9 @@ fn rasterize_domain_with_cache<S: WaterSource>(
                     continue;
                 }
                 match bodies[bi].kind {
-                    crate::body::WaterKind::Lake => cell_lakes.push(bi),
+                    crate::body::WaterKind::Lake | crate::body::WaterKind::Ocean { .. } => {
+                        cell_lakes.push(bi);
+                    }
                     crate::body::WaterKind::River => {
                         let s0 = cell_segs.len();
                         body_indices[bi].collect_river_segments_in_rect(
@@ -1273,6 +1275,7 @@ mod tests {
             half_width,
             depths: Vec::new(),
             cascades: Vec::new(),
+            section: Default::default(),
         };
         let src = MockSource { bodies: vec![river] };
         let obs = vec![

@@ -14,7 +14,7 @@
 
 use bevy::math::Vec2;
 
-use super::water::{LakeShape, LakeSpec, waterline_reach};
+use super::water::{LakeShape, LakeSpec};
 
 /// GLBs de pedra do pool, em ordem de "pretensão" (boulder > musgo > seixo).
 /// Um é escolhido por instância pelo RNG do grupo de spawner.
@@ -204,8 +204,9 @@ pub fn river_rock_clusters(
     if stations.len() < 2 || width <= 0.0 {
         return Vec::new();
     }
-    let t_wl = waterline_reach(depth, water_offset).clamp(0.4, 1.0);
-    let waterline = width * 0.5 * t_wl;
+    let _ = (depth, water_offset);
+    // River channel profile reaches `surf` at `d = width * 0.5` (`t = 1.0`).
+    let waterline = width * 0.5;
     let outer_edge = width * 0.5 + bank_width.max(0.0) + 2.0;
     let lat_min = (waterline * 0.85 - WET_DEPTH * 0.88).max(waterline * 0.65);
     let lat_max = outer_edge.max(lat_min + 1.0);
@@ -394,7 +395,7 @@ mod tests {
         let cands = river_candidates(&stations, 6.0, 2.0, 0.4, 2.0, &rocks, 0);
         assert!(!cands.is_empty());
         // Nenhum candidato no centro do canal: |x| > waterline·0.85 − WET.
-        let waterline = 3.0 * waterline_reach(2.0, 0.4).clamp(0.4, 1.0);
+        let waterline = 3.0;
         for p in &cands {
             assert!(
                 p.x.abs() > (waterline * 0.85 - WET_DEPTH - 0.5).max(0.0),

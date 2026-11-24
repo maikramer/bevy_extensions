@@ -949,6 +949,7 @@ fn build_tile(
             .max(w.radius * w.mirror_reach * CONTOUR_PEAK)
             .max(w.water_width);
         match w.kind {
+            WaterKind::Ocean { min, max } => max.cmpge(origin).all() && min.cmple(tile_max).all(),
             WaterKind::Lake => {
                 w.at.x + r >= origin.x
                     && w.at.x - r <= tile_max.x

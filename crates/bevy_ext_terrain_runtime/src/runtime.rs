@@ -40,7 +40,9 @@ use super::splat::{
     flat_height_image, flat_normal_image, flat_rough_image, solid_white_image,
 };
 use super::voxel::{Span, VoxelField};
-use super::water::{WaterBody, WaterMeshData, lake_water_mesh_dense, river_water_mesh_dense};
+use super::water::{
+    WaterBody, WaterMeshData, lake_water_mesh_dense, river_water_mesh_dense_on_grid,
+};
 use super::water_material::{WaterExtension, WaterMaterial, WaterUniforms};
 use crate::profiling::{Group, timed};
 use bevy_ext_gltf::textures::WorldTiledTextures;
@@ -742,7 +744,10 @@ impl TerrainRuntime {
 
     /// Point is inside a water carve zone (`avoid-water`).
     pub fn in_water(&self, x: f32, z: f32) -> bool {
-        self.water.iter().any(|w| w.contains(Vec2::new(x, z)))
+        self.water.iter().any(|body| {
+            let point = Vec2::new(x, z);
+            body.contains(point) && self.wet_ocean_bed(body, point)
+        })
     }
 
     /// Water surface Y at a world XZ position when the point sits over a
@@ -754,9 +759,15 @@ impl TerrainRuntime {
         let p = Vec2::new(x, z);
         self.water
             .iter()
-            .filter(|w| w.contains(p))
+            .filter(|body| body.contains(p) && self.wet_ocean_bed(body, p))
             .filter_map(|w| w.surface_y_at(p))
             .fold(None::<f32>, |acc, y| Some(acc.map_or(y, |max| max.max(y))))
+    }
+
+    fn wet_ocean_bed(&self, body: &WaterBody, point: Vec2) -> bool {
+        !matches!(body.kind, super::water::WaterKind::Ocean { .. })
+            || !self.in_field(point.x, point.y)
+            || self.sample(point.x, point.y) < body.water_y - 0.01
     }
 
     /// Hydrodynamic domain sample `(surface_y, depth, flow, plunge)` at `(x, z)`.
@@ -1577,6 +1588,7 @@ pub fn bootstrap(world: &mut World) {
     spawn_water(
         world,
         &mut meshes,
+        &mut materials,
         &mut water_materials,
         &mut images,
         &grid,
@@ -2287,10 +2299,42 @@ pub fn repaint_chunks(world: &mut World, min: Vec2, max: Vec2) -> usize {
     texels
 }
 
+fn spawn_water_surface(
+    world: &mut World,
+    meshes: &mut Assets<Mesh>,
+    parent: Entity,
+    name: &str,
+    data: &WaterMeshData,
+    absorb: Option<&Handle<WaterMaterial>>,
+    surface: &Handle<WaterMaterial>,
+) {
+    let aabb = padded_water_aabb(&data.mesh.positions);
+    let handle = meshes.add(to_water_bevy_mesh(data));
+    let layers = absorb
+        .map(|material| (format!("{name} absorb"), material))
+        .into_iter()
+        .chain(std::iter::once((name.to_owned(), surface)));
+    for (name, material) in layers {
+        let mut entity = world.spawn((
+            Name::new(name),
+            Transform::default(),
+            Visibility::Inherited,
+            NotShadowCaster,
+            ChildOf(parent),
+            Mesh3d(handle.clone()),
+            MeshMaterial3d(material.clone()),
+        ));
+        if let Some(aabb) = aabb {
+            entity.insert(aabb);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_water(
     world: &mut World,
     meshes: &mut Assets<Mesh>,
+    opaque_materials: &mut Assets<StandardMaterial>,
     materials: &mut Assets<WaterMaterial>,
     images: &mut Assets<Image>,
     grid: &BrushGrid,
@@ -2346,7 +2390,7 @@ fn spawn_water(
             perceptual_roughness: 0.06,
             reflectance: 0.50,
             alpha_mode: bevy::material::AlphaMode::Add,
-            depth_bias: 0.05,
+            depth_bias: 0.002,
             cull_mode: None,
             ..StandardMaterial::default()
         },
@@ -2357,6 +2401,40 @@ fn spawn_water(
             obstacle_tex,
         },
     });
+    if !features.oceans.is_empty() {
+        let mut ocean_material = materials
+            .get(&surface_material)
+            .expect("water material just added")
+            .clone();
+        // Um único blend: no mar aberto a composição não depende de dois
+        // passes transparentes sobre a alternância entre terreno e céu.
+        ocean_material.base.alpha_mode = bevy::material::AlphaMode::Blend;
+        ocean_material.extension.params.pass_params.w = 1.0;
+        let ocean_surface = materials.add(ocean_material);
+        let sea_background = opaque_materials.add(StandardMaterial {
+            base_color: Color::srgb(0.18, 0.32, 0.38),
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        });
+        for ocean in &features.oceans {
+            let data = ocean.mesh(grid);
+            let underlay = super::ocean::deep_water_underlay(&data);
+            if !underlay.indices.is_empty() {
+                world.spawn((
+                    Name::new("ocean depth"),
+                    Mesh3d(meshes.add(to_bevy_mesh_owned(underlay))),
+                    MeshMaterial3d(sea_background.clone()),
+                    NotShadowCaster,
+                    Transform::default(),
+                    ChildOf(parent),
+                ));
+            }
+            spawn_water_surface(
+                world, meshes, parent, "ocean", &data, None, &ocean_surface,
+            );
+        }
+    }
     // Espuma ambiente: emissores ao longo da linha de água (um a cada
     // FOAM_SPACING m, cap por corpo) — a borda deixa de ser uma linha
     // morta entre o splat e a absorção.
@@ -2383,31 +2461,18 @@ fn spawn_water(
             ("lake", lake_water_mesh_dense(lake, body.water_y, grid))
         } else {
             let river = &features.rivers[spec_i];
-            ("river", river_water_mesh_dense(river, body))
+            (
+                "river",
+                river_water_mesh_dense_on_grid(river, body, Some(grid)),
+            )
         };
         if data.mesh.indices.is_empty() || data.mesh.positions.is_empty() {
             continue;
         }
-        let aabb = padded_water_aabb(&data.mesh.positions);
-        let handle = meshes.add(to_water_bevy_mesh(&data));
-        for (entity_name, mat) in [
-            (format!("{name} {spec_i} absorb"), absorb_material.clone()),
-            (format!("{name} {spec_i}"), surface_material.clone()),
-        ] {
-            let mut entity = world.spawn((
-                Name::new(entity_name),
-                Transform::default(),
-                Visibility::Inherited,
-                // Água transparente a projetar sombra pintava um anel escuro
-                // na margem (o "contorno" que a lia como plataforma sólida).
-                NotShadowCaster,
-                ChildOf(parent),
-            ));
-            entity.insert((Mesh3d(handle.clone()), MeshMaterial3d(mat)));
-            if let Some(aabb) = aabb {
-                entity.insert(aabb);
-            }
-        }
+        spawn_water_surface(
+            world, meshes, parent, &format!("{name} {spec_i}"), &data,
+            Some(&absorb_material), &surface_material,
+        );
 
         // ── Espuma da margem ─────────────────────────────────────────
         let foam_positions: Vec<(Vec2, f32)> = if is_lake {
@@ -2947,6 +3012,11 @@ pub(crate) fn to_water_bevy_mesh(data: &WaterMeshData) -> Mesh {
     if !data.uv_b.is_empty() && data.uv_b.len() == data.mesh.positions.len() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, data.uv_b.clone());
     }
+    // Hidráulica do rio `(bank_dist, froude, eddy, open)` no slot da
+    // tangente: o shader da água calcula as suas normais e lê-a crua.
+    if !data.hydro.is_empty() && data.hydro.len() == data.mesh.positions.len() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, data.hydro.clone());
+    }
     mesh
 }
 
@@ -3286,6 +3356,7 @@ mod tests {
                 radius: 10.0,
                 ..crate::LakeSpec::default()
             }],
+            oceans: Vec::new(),
             rivers: vec![crate::RiverSpec {
                 path: vec![Vec2::new(10.0, -40.0), Vec2::new(50.0, -40.0)],
                 ..crate::RiverSpec::default()

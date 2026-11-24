@@ -1363,6 +1363,7 @@ mod tests {
             half_width: Vec::new(),
             depths: Vec::new(),
             cascades: Vec::new(),
+            section: Default::default(),
         }];
         let spec = crate::TerrainSpec {
             sharpen: true,

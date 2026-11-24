@@ -126,6 +126,7 @@ pub fn tag_uses_transform(tag: &str) -> bool {
         "terrain"
             | "terrainpad"
             | "lake"
+            | "ocean"
             | "island"
             | "river"
             | "cut"

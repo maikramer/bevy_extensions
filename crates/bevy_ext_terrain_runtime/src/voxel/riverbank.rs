@@ -63,19 +63,13 @@ pub fn river_banks(
         BankStyle::Overhang => CliffProfile::Overhang,
         _ => CliffProfile::Vertical,
     };
-    // As larguras do registry são EFETIVAS (linha de água — o carve guarda
-    // `half · reach`, ver `WaterBody::half_width`); a parede e a sonda do
-    // topo vivem no espaço de DESIGN (o assento carvado vai até à
-    // meia-largura de design + `bank_width`), pelo que a crista volta à
-    // largura de design — mundos voxel existentes mantêm a parede onde
-    // sempre esteve.
-    let wl_reach =
-        super::super::water::waterline_reach(spec.depth, spec.water_offset).clamp(0.4, 1.0);
+    // As larguras do registry já são a meia-largura real da linha de água
+    // (`half_local` do canal carvado, igual à largura de design).
     let design_half = |i: usize| -> f32 {
         if body.half_width.is_empty() {
             body.water_width * 0.5
         } else {
-            body.half_width_at(i) / wl_reach
+            body.half_width_at(i)
         }
     };
     let mut bands = Vec::with_capacity(2);
@@ -233,14 +227,11 @@ pub fn spring_band(
         return None;
     }
     let perp = Vec2::new(-downstream.y, downstream.x);
-    // Raio em espaço de DESIGN (ver nota em `river_banks` — as larguras do
-    // registry são efetivas, da linha de água).
-    let wl_reach =
-        super::super::water::waterline_reach(spec.depth, spec.water_offset).clamp(0.4, 1.0);
+    // Raio em espaço de DESIGN (as larguras do registry já guardam `half_local`).
     let radius = if body.half_width.is_empty() {
         body.water_width * 0.5
     } else {
-        body.half_width_at(0) / wl_reach
+        body.half_width_at(0)
     } + 1.8;
     // Meia-abertura (rad) voltada a JUSANTE: a rocha cobre o arco de
     // montante; a boca de 90° fica virada para onde o rio corre.

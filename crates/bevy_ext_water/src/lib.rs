@@ -12,6 +12,8 @@
 //!   de 128 m, domínio `(depth, flow, plunge)` e impulsos interactivos;
 //! - [`material`] — material de dois passes (Multiply/Add) e o sync de
 //!   ambiente/clima por uniform;
+//! - [`hydro`] — secção molhada dos rios e a hidráulica dela (Manning,
+//!   continuidade, perfil lateral, remanso), partilhada por malha e domínio;
 //! - [`fx`] — contactos de água (entrada/vadeação/saída), esteira Kelvin e
 //!   anéis de superfície; partículas são eventos para o host;
 //! - [`buoyancy`] — flutuação genérica ([`FloatingBody`](buoyancy::FloatingBody))
@@ -30,6 +32,7 @@ pub mod body;
 pub mod buoyancy;
 pub mod environment;
 pub mod fx;
+pub mod hydro;
 pub mod material;
 pub mod mirror;
 pub mod obstacles;
@@ -43,6 +46,7 @@ use bevy::prelude::*;
 pub use body::{CascadeInfo, LakeAuthoring, LakeShape, WaterBody, WaterDomainSample, WaterKind};
 pub use buoyancy::{FloatSample, FloatState, FloatingBody, WaterBuoyancyPlugin};
 pub use environment::WaterEnvironment;
+pub use hydro::{FlowSample, RiverSection, SectionGeom, StationHydro, section_flow, solve_hydro};
 pub use fx::{
     DEFAULT_SWIMMER_RADIUS, Ripple, RippleAssets, SplashPreset, WaterBodied, WaterContact,
     WaterFxPlugin, WaterSplashEvent, WADE_ENTER_DEPTH, WADE_EXIT_DEPTH,
