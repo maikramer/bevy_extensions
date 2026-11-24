@@ -48,10 +48,15 @@ pub struct NavDirty(pub u64);
 pub struct NavTile {
     /// Centre of the tile currently generated or generating.
     pub center: Option<Vec2>,
-    /// Handle of the navmesh being generated (or the live one).
+    /// Handle of the rerecast mesh being generated. It is the identity the
+    /// generator re-bakes on; the mesh agents walk on is the landmass one the
+    /// island points at (see `lib::publish_tile`).
     pub handle: Option<Handle<bevy_rerecast::Navmesh>>,
     /// A generation is in flight: do not queue another.
     pub generating: bool,
+    /// The in-flight generation is a RETRY: landmass refused the last bake
+    /// (`lib::publish_tile`). The next probe is not rescuing a silent death.
+    pub rejected: bool,
     /// Tiles generated so far — the counter the tests and the profiler read.
     pub generations: u32,
     /// Geração de [`NavDirty`] com que este tile foi assado.
@@ -85,15 +90,22 @@ pub const NAV_FAILURE_PROBE_SECS: f32 = 0.5;
 /// can never bake does not keep a core busy re-baking it.
 pub const NAV_FAILURE_PROBE_MAX_SECS: f32 = 15.0;
 
+/// Consecutive tiles landmass may refuse before a refusal is logged as an
+/// error.
+///
+/// One refusal is handled — the tile is re-baked with the grid nudged and the
+/// island keeps its previous mesh — so it is a warning. A streak of them means
+/// the navmesh has stopped following the hero, and `ERROR` is what lets the
+/// playtest gate on it without pinning the first occurrence.
+pub const NAV_REJECTIONS_BEFORE_ERROR: u32 = 3;
+
 /// Requests a new tile when the player has walked out of the current one's
 /// inner margin (or when there is no tile at all).
 #[allow(clippy::too_many_arguments)]
 pub fn retile_navmesh(
-    mut commands: Commands,
     time: Res<Time>,
     config: Res<crate::NavConfig>,
     ground: Option<Res<crate::NavGroundHandle>>,
-    archipelago: Option<Res<crate::NavArchipelago>>,
     mut tile: ResMut<NavTile>,
     mut generator: NavmeshGenerator,
     players: Query<&GlobalTransform, With<Player>>,
@@ -154,25 +166,14 @@ pub fn retile_navmesh(
     };
 
     let settings = tile_settings_attempt(&config, here, ground.as_deref(), tile.failures);
+    // The same handle across regenerations: it is what the generator re-bakes
+    // and what `publish_tile` recognises as this tile's bake.
     let handle = match tile.handle.clone() {
-        // Same handle across regenerations: the island keeps pointing at it and
-        // the agents never see a frame without a navmesh.
         Some(handle) => {
             generator.regenerate(&handle, settings);
             handle
         }
-        None => {
-            let handle = generator.generate(settings);
-            // First tile: point the island at it. The component is immutable
-            // and its insert hook allocates the landmass side, so this happens
-            // exactly once per run.
-            if let Some(archipelago) = archipelago {
-                commands
-                    .entity(archipelago.island)
-                    .insert(landmass_rerecast::NavMeshHandle3d(handle.clone()));
-            }
-            handle
-        }
+        None => generator.generate(settings),
     };
     tile.handle = Some(handle);
     tile.center = Some(here);
@@ -217,10 +218,15 @@ fn probe_in_flight(
     let settings = tile_settings_attempt(config, center, ground, attempt);
     if generator.regenerate(&handle, settings) {
         tile.failures = attempt;
-        warn!(
-            "nav: tile #{} falhou sem navmesh (tentativa {attempt}) — a repetir com a grelha deslocada",
-            tile.generations
-        );
+        if tile.rejected {
+            // `publish_tile` already said why, with the landmass reason.
+            tile.rejected = false;
+        } else {
+            warn!(
+                "nav: tile #{} falhou sem navmesh (tentativa {attempt}) — a repetir com a grelha deslocada",
+                tile.generations
+            );
+        }
     }
 }
 
@@ -305,11 +311,7 @@ pub fn attempt_offset(config: &crate::NavConfig, attempt: u32) -> Vec2 {
 /// *after* that, on the compact heightfield, which is precisely the hook Recast
 /// provides for this. Each pair of consecutive road stations becomes one quad,
 /// so a curved road is painted as a fan of convex pieces.
-pub fn road_area_volumes(
-    ground: &dyn NavGround,
-    center: Vec2,
-    half: f32,
-) -> Vec<ConvexVolume> {
+pub fn road_area_volumes(ground: &dyn NavGround, center: Vec2, half: f32) -> Vec<ConvexVolume> {
     let min = center - Vec2::splat(half);
     let max = center + Vec2::splat(half);
     let mut volumes = Vec::new();
@@ -342,7 +344,12 @@ pub fn road_area_volumes(
 }
 
 /// One quad per road segment inside the tile.
-fn road_quads(ground: &dyn NavGround, road: &crate::NavRoad, min: Vec2, max: Vec2) -> Vec<ConvexVolume> {
+fn road_quads(
+    ground: &dyn NavGround,
+    road: &crate::NavRoad,
+    min: Vec2,
+    max: Vec2,
+) -> Vec<ConvexVolume> {
     let mut out = Vec::new();
     for window in road.stations.windows(2).enumerate() {
         let (i, pair) = window;

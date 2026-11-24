@@ -13,7 +13,10 @@
 //!   ported to Rust. It asks a *backend* for the world geometry; ours is
 //!   [`backend::nav_backend`], because neither the render meshes nor the
 //!   streamed terrain colliders describe the world completely.
-//! * **`landmass_rerecast`** — the bridge.
+//! * **`landmass_rerecast`** — the conversion from a rerecast mesh to a
+//!   landmass one. The tile is validated here, in [`publish_tile`], before
+//!   landmass sees it: a mesh landmass would refuse is re-baked instead of
+//!   being dropped with an error.
 //! * **`bevy_landmass`** — A* over the navmesh, RVO avoidance between agents,
 //!   and a cost multiplier per polygon type. That last one is the whole of
 //!   "prefer roads": the road polygons are one node type, the ground is
@@ -52,6 +55,9 @@ pub mod tile;
 
 pub use agent::{NavArchipelago, NavProfile};
 pub use tile::{NavDirty, NavTile};
+
+#[cfg(test)]
+mod landmass_conformance;
 
 // ── contratos de terreno (interop com o runtime do mundo) ────────────────
 
@@ -116,6 +122,10 @@ pub trait NavGround: Send + Sync + 'static {
     fn max_height(&self) -> f32;
     /// Água do mundo, para furar o lattice.
     fn water(&self) -> &[NavWater];
+    /// Fundo costeiro abaixo da maré. A praia e as ilhas ficam transitáveis.
+    fn ocean_at(&self, _p: Vec2) -> bool {
+        false
+    }
     /// Estradas do mundo, para pintar [`tile::AREA_ROAD`].
     fn roads(&self) -> &[NavRoad];
     /// Padrões pavimentados (praças), também ao preço de estrada.
@@ -331,8 +341,6 @@ impl Plugin for NavPlugin {
                 // The whole pipeline therefore lives in `PostUpdate`, between
                 // the producers and the single consumer of the ask.
                 Landmass3dPlugin::default().in_schedule(bevy::app::PostUpdate),
-                landmass_rerecast::LandmassRerecastPlugin::default()
-                    .in_schedule(bevy::app::PostUpdate),
             ))
             .set_navmesh_backend(backend::nav_backend)
             // Troca de cena: a cena nova volta a ler a `<NavMesh>` e a criar o arquipélago
@@ -343,11 +351,10 @@ impl Plugin for NavPlugin {
                     .chain()
                     .after(WorldSpawned),
             )
+            // A bake is handed to landmass the moment it lands (`on_navmesh_ready`);
+            // the retile only sees a tile as ready once that accepted it.
             .add_observer(on_navmesh_ready)
-            // Ready BEFORE retile: the retile probe reads "not in flight and
-            // still `generating`" as a failed bake, so success has to have
-            // cleared the flag first.
-            .add_systems(Update, (mark_tile_ready, tile::retile_navmesh).chain())
+            .add_systems(Update, tile::retile_navmesh)
             .add_systems(Update, agent::attach_nav_agents);
 
         // One frame, one pipeline: the producers state an ask in `Update`, the
@@ -418,7 +425,11 @@ pub fn reset_for_scene(world: &mut World) {
 /// runtime do Viber corre o do `bevy_ext_engine`, não o `SceneLoad` do core)
 /// voltar a registar o par tag+arquipélago nesse schedule — o par NÃO é
 /// idempotente, registe-o em UM schedule que corra mesmo.
-pub fn spawn_archipelago(mut commands: Commands, config: Res<NavConfig>) {
+pub fn spawn_archipelago(
+    mut commands: Commands,
+    config: Res<NavConfig>,
+    landmass_meshes: ResMut<Assets<NavMesh3d>>,
+) {
     let mut options = ArchipelagoOptions::from_agent_radius(config.agent_radius);
     // The default sampling window is sized for a navmesh authored around the
     // agent (10 cm horizontally, 25 cm above). A character on carved voxel
@@ -437,13 +448,15 @@ pub fn spawn_archipelago(mut commands: Commands, config: Res<NavConfig>) {
     let _ = archipelago.set_type_index_cost(agent::ROAD_TYPE_INDEX, 1.0);
     let _ = archipelago.set_type_index_cost(agent::GROUND_TYPE_INDEX, 1.0);
     let archipelago = commands.spawn(archipelago).id();
-    // The island is born without a navmesh: the handle only exists once the
-    // first tile is requested, and `landmass_rerecast::NavMeshHandle3d` is an
-    // immutable component whose insert hook does the conversion wiring for us.
+    // The island is born holding a handle to a mesh that does not exist yet.
+    // Landmass skips an island whose asset is not loaded, and every tile
+    // `publish_tile` accepts lands on this same handle — so the agents never
+    // see a frame without a navmesh once there is one.
     let island = commands
         .spawn((
             Island,
             ArchipelagoRef3d::new(archipelago),
+            bevy_landmass::NavMeshHandle(landmass_meshes.reserve_handle()),
             Transform::default(),
             GlobalTransform::default(),
         ))
@@ -454,49 +467,99 @@ pub fn spawn_archipelago(mut commands: Commands, config: Res<NavConfig>) {
     });
 }
 
-/// Clears the in-flight flag once the baked tile lands in the asset store.
+/// The mesh landmass paths on, or the reason it refuses the tile.
 ///
-/// The island itself needs no update: the rerecast handle is inserted once (by
-/// [`tile::retile_navmesh`], on the first tile) and `regenerate` reuses it, so
-/// `landmass_rerecast` re-converts in place and the agents never see a frame
-/// without a navmesh.
-fn mark_tile_ready(
-    mut events: MessageReader<AssetEvent<bevy_rerecast::Navmesh>>,
-    mut tile: ResMut<NavTile>,
-) {
-    for event in events.read() {
-        let (AssetEvent::Added { id } | AssetEvent::Modified { id }) = event else {
-            continue;
-        };
-        if tile
-            .handle
-            .as_ref()
-            .is_some_and(|handle| handle.id() == *id)
-            && tile.generating
-        {
+/// This is the gate a bake has to pass before landmass sees it. Landmass
+/// validates the mesh as a whole — convex polygons, every edge shared by at
+/// most two polygons, a consistent height mesh — and a rerecast output now and
+/// then breaks one of those rules. Refusing it here, where the retile can
+/// react, is what keeps one bad rasterisation from costing the tile.
+pub fn landmass_mesh(
+    baked: &bevy_rerecast::Navmesh,
+) -> Result<NavMesh3d, bevy_landmass::ValidationError> {
+    landmass_rerecast::convert_rerecast_navmesh_to_landmass_navmesh(baked)
+        .validate()
+        .map(|nav_mesh| bevy_landmass::NavMesh {
+            nav_mesh: Arc::new(nav_mesh),
+        })
+}
+
+/// Moves a finished bake into the island's landmass mesh, or queues a re-bake.
+///
+/// A tile landmass refuses is handled like a bake that died without a
+/// navmesh: `generating` stays set with a fresh probe cooldown, and
+/// [`tile::retile_navmesh`] retries with the grid nudged — the defect is a
+/// property of one rasterisation, not of the world. Until a tile is accepted
+/// the island keeps the mesh it had, so the agents never fall back to the
+/// beeline over a bake that was merely rejected.
+fn publish_tile(
+    tile: &mut NavTile,
+    baked: Option<bevy_rerecast::Navmesh>,
+    into: Option<&NavMeshHandle3d>,
+    landmass_meshes: &mut Assets<NavMesh3d>,
+) -> bool {
+    let Some(baked) = baked else {
+        return false;
+    };
+    match landmass_mesh(&baked) {
+        Ok(mesh) => {
+            if let Some(id) = into.map(|handle| handle.0.id())
+                && let Err(err) = landmass_meshes.insert(id, mesh)
+            {
+                error!(
+                    "nav: tile #{} passou a validação mas a malha não entrou no landmass: {err}",
+                    tile.generations
+                );
+            }
             tile.generating = false;
             tile.failures = 0;
+            tile.rejected = false;
             info!("nav: tile #{} pronto", tile.generations);
+            true
+        }
+        Err(err) => {
+            let streak = tile.failures + 1;
+            if streak >= tile::NAV_REJECTIONS_BEFORE_ERROR {
+                error!(
+                    "nav: tile #{} recusado pelo landmass pela {streak}.ª vez seguida ({err}) — \
+                     a navegação fica no tile anterior",
+                    tile.generations
+                );
+            } else {
+                warn!(
+                    "nav: tile #{} recusado pelo landmass ({err}) — a repetir com a grelha deslocada",
+                    tile.generations
+                );
+            }
+            tile.rejected = true;
+            tile.probe_cooldown = tile::failure_backoff(tile.failures);
+            false
         }
     }
 }
 
-/// Clears the in-flight flag the moment `bevy_rerecast` reports a baked tile.
+/// Hands a finished bake to landmass the moment `bevy_rerecast` reports it.
 ///
-/// The trigger fires from the `PostUpdate` that polled the finished task, a
-/// frame before the asset event reaches [`mark_tile_ready`] — which is what
-/// lets [`tile::retile_navmesh`] tell a finished bake from a failed one.
-fn on_navmesh_ready(ready: On<bevy_rerecast::prelude::NavmeshReady>, mut tile: ResMut<NavTile>) {
-    if tile
+/// The trigger fires from the `PostUpdate` that polled the finished task. The
+/// bake leaves the rerecast store here: landmass keeps its own copy, and a
+/// rejected one is of use to nobody.
+fn on_navmesh_ready(
+    ready: On<bevy_rerecast::prelude::NavmeshReady>,
+    island: Query<&NavMeshHandle3d, With<Island>>,
+    mut tile: ResMut<NavTile>,
+    mut baked_meshes: ResMut<Assets<bevy_rerecast::Navmesh>>,
+    mut landmass_meshes: ResMut<Assets<NavMesh3d>>,
+) {
+    if !tile
         .handle
         .as_ref()
         .is_some_and(|handle| handle.id() == ready.0)
-        && tile.generating
+        || !tile.generating
     {
-        tile.generating = false;
-        tile.failures = 0;
-        info!("nav: tile #{} pronto", tile.generations);
+        return;
     }
+    let baked = baked_meshes.remove(ready.0);
+    publish_tile(&mut tile, baked, island.iter().next(), &mut landmass_meshes);
 }
 
 /// Lets `<NavMesh …>` in the world XML tune the stack.

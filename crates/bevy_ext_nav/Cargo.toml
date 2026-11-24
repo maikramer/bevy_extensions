@@ -26,8 +26,10 @@ bevy_rerecast = { version = "0.6", default-features = false, features = ["bevy_m
 bevy_landmass = "0.13"
 landmass_rerecast = "0.4"
 # Só os colliders 3D: o backend do navmesh lê os obstáculos estáticos
-# (trimeshes assados e AABBs) e o retile conta-os.
-avian3d = { version = "0.8", default-features = false, features = ["3d"] }
+# (trimeshes assados e AABBs) e o retile conta-os. `parry-f32` é o que expõe o
+# `Collider`: sem ele a crate só compila quando outra do build já liga a
+# feature, e `cargo test -p bevy_ext_nav` sozinho falha.
+avian3d = { version = "0.8", default-features = false, features = ["3d", "parry-f32"] }
 
 # NOTA(viber-exit): a dependência transitória direta do monólito `viber`
 # (`path = "../../../Viber"`) chegou a estar declarada para os tipos de

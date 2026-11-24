@@ -26,12 +26,12 @@
 //! carried by [`NavmeshSettings::area_volumes`] instead (see
 //! [`crate::tile::road_area_volumes`]).
 
-use bevy::prelude::*;
-use bevy_ext_core::{AiLocomotion, Player, RagdollBodyOf, VoxelCollider};
 use avian3d::parry::math::Pose;
 use avian3d::prelude::{Collider, Sensor};
+use bevy::prelude::*;
+use bevy_ext_core::{AiLocomotion, Player, RagdollBodyOf, VoxelCollider};
 use bevy_rerecast::prelude::NavmeshSettings;
-use bevy_rerecast::rerecast::{AreaType, TriMesh};
+use bevy_rerecast::rerecast::{AreaType, BuildContoursFlags, TriMesh};
 
 use crate::NavGround;
 
@@ -91,6 +91,7 @@ pub fn nav_backend(
             taken += 1;
         }
     }
+    dump_input(&settings, &trimesh);
     if config.debug {
         info!(
             "nav: backend — chão {} triângulos, obstáculos {}/{} ({} triângulos)",
@@ -103,18 +104,112 @@ pub fn nav_backend(
     trimesh
 }
 
+/// Writes a bake's whole input to `VAEL_NAV_DUMP=<pasta>` when the variable
+/// is set: the triangle mesh and the settings it is voxelised with.
+///
+/// The navmesh is a function of exactly these two, so one file is the whole
+/// of a bake — re-running it offline (`rerecast` alone, no ECS) is how a tile
+/// that came out wrong gets examined and turned into a test. One file per
+/// bake, in order, named after the tile's corner. Nothing is written without
+/// the variable.
+fn dump_input(settings: &NavmeshSettings, trimesh: &TriMesh) {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let Some(dir) = std::env::var_os("VAEL_NAV_DUMP") else {
+        return;
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"VAELNAV1");
+    let floats = [
+        settings.agent_height,
+        settings.agent_radius,
+        settings.walkable_climb,
+        settings.walkable_slope_angle,
+        settings.cell_size_fraction,
+        settings.cell_height_fraction,
+        settings.max_simplification_error,
+        settings.detail_sample_dist,
+        settings.detail_sample_max_error,
+    ];
+    let shorts = [
+        settings.min_region_size,
+        settings.merge_region_size,
+        settings.edge_max_len_factor,
+        settings.max_vertices_per_polygon,
+        settings.tile_size,
+    ];
+    out.extend(floats.iter().flat_map(|v| v.to_le_bytes()));
+    out.extend(shorts.iter().flat_map(|v| v.to_le_bytes()));
+    let flags = settings.contour_flags;
+    let tessellate = |flag| u8::from(flags.intersects(flag));
+    out.push(tessellate(BuildContoursFlags::TESSELLATE_SOLID_WALL_EDGES));
+    out.push(tessellate(BuildContoursFlags::TESSELLATE_AREA_EDGES));
+    out.push(u8::from(settings.tiling));
+    out.push(u8::from(settings.aabb.is_some()));
+    if let Some(aabb) = settings.aabb {
+        out.extend(
+            [
+                aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z,
+            ]
+            .iter()
+            .flat_map(|v| v.to_le_bytes()),
+        );
+    }
+    out.extend_from_slice(&(settings.area_volumes.len() as u32).to_le_bytes());
+    for volume in &settings.area_volumes {
+        out.extend_from_slice(&(volume.vertices.len() as u32).to_le_bytes());
+        out.extend(
+            volume
+                .vertices
+                .iter()
+                .flat_map(|v| [v.x, v.y])
+                .flat_map(|f| f.to_le_bytes()),
+        );
+        out.extend_from_slice(&volume.min_y.to_le_bytes());
+        out.extend_from_slice(&volume.max_y.to_le_bytes());
+        out.push(volume.area.0);
+    }
+    out.extend_from_slice(&(trimesh.vertices.len() as u32).to_le_bytes());
+    out.extend(
+        trimesh
+            .vertices
+            .iter()
+            .flat_map(|v| [v.x, v.y, v.z])
+            .flat_map(|f| f.to_le_bytes()),
+    );
+    out.extend_from_slice(&(trimesh.indices.len() as u32).to_le_bytes());
+    out.extend(
+        trimesh
+            .indices
+            .iter()
+            .flat_map(|i| [i.x, i.y, i.z])
+            .flat_map(|k| k.to_le_bytes()),
+    );
+    out.extend_from_slice(&(trimesh.area_types.len() as u32).to_le_bytes());
+    out.extend(trimesh.area_types.iter().map(|area| area.0));
+
+    let corner = settings.aabb.map_or(Vec3A::ZERO, |aabb| aabb.min);
+    let path = Path::new(&dir).join(format!(
+        "nav-{:05}-{:.1}_{:.1}.vnav",
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        corner.x,
+        corner.z
+    ));
+    let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, out));
+    if let Err(err) = written {
+        warn!("nav: VAEL_NAV_DUMP não gravou {}: {err}", path.display());
+    }
+}
+
 /// The walkable ground of the tile as a regular lattice of quads.
 ///
 /// Holes (water, cliff faces, outside the heightfield) are simply not emitted.
 /// A quad is only emitted when all four of its corners are walkable, so the
 /// navmesh edge lands on the last fully solid cell rather than halfway into the
 /// lake.
-pub fn ground_lattice(
-    ground: &dyn NavGround,
-    min: Vec2,
-    max: Vec2,
-    cell: f32,
-) -> TriMesh {
+pub fn ground_lattice(ground: &dyn NavGround, min: Vec2, max: Vec2, cell: f32) -> TriMesh {
     let cell = cell.max(0.1);
     let cols = (((max.x - min.x) / cell).ceil() as usize).max(1) + 1;
     let rows = (((max.y - min.y) / cell).ceil() as usize).max(1) + 1;
@@ -221,7 +316,7 @@ pub fn ground_lattice(
             let x = min.x + col as f32 * cell;
             let z = min.y + row as f32 * cell;
             let p = Vec2::new(x, z);
-            if !ground.in_field(x, z) || in_tile_water(p) {
+            if !ground.in_field(x, z) || in_tile_water(p) || ground.ocean_at(p) {
                 continue;
             }
             if ground.is_cliff(p) {
