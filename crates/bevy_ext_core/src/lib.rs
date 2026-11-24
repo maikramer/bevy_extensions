@@ -1169,6 +1169,14 @@ pub struct VoxelCollider;
 #[type_path = "viber::ragdoll"]
 pub struct RagdollBodyOf(pub Entity);
 
+/// Colisor estático auxiliar de corpo de personagem (ex.: `#NpcBody` para
+/// raycasts/projéteis). Não é um obstáculo de mapa para `apply_ai_locomotion`:
+/// o contacto entre personagens é resolvido separadamente (crowd/actor contact),
+/// e sem esta marca um NPC empurrava-se para fora da própria cápsula a cada frame.
+#[derive(Debug, Default, Component, Reflect)]
+#[reflect(Component)]
+pub struct CharacterBodyCollider;
+
 #[cfg(test)]
 mod teleport_settle_tests {
     use super::TeleportSettle;

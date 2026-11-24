@@ -139,6 +139,28 @@ impl AiMode {
     }
 }
 
+fn is_character_descendant(
+    mut entity: Entity,
+    mover: Entity,
+    parents: &Query<&ChildOf>,
+    character_roots: &Query<(), Or<(With<AiLocomotion>, With<Player>, With<Corpse>)>>,
+) -> bool {
+    for _ in 0..8 {
+        if entity == mover {
+            return true;
+        }
+        let Ok(parent) = parents.get(entity) else {
+            return false;
+        };
+        let p = parent.parent();
+        if p == mover || character_roots.contains(p) {
+            return true;
+        }
+        entity = p;
+    }
+    false
+}
+
 /// The single consumer of [`AiLocomotion`]: ramps velocity, steps the
 /// transform, snaps Y to the carved surface and turns the yaw.
 ///
@@ -164,17 +186,26 @@ pub fn apply_ai_locomotion(
     ground: Option<Res<Ground>>,
     interior: Option<Res<InteriorSceneConfig>>,
     obstacles: Query<
-        (&GlobalTransform, &avian3d::prelude::Collider),
+        (
+            Entity,
+            &GlobalTransform,
+            &avian3d::prelude::Collider,
+            Option<&avian3d::prelude::RigidBody>,
+        ),
         (
             Without<bevy_ext_core::VoxelCollider>,
             Without<AiLocomotion>,
             Without<Player>,
             Without<avian3d::prelude::Sensor>,
             Without<bevy_ext_core::RagdollBodyOf>,
+            Without<bevy_ext_core::CharacterBodyCollider>,
         ),
     >,
+    parents: Query<&ChildOf>,
+    character_roots: Query<(), Or<(With<AiLocomotion>, With<Player>, With<Corpse>)>>,
     mut movers: Query<
         (
+            Entity,
             &mut Transform,
             &GlobalTransform,
             &mut AiLocomotion,
@@ -191,7 +222,7 @@ pub fn apply_ai_locomotion(
     }
     let source = ground.as_deref().and_then(Ground::get);
     let world_limit = source.and_then(|source| source.world_radius());
-    for (mut transform, global, mut loco, profile) in &mut movers {
+    for (mover_entity, mut transform, global, mut loco, profile) in &mut movers {
         let profile = profile.copied().unwrap_or_default();
         // O passo e o terreno são MUNDO; o `Transform` é LOCAL. `offset` é o
         // que o pai acrescenta — um NPC dentro do grupo `city` tem local y=0 e
@@ -217,7 +248,26 @@ pub fn apply_ai_locomotion(
             let world = transform.translation + offset;
             let mut x = world.x + step.x;
             let mut z = world.z + step.y;
-            for (obs_global, collider) in &obstacles {
+            for (obs_entity, obs_global, collider, rb) in &obstacles {
+                // Corpos dinâmicos/cinemáticos (ex.: membros `PuppetBody` ou
+                // props empurráveis) não são paredes estáticas — empurrar um
+                // NPC 0,7 m/frame a partir deles gera colisões violentas.
+                if matches!(
+                    rb,
+                    Some(
+                        avian3d::prelude::RigidBody::Dynamic
+                            | avian3d::prelude::RigidBody::Kinematic
+                    )
+                ) {
+                    continue;
+                }
+                // Ignora colisores filhos do próprio mover ou de qualquer outro
+                // personagem (`AiLocomotion`/`Player`/`Corpse`): caso contrário
+                // o NPC encontra a própria cápsula de corpo no primeiro passo e
+                // dispara a ~40 m/s pela vila.
+                if is_character_descendant(obs_entity, mover_entity, &parents, &character_roots) {
+                    continue;
+                }
                 let obs = obs_global.compute_transform();
                 if (obs.translation.x - x).abs() > 16.0
                     || (obs.translation.z - z).abs() > 16.0
@@ -954,6 +1004,97 @@ mod tests {
         assert!(
             end_pos.z > 0.5,
             "enemy slid past the rock instead of getting stuck: end_pos={end_pos:?}"
+        );
+    }
+
+    #[test]
+    fn test_locomotion_ignores_own_child_body_collider_and_dynamic_bodies() {
+        let mut app = locomotion_app();
+        let npc = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(0.0, 0.0, 0.0)),
+                AiLocomotion::default(),
+                LocomotionProfile::authored(1.1, 10.0),
+            ))
+            .id();
+        // Exact `#NpcBody` geometry as a child entity (even without the marker).
+        app.world_mut().spawn((
+            ChildOf(npc),
+            Transform::IDENTITY,
+            GlobalTransform::IDENTITY,
+            avian3d::prelude::RigidBody::Static,
+            avian3d::prelude::Collider::compound(vec![(
+                Vec3::Y * 0.85,
+                Quat::IDENTITY,
+                avian3d::prelude::Collider::capsule(0.32, 0.86),
+            )]),
+        ));
+        // Nearby dynamic body (e.g. a `PuppetBody` limb).
+        app.world_mut().spawn((
+            Transform::from_xyz(0.0, 0.5, 0.15),
+            GlobalTransform::from(Transform::from_xyz(0.0, 0.5, 0.15)),
+            avian3d::prelude::RigidBody::Dynamic,
+            avian3d::prelude::Collider::capsule(0.12, 0.4),
+        ));
+
+        let mut prev = Vec3::ZERO;
+        for _ in 0..20 {
+            app.world_mut()
+                .entity_mut(npc)
+                .get_mut::<AiLocomotion>()
+                .unwrap()
+                .drive(Vec2::new(0.0, 1.1));
+            tick(&mut app, 16);
+            let pos = app.world().entity(npc).get::<Transform>().unwrap().translation;
+            let step = (pos - prev).length();
+            assert!(
+                step < 0.03,
+                "NPC must walk smoothly (~0.018 m/frame), not self-eject: step={step:.3}, pos={pos:?}"
+            );
+            prev = pos;
+        }
+        assert!(
+            prev.z > 0.20 && prev.z < 0.45 && prev.x.abs() < 1e-4,
+            "NPC walked straight at ~1.1 m/s for 0.32s: end={prev:?}"
+        );
+    }
+
+    #[test]
+    fn test_locomotion_ignores_character_body_collider_marker() {
+        let mut app = locomotion_app();
+        app.world_mut().spawn((
+            Transform::from_xyz(0.0, 0.0, 0.2),
+            GlobalTransform::from(Transform::from_xyz(0.0, 0.0, 0.2)),
+            bevy_ext_core::CharacterBodyCollider,
+            avian3d::prelude::RigidBody::Static,
+            avian3d::prelude::Collider::compound(vec![(
+                Vec3::Y * 0.85,
+                Quat::IDENTITY,
+                avian3d::prelude::Collider::capsule(0.32, 0.86),
+            )]),
+        ));
+        let npc = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(0.0, 0.0, 0.0)),
+                AiLocomotion::default(),
+                LocomotionProfile::authored(1.1, 10.0),
+            ))
+            .id();
+
+        app.world_mut()
+            .entity_mut(npc)
+            .get_mut::<AiLocomotion>()
+            .unwrap()
+            .drive(Vec2::new(0.0, 1.1));
+        tick(&mut app, 16);
+        let pos = app.world().entity(npc).get::<Transform>().unwrap().translation;
+        assert!(
+            pos.length() < 0.03,
+            "CharacterBodyCollider must not teleport AI movers: pos={pos:?}"
         );
     }
 }
