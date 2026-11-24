@@ -473,6 +473,13 @@ pub fn shot_xml(eye: Vec3, look: Vec3, duration: f32) -> String {
 #[type_path = "viber::cinematic"]
 pub struct CinematicLibrary(pub HashMap<String, CinematicSpec>);
 
+/// IDs de cinemáticas tratadas por um leitor externo (ex.: pranchas de mangá
+/// do jogo). O [`CinematicPlugin`] não inicia planos 3D para estes IDs e
+/// mantém [`MenusOpen::cinematic`] ligado enquanto [`CinematicPlayback::external`]
+/// estiver ativo.
+#[derive(Resource, Debug, Default, Clone)]
+pub struct ExternalCinematicIds(pub std::collections::HashSet<String>);
+
 /// Pedido para tocar. `inline` (editor/bridge) toca a versão do documento em vez da
 /// da biblioteca — as edições aparecem sem recarregar o mundo.
 #[derive(Message, Debug, Clone)]
@@ -499,6 +506,8 @@ pub struct CinematicEnded {
 #[type_path = "viber::cinematic"]
 pub struct CinematicPlayback {
     pub active: Option<Active>,
+    /// ID de uma cinemática gerida por um leitor externo (ex.: mangá no jogo).
+    pub external: Option<String>,
 }
 
 #[derive(Debug, Clone, Reflect)]
@@ -659,7 +668,10 @@ impl Active {
 
 impl CinematicPlayback {
     pub fn playing(&self) -> Option<&str> {
-        self.active.as_ref().map(|a| a.spec.id.as_str())
+        self.active
+            .as_ref()
+            .map(|a| a.spec.id.as_str())
+            .or(self.external.as_deref())
     }
 
     /// Distância de foco da cena (olho → ponto olhado) e se é um corte (o foco
@@ -721,6 +733,7 @@ pub struct CinematicPlugin;
 impl Plugin for CinematicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CinematicLibrary>()
+            .init_resource::<ExternalCinematicIds>()
             .init_resource::<CinematicPlayback>()
             .init_resource::<StreamingBoost>()
             .init_resource::<LoadingStreaming>()
@@ -792,6 +805,7 @@ pub fn library_from_nodes(nodes: &[XmlNode]) -> CinematicLibrary {
 fn start_cinematics(
     mut requests: MessageReader<PlayCinematic>,
     library: Res<CinematicLibrary>,
+    external_ids: Option<Res<ExternalCinematicIds>>,
     mut playback: ResMut<CinematicPlayback>,
     players: Query<&GlobalTransform, With<Player>>,
     named: Query<(Entity, &Name)>,
@@ -802,6 +816,13 @@ fn start_cinematics(
     let Some(request) = requests.read().last().cloned() else {
         return;
     };
+    if request.inline.is_none()
+        && external_ids
+            .as_deref()
+            .is_some_and(|ids| ids.0.contains(&request.id))
+    {
+        return;
+    }
     let Some(spec) = request
         .inline
         .clone()
@@ -896,7 +917,7 @@ fn tick_cinematic(
     mut ui_nodes: HudRoots<'_, '_>,
 ) {
     let stop_requested = stops.read().count() > 0;
-    let playing = playback.active.is_some();
+    let playing = playback.playing().is_some();
     if let Some(menus) = menus.as_deref_mut()
         && menus.cinematic != playing
     {
