@@ -115,3 +115,10 @@ dirs = "7"
 transvoxel = "2"
 
 # Backend de áudio do Viber (kira); o Vael e a engine partilham a mesma linha.
+
+# O `rerecast` do registry não tem os fixes que o landmass exige
+# (`vendor/rerecast/VIBER_PATCH.md`). Sem esta tabela a engine — e os testes
+# dela — assa navmeshes diferentes das do jogo, que aplica o mesmo patch na
+# raiz do Vael.
+[patch.crates-io]
+rerecast = { path = "vendor/rerecast" }

@@ -174,7 +174,6 @@ impl CompactHeightfield {
 
         let start_dir = dir;
         let start_i = i;
-        let area = self.areas[i];
 
         for _ in 0..40_000 {
             if (flags[i] & (1 << dir)) != 0 {
@@ -201,7 +200,13 @@ impl CompactHeightfield {
                 if let Some(con) = s.con(dir) {
                     let (_a_x, _a_z, a_i) = self.con_indices(x as i32, z as i32, dir, con);
                     r = RegionVertexId::from(self.spans[a_i].region);
-                    if area != self.areas[a_i] {
+                    // Viber patch: comparar com a área do span ATUAL. O original
+                    // compara com a área do span onde o contorno começou; numa
+                    // região que mistura áreas (o `merge_and_filter_regions`
+                    // funde regiões pequenas sem olhar à área), a mesma parede
+                    // saía com `AREA_BORDER` de um lado e sem dele do outro, e o
+                    // `simplify_contour` tessellava só um dos lados.
+                    if self.areas[i] != self.areas[a_i] {
                         is_area_border = true;
                     }
                 }
@@ -674,5 +679,167 @@ bitflags::bitflags! {
 impl Default for BuildContoursFlags {
     fn default() -> Self {
         Self::DEFAULT
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod viber_patch_tests {
+    use super::*;
+    use crate::{CompactCell, CompactSpan, PolygonNavmesh};
+    use alloc::vec;
+    use glam::Vec3;
+    use std::collections::HashMap;
+
+    /// Heightfield compacto de uma só camada: `regions` é o mapa de regiões
+    /// (uma letra por célula, `'.'` = sem célula) e `areas` o de áreas (`'r'` =
+    /// estrada, o resto = chão). Todas as células à mesma altura e ligadas aos
+    /// vizinhos que existem, por isso as fronteiras entre regiões são portais.
+    fn single_layer(regions: &[&str], areas: &[&str]) -> CompactHeightfield {
+        let width = regions[0].len() as u16;
+        let height = regions.len() as u16;
+        let mut chf = CompactHeightfield {
+            width,
+            height,
+            walkable_height: 4,
+            walkable_climb: 4,
+            aabb: Aabb3d {
+                min: Vec3::ZERO,
+                max: Vec3::new(width as f32, 8.0, height as f32),
+            },
+            cell_size: 0.5,
+            cell_height: 0.25,
+            ..Default::default()
+        };
+        chf.cells = vec![CompactCell::default(); width as usize * height as usize];
+        for (z, row) in regions.iter().enumerate() {
+            for (x, c) in row.bytes().enumerate() {
+                if c == b'.' {
+                    continue;
+                }
+                let mut span = CompactSpan {
+                    y: 0,
+                    region: RegionId::from(u16::from(c - b'A') + 1),
+                    ..Default::default()
+                };
+                span.set_height(4);
+                for dir in 0..4_u8 {
+                    let nx = x as i32 + dir_offset_x(dir) as i32;
+                    let nz = z as i32 + dir_offset_z(dir) as i32;
+                    let linked = nx >= 0
+                        && nz >= 0
+                        && (nx as u16) < width
+                        && (nz as u16) < height
+                        && regions[nz as usize].as_bytes()[nx as usize] != b'.';
+                    span.set_con(dir, linked.then_some(0));
+                }
+                chf.max_region = chf.max_region.union(span.region);
+                let cell = &mut chf.cells[z * width as usize + x];
+                cell.set_index(chf.spans.len() as u32);
+                cell.set_count(1);
+                chf.spans.push(span);
+                chf.areas.push(if areas[z].as_bytes()[x] == b'r' {
+                    AreaType(1)
+                } else {
+                    AreaType::DEFAULT_WALKABLE
+                });
+            }
+        }
+        chf
+    }
+
+    /// Arestas (par de vértices, sem ordem) usadas por mais de dois polígonos
+    /// — a invariante que o `landmass` verifica ao converter o tile
+    /// (`DoublyConnectedEdge`).
+    pub(crate) fn overused_edges(mesh: &PolygonNavmesh) -> Vec<((usize, usize), usize)> {
+        let mut uses: HashMap<(usize, usize), usize> = HashMap::new();
+        for poly in mesh.polygons() {
+            let vertices: Vec<usize> = poly.map(usize::from).collect();
+            for (i, &a) in vertices.iter().enumerate() {
+                let b = vertices[(i + 1) % vertices.len()];
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let mut bad: Vec<_> = uses.into_iter().filter(|(_, n)| *n > 2).collect();
+        bad.sort();
+        bad
+    }
+
+    /// Por cada par ordenado (região, vizinho), as arestas do contorno
+    /// simplificado que fazem fronteira com esse vizinho, sem ordem nem
+    /// sentido — é sobre arestas iguais dos dois lados que o consumidor liga
+    /// as regiões.
+    fn portal_edges(
+        cset: &ContourSet,
+    ) -> HashMap<(RegionId, RegionId), Vec<((u16, u16), (u16, u16))>> {
+        let mut edges = HashMap::new();
+        for contour in &cset.contours {
+            let count = contour.vertices.len();
+            for (i, &(a, flags)) in contour.vertices.iter().enumerate() {
+                let neighbor = RegionId::from_bits_retain(
+                    (flags & RegionVertexId::REGION_MASK.bits()) as u16,
+                );
+                if neighbor == RegionId::NONE || neighbor.intersects(RegionId::BORDER_REGION) {
+                    continue;
+                }
+                let b = contour.vertices[(i + 1) % count].0;
+                let (a, b) = ((a.x, a.z), (b.x, b.z));
+                edges
+                    .entry((contour.region, neighbor))
+                    .or_insert_with(Vec::new)
+                    .push(if a <= b { (a, b) } else { (b, a) });
+            }
+        }
+        for values in edges.values_mut() {
+            values.sort_unstable();
+        }
+        edges
+    }
+
+    /// Duas regiões de chão: `A` começa numa célula de estrada e `B` contorna
+    /// `A` em L. É o que o `merge_and_filter_regions` deixa quando absorve um
+    /// pedaço de estrada pequeno — uma região com áreas mistas.
+    const REGIONS: [&str; 5] = [
+        "AAAABBBB", "AAAABBBB", "AAAABBBB", "BBBBBBBB", "BBBBBBBB",
+    ];
+    const AREAS: [&str; 5] = [
+        "r.......", "........", "........", "........", "........",
+    ];
+
+    #[test]
+    fn both_sides_of_a_region_border_simplify_to_the_same_edges() {
+        let cset = single_layer(&REGIONS, &AREAS).build_contours(
+            1.3,
+            24,
+            BuildContoursFlags::DEFAULT,
+        );
+        let edges = portal_edges(&cset);
+
+        assert!(!edges.is_empty(), "the map has region portals");
+        for (&(region, neighbor), seen) in &edges {
+            assert_eq!(
+                edges.get(&(neighbor, region)),
+                Some(seen),
+                "the border between {region:?} and {neighbor:?} is simplified differently \
+                 on each side"
+            );
+        }
+    }
+
+    #[test]
+    fn merged_area_region_does_not_overlap_its_neighbour() {
+        let cset = single_layer(&REGIONS, &AREAS).build_contours(
+            1.3,
+            24,
+            BuildContoursFlags::DEFAULT,
+        );
+        // Sem fusão (`3` vértices por polígono) para a diagonal da região `A`
+        // ficar visível: é ela que partilha a corda do vizinho.
+        let mesh = cset.into_polygon_mesh(3).unwrap();
+
+        assert_eq!(
+            overused_edges(&mesh),
+            [],
+            "a wall simplified differently on each side gives one edge to three polygons"
+        );
     }
 }

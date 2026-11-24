@@ -398,6 +398,14 @@ impl ContourSet {
 
             i += 1;
         }
+        // Viber patch: ver `cull_overused_edges`.
+        let culled = mesh.cull_overused_edges();
+        #[cfg(feature = "tracing")]
+        if culled > 0 {
+            tracing::debug!(
+                "rerecast: {culled} polígonos descartados (aresta com mais de dois donos)"
+            );
+        }
         mesh.polygons.truncate(mesh.npolys * nvp * 2);
         // Calculate adjacency.
         mesh.build_mesh_adjacency()?;
@@ -452,6 +460,102 @@ struct Edge {
 }
 
 impl InternalPolygonNavmesh {
+    /// Viber patch: descarta os polígonos que dão a uma aresta mais de dois
+    /// donos, e devolve quantos descartou.
+    ///
+    /// A simplificação dos contornos não é simétrica: os vértices obrigatórios
+    /// de uma região são os pontos onde muda o VIZINHO dela, por isso duas
+    /// regiões que partilham uma parede podem simplificá-la a partir de cordas
+    /// diferentes e uma delas fica com um vértice a mais no troço. Quando esse
+    /// vértice é convexo, a orelha `(vizinho, vértice, vizinho)` e o polígono do
+    /// outro lado da corda ficam ambos com ela — e o consumidor que liga
+    /// polígonos por arestas iguais (o `landmass`) conta três donos e recusa a
+    /// malha inteira. A orelha é uma fenda de até `max_error` de profundidade
+    /// que já está coberta pelo polígono do vizinho: descartá-la não abre
+    /// buraco. De cada aresta em excesso sai o polígono de menor área.
+    fn cull_overused_edges(&mut self) -> usize {
+        let nvp = self.max_vertices_per_polygon as usize;
+        let mut culled = 0;
+        loop {
+            let mut edges: Vec<(u16, u16, u16)> = Vec::with_capacity(self.npolys * nvp);
+            for i in 0..self.npolys {
+                let p = &self.polygons[i * nvp * 2..];
+                let nv = count_poly_verts(p, nvp);
+                for j in 0..nv {
+                    let (a, b) = (p[j], p[(j + 1) % nv]);
+                    edges.push((a.min(b), a.max(b), i as u16));
+                }
+            }
+            edges.sort_unstable();
+            let mut drop = vec![false; self.npolys];
+            let mut dropped = 0;
+            let mut k = 0;
+            while k < edges.len() {
+                let mut end = k + 1;
+                while end < edges.len() && edges[end].0 == edges[k].0 && edges[end].1 == edges[k].1
+                {
+                    end += 1;
+                }
+                let mut owners: Vec<(i64, usize)> = edges[k..end]
+                    .iter()
+                    .map(|&(_, _, i)| {
+                        let i = usize::from(i);
+                        (self.polygon_area(i), i)
+                    })
+                    .collect();
+                owners.sort_unstable();
+                let mut excess = owners.iter().filter(|(_, i)| !drop[*i]).count().saturating_sub(2);
+                for (_, i) in owners {
+                    if excess == 0 {
+                        break;
+                    }
+                    if !drop[i] {
+                        drop[i] = true;
+                        excess -= 1;
+                        dropped += 1;
+                    }
+                }
+                k = end;
+            }
+            if dropped == 0 {
+                return culled;
+            }
+            for i in (0..self.npolys).rev() {
+                if !drop[i] {
+                    continue;
+                }
+                let last = (self.npolys - 1) * nvp * 2;
+                if i * nvp * 2 != last {
+                    self.polygons.copy_within(last..last + nvp * 2, i * nvp * 2);
+                    self.regions[i] = self.regions[self.npolys - 1];
+                    self.areas[i] = self.areas[self.npolys - 1];
+                }
+                self.npolys -= 1;
+            }
+            culled += dropped;
+        }
+    }
+
+    /// Área com sinal de um polígono, em células ao quadrado (o sinal é o da
+    /// orientação do mesh; só a magnitude interessa aqui).
+    fn polygon_area(&self, i: usize) -> i64 {
+        let nvp = self.max_vertices_per_polygon as usize;
+        let p = &self.polygons[i * nvp * 2..];
+        let nv = count_poly_verts(p, nvp);
+        let point = |j: usize| {
+            let v = self.vertices[usize::from(p[j % nv])];
+            (i64::from(v.x), i64::from(v.z))
+        };
+        let (x0, z0) = point(0);
+        let mut area = 0;
+        for j in 1..nv.saturating_sub(1) {
+            let (x1, z1) = point(j);
+            let (x2, z2) = point(j + 1);
+            area += (x1 - x0) * (z2 - z0) - (x2 - x0) * (z1 - z0);
+        }
+        area.abs()
+    }
+
     fn build_mesh_adjacency(&mut self) -> Result<(), PolygonNavmeshError> {
         let nvp = self.max_vertices_per_polygon as usize;
         // Based on code by Eric Lengyel from:
@@ -1643,5 +1747,204 @@ mod viber_patch_tests {
         let built = contours.into_polygon_mesh(6).unwrap();
         assert!(built.polygon_count() >= 1);
         assert!(built.vertices.len() < 7, "border vertex at index 0 should be removed, verts={}", built.vertices.len());
+    }
+
+    /// Dois contornos do Vael, tal como o tile de canto (-40.4, 54.8) os
+    /// produziu a 2026-11-23 (`(x, y, z, flags)` em células): o chão (região
+    /// 365) e a estrada (368) que o rodeia a nordeste. O `landmass` recusou esse
+    /// tile com `The edge made from vertices 5043 and 5044 is used by more than
+    /// two polygons`.
+    const GROUND: [(u16, u16, u16, u32); 33] = [
+        (5, 2154, 1476, 418),
+        (11, 2154, 1481, 131072),
+        (21, 2153, 1480, 131072),
+        (26, 2154, 1482, 418),
+        (27, 2154, 1481, 131440),
+        (27, 2152, 1478, 131440),
+        (31, 2151, 1475, 131440),
+        (25, 2151, 1477, 131440),
+        (22, 2148, 1472, 131440),
+        (27, 2146, 1469, 131534),
+        (21, 2147, 1471, 131534),
+        (19, 2142, 1466, 131534),
+        (26, 2140, 1462, 131533),
+        (19, 2139, 1463, 131533),
+        (18, 2132, 1457, 131533),
+        (26, 2133, 1456, 131072),
+        (26, 2132, 1455, 131531),
+        (17, 2130, 1454, 131531),
+        (19, 2120, 1442, 131531),
+        (25, 2121, 1442, 131489),
+        (19, 2118, 1440, 131489),
+        (22, 2110, 1429, 131072),
+        (17, 2112, 1433, 131072),
+        (10, 2105, 1433, 131072),
+        (9, 2106, 1435, 131072),
+        (14, 2115, 1438, 131072),
+        (14, 2121, 1444, 131072),
+        (10, 2124, 1448, 131072),
+        (10, 2128, 1452, 131072),
+        (6, 2128, 1455, 131072),
+        (5, 2135, 1462, 131072),
+        (0, 2138, 1467, 131072),
+        (5, 2148, 1473, 131072),
+    ];
+    const ROAD: [(u16, u16, u16, u32); 44] = [
+        (30, 2146, 1468, 462),
+        (29, 2146, 1468, 131717),
+        (27, 2146, 1469, 131437),
+        (22, 2148, 1472, 131437),
+        (23, 2150, 1475, 131437),
+        (25, 2151, 1477, 131437),
+        (31, 2151, 1475, 131720),
+        (32, 2151, 1474, 131719),
+        (33, 2150, 1473, 131719),
+        (32, 2151, 1474, 131720),
+        (31, 2151, 1475, 131437),
+        (27, 2152, 1478, 131437),
+        (27, 2154, 1481, 131490),
+        (31, 2158, 1484, 131490),
+        (36, 2154, 1480, 131721),
+        (37, 2154, 1479, 131721),
+        (36, 2154, 1480, 131490),
+        (32, 2158, 1484, 131490),
+        (34, 2169, 1490, 131490),
+        (28, 2177, 1498, 131072),
+        (25, 2183, 1501, 131559),
+        (6, 2207, 1524, 32772),
+        (37, 2208, 1524, 163844),
+        (38, 2209, 1524, 131467),
+        (39, 2208, 1522, 131467),
+        (35, 2206, 1519, 131467),
+        (40, 2206, 1517, 131072),
+        (34, 2204, 1517, 131072),
+        (32, 2195, 1512, 131072),
+        (37, 2194, 1510, 131072),
+        (36, 2184, 1505, 131072),
+        (40, 2183, 1503, 131072),
+        (38, 2175, 1498, 131072),
+        (41, 2172, 1495, 131072),
+        (49, 2170, 1494, 131072),
+        (49, 2162, 1484, 131722),
+        (48, 2161, 1483, 131072),
+        (44, 2155, 1478, 131072),
+        (38, 2154, 1478, 131072),
+        (35, 2150, 1473, 131718),
+        (35, 2150, 1472, 131072),
+        (35, 2148, 1469, 131072),
+        (32, 2146, 1467, 462),
+        (31, 2145, 1467, 131716),
+    ];
+
+    fn vael_tile_corner() -> ContourSet {
+        let contour = |region: u16, area: u8, vertices: &[(u16, u16, u16, u32)]| crate::Contour {
+            vertices: vertices
+                .iter()
+                .map(|&(x, y, z, flags)| (U16Vec3::new(x, y, z), flags))
+                .collect::<Vec<_>>(),
+            region: RegionId::from(region),
+            area: AreaType(area),
+            ..Default::default()
+        };
+        ContourSet {
+            contours: vec![
+                contour(365, 255, &GROUND),
+                contour(368, 1, &ROAD),
+            ],
+            aabb: Aabb3d {
+                min: glam::Vec3::new(-39.406_464, -200.0, 55.795_258),
+                max: glam::Vec3::new(216.593_54, 400.0, 311.795_26),
+            },
+            width: 1524,
+            height: 1524,
+            cell_size: 0.166_666_67,
+            cell_height: 0.125,
+            border_size: 6,
+            max_error: 1.3,
+        }
+    }
+
+    /// Quantos polígonos têm os dois pontos (por coordenada XZ) como vértices.
+    fn owners(mesh: &PolygonNavmesh, a: (u16, u16), b: (u16, u16)) -> usize {
+        mesh.polygons
+            .chunks_exact(mesh.max_vertices_per_polygon as usize)
+            .filter(|chunk| {
+                let xz: Vec<(u16, u16)> = chunk
+                    .iter()
+                    .take_while(|i| **i != PolygonNavmesh::NO_INDEX)
+                    .map(|i| {
+                        let v = mesh.vertices[usize::from(*i)];
+                        (v.x, v.z)
+                    })
+                    .collect();
+                xz.contains(&a) && xz.contains(&b)
+            })
+            .count()
+    }
+
+    /// Os vértices, por coordenada XZ, de cada polígono do mesh.
+    fn xz_polygons(mesh: &PolygonNavmesh) -> Vec<Vec<(u16, u16)>> {
+        let mut polygons: Vec<Vec<(u16, u16)>> = mesh
+            .polygons()
+            .map(|poly| {
+                poly.map(|i| {
+                    let v = mesh.vertices[usize::from(i)];
+                    (v.x, v.z)
+                })
+                .collect()
+            })
+            .collect();
+        for polygon in &mut polygons {
+            polygon.sort_unstable();
+        }
+        polygons.sort_unstable();
+        polygons
+    }
+
+    #[test]
+    fn an_edge_keeps_at_most_two_owners_losing_the_sliver() {
+        use crate::contours::viber_patch_tests::overused_edges;
+        let mesh = vael_tile_corner().into_polygon_mesh(6).unwrap();
+
+        assert!(
+            overused_edges(&mesh).is_empty(),
+            "{:?}",
+            overused_edges(&mesh)
+        );
+        // A corda entre (25, 1477) e (22, 1472) ficou com a estrada de um lado
+        // e o chão do outro: as duas regiões continuam ligadas.
+        assert_eq!(owners(&mesh, (25, 1477), (22, 1472)), 2);
+        // Só saiu a fenda — a orelha `(22,1472) (23,1475) (25,1477)`.
+        assert!(!xz_polygons(&mesh).contains(&vec![(22, 1472), (23, 1475), (25, 1477)]));
+    }
+
+    #[test]
+    fn culling_the_smallest_owner_keeps_the_regions_and_areas_in_step() {
+        // Um quadrado em dois triângulos, com uma fenda `(0, 4, 2)` em cima da
+        // aresta (0, 2) no MEIO da lista.
+        let mut mesh = InternalPolygonNavmesh {
+            max_vertices_per_polygon: 3,
+            nvertices: 5,
+            vertices: [(0, 0), (4, 0), (4, 4), (0, 4), (2, 1)]
+                .map(|(x, z)| U16Vec3::new(x, 0, z))
+                .to_vec(),
+            npolys: 3,
+            polygons: vec![
+                0, 1, 2, u16::MAX, u16::MAX, u16::MAX, //
+                0, 4, 2, u16::MAX, u16::MAX, u16::MAX, //
+                0, 2, 3, u16::MAX, u16::MAX, u16::MAX, //
+            ],
+            areas: vec![AreaType(255), AreaType(9), AreaType(1)],
+            regions: vec![RegionId::from(1), RegionId::from(9), RegionId::from(2)],
+            ..Default::default()
+        };
+
+        assert_eq!(mesh.cull_overused_edges(), 1);
+
+        assert_eq!(mesh.npolys, 2);
+        assert_eq!(&mesh.polygons[..9], &[0, 1, 2, u16::MAX, u16::MAX, u16::MAX, 0, 2, 3]);
+        assert_eq!(&mesh.areas[..2], &[AreaType(255), AreaType(1)]);
+        assert_eq!(&mesh.regions[..2], &[RegionId::from(1), RegionId::from(2)]);
+        assert_eq!(mesh.cull_overused_edges(), 0, "já não há excesso");
     }
 }

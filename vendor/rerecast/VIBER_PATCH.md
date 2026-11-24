@@ -1,7 +1,7 @@
 # rerecast 0.5.0 — patch do Viber
 
 Cópia de `rerecast` 0.5.0 (crates.io, 2026-10-26, MIT OR Apache-2.0) ligada por
-`[patch.crates-io]` no `Viber/Cargo.toml`. Só `src/poly_mesh.rs` e
+`[patch.crates-io]` no `Viber/Cargo.toml`. Só `src/contours.rs`, `src/poly_mesh.rs` e
 `src/detail_mesh.rs` diferem do original; cada alteração está marcada com
 `Viber patch:`.
 
@@ -64,3 +64,38 @@ Deltas de vendor em relação ao crate publicado:
    com guardas de borda em `chf.cells`, retorno antecipado quando não há span
    inicial e preenchimento/guarda de `hull` em `triangulate_hull` para
    `sample_distance <= 0`.
+7. **`AREA_BORDER` igual dos dois lados de uma fronteira de regiões**
+   (`src/contours.rs`, `walk_contour_build`) — defeito latente do upstream,
+   **não** a causa do erro do Vael de 2026-11-23 (esse é o #8). O original
+   compara a área do vizinho com a área do span onde o contorno **começou**. O
+   `merge_and_filter_regions` funde regiões pequenas sem olhar à área, por isso
+   uma região pode misturar células de estrada e de chão; na parede com o
+   vizinho, o lado que começou na estrada marcava `AREA_BORDER` e o outro não, e
+   o `simplify_contour` — que só tessella arestas exteriores ou de fronteira de
+   área — deixava os dois lados com vértices diferentes. Compara-se agora com a
+   área do span **actual**. No jogo as áreas são pintadas **antes** das regiões
+   (que nascem com uma só área) e a fusão raramente as mistura, por isso isto
+   não muda nenhum tile medido; num mundo sintético onde todas as regiões são
+   mistas, a assimetria aparecia em ~43% dos tiles. Testes:
+   `contours::viber_patch_tests`. O upstream **0.5.1** (2026-11-23) compara
+   ainda com o span inicial (`src/contours/mod.rs`, `walk_contour_build`).
+8. **Nenhuma aresta com mais de dois donos** (`src/poly_mesh.rs`,
+   `cull_overused_edges`). É o que fez o `landmass` recusar tiles do Vael a
+   2026-11-23 (`The edge made from vertices X and Y is used by more than two
+   polygons`). O `simplify_contour` parte dos vértices obrigatórios de cada
+   região — os pontos onde muda o VIZINHO dela — e refina cada corda pelo erro.
+   Duas regiões que partilham uma parede partem de cordas diferentes quando a
+   fronteira de uma delas é interrompida por terceiros; uma fica com um vértice
+   a mais no troço. Se esse vértice é convexo, a orelha `(vizinho, vértice,
+   vizinho)` tem a corda por base; quando não se funde com o corpo (este já
+   chegou ao máximo de vértices), a corda fica com a orelha, com o corpo e com
+   o polígono do vizinho. Depois de todos os polígonos estar montados, cada
+   aresta em excesso perde o polígono de **menor área** até ter dois donos: é a
+   fenda, com até `max_error` de profundidade, e a sua área já está coberta pelo
+   vizinho — não abre buraco e as duas regiões ficam ligadas pela corda.
+   Reproduzido com o tile real (capturado por `VAEL_NAV_DUMP`, canto
+   `(-40.4, 54.8)`: a estrada 368 e o chão 365) e fechado com
+   `poly_mesh::viber_patch_tests::an_edge_keeps_at_most_two_owners_losing_the_sliver`.
+   As paredes simplificadas de forma diferente continuam a existir (o upstream
+   não garante o contrário): quando não partem a validação, deixam as duas
+   regiões desligadas nesse troço — é uma dívida da navegação, não deste patch.

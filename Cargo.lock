@@ -7213,10 +7213,9 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rerecast"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0e2c94a2fc93731cf1b8f0a7ecb532f1514fd85b4ae441e315f038b06da304a"
+version = "0.5.0"
 dependencies = [
+ "anyhow",
  "bevy_reflect",
  "bitflags 2.13.2",
  "glam 0.33.12",
