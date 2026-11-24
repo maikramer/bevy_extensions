@@ -11,6 +11,7 @@ members = [
     "crates/bevy_ext_flora",
     "crates/bevy_ext_gradmesh",
     "crates/bevy_ext_scene",
+    "crates/bevy_ext_fence",
     "crates/bevy_ext_postfx",
     "crates/bevy_ext_luau",
     "crates/bevy_ext_nav",
@@ -75,6 +76,7 @@ bevy_ext_elements = { version = "0.1.0", path = "crates/bevy_ext_elements" }
 bevy_ext_flora = { version = "0.1.0", path = "crates/bevy_ext_flora" }
 bevy_ext_gradmesh = { version = "0.1.0", path = "crates/bevy_ext_gradmesh" }
 bevy_ext_scene = { version = "0.1.0", path = "crates/bevy_ext_scene" }
+bevy_ext_fence = { version = "0.1.0", path = "crates/bevy_ext_fence" }
 bevy_ext_physics = { version = "0.1.0", path = "crates/bevy_ext_physics" }
 bevy_ext_engine = { version = "0.1.0", path = "crates/bevy_ext_engine" }
 bevy_ext_puppet = { version = "0.1.0", path = "crates/bevy_ext_puppet" }

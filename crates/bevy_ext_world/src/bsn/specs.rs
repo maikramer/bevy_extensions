@@ -15,7 +15,7 @@ use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use bevy::reflect::{FromReflect, PartialReflect, Reflect, TypePath, TypeRegistry};
 use bevy_ext_scene::{
     AttrSpec, AudioMixerSpec, AuthoredProps, BiomeRegionSpec, BodySpec, CameraSpec, ColliderSpec,
-    Destructible, FloraStation, Harvestable, InteriorSceneSpec, ModelLod, MusicLayerSpec,
+    Destructible, FenceSpec, FloraStation, Harvestable, InteriorSceneSpec, ModelLod, MusicLayerSpec,
     NodeSpecs, ParticleSpec, PortalSpec, ScriptRef, SpawnExclusionSpec,
 };
 
@@ -363,6 +363,7 @@ pub fn spec_attr_keys() -> &'static [&'static str] {
         keys.extend_from_slice(AudioMixerSpec::KEYS);
         keys.extend_from_slice(MusicLayerSpec::KEYS);
         keys.extend_from_slice(BiomeRegionSpec::KEYS);
+        keys.extend_from_slice(FenceSpec::KEYS);
         keys
     })
 }
@@ -463,6 +464,7 @@ pub(crate) fn extract_node_specs(
         mixer: read::<AudioMixerSpec>(ast, entity),
         music_layer: read::<MusicLayerSpec>(ast, entity),
         biome: read::<BiomeRegionSpec>(ast, entity),
+        fence: read::<FenceSpec>(ast, entity),
     }
 }
 
@@ -531,6 +533,9 @@ pub fn write_spec_attrs(specs: &NodeSpecs, attrs: &mut Vec<(String, String)>) {
     if let Some(spec) = &specs.biome {
         write_attrs(spec, attrs);
     }
+    if let Some(spec) = &specs.fence {
+        write_attrs(spec, attrs);
+    }
     if let Some(props) = &specs.props {
         for (key, value) in props.to_attrs() {
             match attrs.iter_mut().find(|(k, _)| *k == key) {
@@ -594,6 +599,8 @@ pub fn lift_specs_skipping(
         take::<ModelLod>(attrs, &mut out, skip);
     }
     take::<FloraStation>(attrs, &mut out, skip);
+    // As chaves `fence-*` só existem na cerca: levanta em qualquer tag.
+    take::<FenceSpec>(attrs, &mut out, skip);
     take::<ScriptRef>(attrs, &mut out, skip);
     if !skip(CustomProperties::type_path())
         && let Some((props, keys)) = AuthoredProps::from_attrs(attrs)

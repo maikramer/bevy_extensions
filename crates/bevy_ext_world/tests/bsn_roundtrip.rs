@@ -405,6 +405,58 @@ fn atributos_partilhados_nao_migram_fora_da_tag() {
     assert!(lifted.components.is_empty(), "câmara não tem at/radius");
 }
 
+/// A cerca levanta pela chave (`fence-*` só existem nela), em qualquer tag, e
+/// a migração não muda o mundo: antes e depois carregam igual.
+#[test]
+fn cercas_migram_pela_chave_em_qualquer_tag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml = dir.path().join("world.xml");
+    fs::write(
+        &xml,
+        r##"<world static="true">
+  <Entity name="cerca" fence-style="pasture_rail" fence-points="-24.6 0 0; 5.9 0 0" fence-height="1.2" fence-closed="1" />
+  <Group name="curral" translation="4 0 4"><Entity fence-points="0 0 3 0" fence-kind="wattle" fence-board-length="0.9 1.1" fence-seed="7" /></Group>
+</world>"##,
+    )
+    .expect("xml");
+    let text = emit_file(&xml, dir.path(), EmitOptions::default()).expect("emit");
+    let (migrated, report) = bevy_ext_world::bsn::specs::migrate_text(&text);
+    assert_eq!(report.nodes, 2, "{migrated}");
+    assert_eq!(
+        migrated.matches("bevy_ext_scene::FenceSpec").count(),
+        2,
+        "{migrated}"
+    );
+    assert!(!migrated.contains("key: \"fence-"), "{migrated}");
+    assert_eq!(
+        bevy_ext_world::bsn::specs::migrate_text(&migrated).0,
+        migrated,
+        "idempotente"
+    );
+
+    let before = dir.path().join("before.bsn");
+    fs::write(&before, &text).expect("before");
+    let after = dir.path().join("after.bsn");
+    fs::write(&after, &migrated).expect("after");
+    let a = load_bsn_world(&before).expect("load before");
+    let b = load_bsn_world(&after).expect("load after");
+    let same =
+        bevy_ext_world::bsn::worlds_equivalent(&a.root_attrs, &a.nodes, &b.root_attrs, &b.nodes);
+    assert!(same.is_ok(), "{same:?}\n{migrated}");
+}
+
+/// Um `fence-*` sem linha não é cerca: fica no `WorldNode` para o lint do
+/// mundo o acusar, em vez de uma `FenceSpec` vazia.
+#[test]
+fn cerca_sem_linha_nao_migra() {
+    let attrs = vec![
+        ("name".to_string(), "cerca".to_string()),
+        ("fence-style".to_string(), "wattle".to_string()),
+    ];
+    let lifted = bevy_ext_world::bsn::specs::lift_specs("Entity", &attrs);
+    assert!(lifted.components.is_empty(), "{:?}", lifted.consumed);
+}
+
 /// Um nó que já tem o componente (e o atributo homónimo, como fica depois de
 /// o editor voltar a gravar) não ganha um segundo componente.
 #[test]

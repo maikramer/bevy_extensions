@@ -1,0 +1,38 @@
+[package]
+name = "bevy_ext_fence"
+version.workspace = true
+edition.workspace = true
+description = "Cercas procedurais para Bevy: postes, travessas, tábuas, paliçadas, varas entretecidas, treliça, cordas e portões gerados a partir de uma linha autorada"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["bevy", "fence", "procedural", "gamedev"]
+categories = ["game-development", "rendering"]
+
+[features]
+default = ["physics"]
+# Colisores Avian: uma caixa por vão (ou por poste) na entidade da cerca.
+physics = ["dep:avian3d"]
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "std",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_mesh",
+    "bevy_color",
+    "bevy_image",
+    "bevy_scene",
+] }
+bevy_ext_scene.workspace = true
+bevy_ext_gltf = { workspace = true, default-features = false, features = ["textures"] }
+avian3d = { version = "0.8", default-features = false, features = [
+    "3d",
+    "parry-f32",
+], optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

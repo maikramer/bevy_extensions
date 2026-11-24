@@ -1,9 +1,10 @@
-//! Componentes tipados da câmara, do áudio e dos biomas.
+//! Componentes tipados da câmara, do áudio, dos biomas e das cercas.
 //!
 //! Mesmo contrato do resto do crate: [`AttrSpec`] com ida e volta exata; o
 //! que não volta igual fica no `WorldNode`. A migração é por tag
 //! (`lift_specs`): `at`, `size`, `id` e `radius` também existem noutras tags
-//! e um lift global estragava o mundo.
+//! e um lift global estragava o mundo. As chaves `fence-*` só existem na
+//! cerca, por isso a [`FenceSpec`] levanta em qualquer tag.
 
 use bevy::prelude::*;
 
@@ -313,6 +314,152 @@ impl AttrSpec for BiomeRegionSpec {
     }
 }
 
+// ------------------------------------------------------------------- cerca
+
+/// Cerca procedural (`fence-*` num `<Entity>`): a linha e as regras que
+/// geram a geometria (`bevy_ext_fence`).
+///
+/// `points` é a polilinha em texto cru (`"x z; x z; …"`, ou `x y z`), local à
+/// entidade — a ida e volta é exata e quem precisa de pontos parseia-o. O
+/// resto são sobreposições da predefinição (`FenceStyle` de
+/// `world/settings/fences.bsn`): `None` é "o do estilo".
+#[derive(Component, Reflect, Clone, Debug, PartialEq, Default)]
+#[reflect(Component, Default, Debug, Clone)]
+#[type_path = "bevy_ext_scene"]
+pub struct FenceSpec {
+    /// Chave da predefinição (vazio = a predefinição por omissão).
+    pub style: Option<String>,
+    /// Polilinha `"x z; x z; …"` (texto cru, local à entidade).
+    pub points: String,
+    /// Fecha o perímetro (do último ponto ao primeiro).
+    pub closed: Option<bool>,
+    /// Tipo de peças: `rail`, `plank`, `picket`, `palisade`, `wattle`,
+    /// `lattice`, `crossbuck`, `rope` ou `gate`.
+    pub kind: Option<String>,
+    /// Altura ao topo do poste (m).
+    pub height: Option<f32>,
+    /// Travessas horizontais por vão.
+    pub rails: Option<u32>,
+    /// Tábuas verticais por vão.
+    pub boards: Option<u32>,
+    /// Comprimento da tábua, mínimo e máximo (m): cada tábua sorteia dentro.
+    pub board_length: Option<Vec2>,
+    /// Distância máxima entre postes (m).
+    pub spacing: Option<f32>,
+    /// Conjunto de texturas (`oak_hewn`, `pine_dark`, …).
+    pub material: Option<String>,
+    /// Semente da variação (por omissão deriva do nome).
+    pub seed: Option<u32>,
+    /// Colisor: `segment`, `posts` ou `none`.
+    pub collider: Option<String>,
+    /// Cota dos postes: `terrain` (amostra o chão) ou `points` (a autorada).
+    pub follow: Option<String>,
+    /// Abertura da folha do portão em graus (0 = fechado); só os portões.
+    pub open: Option<f32>,
+}
+
+fn opt_uint(get: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<Option<u32>> {
+    match get(key) {
+        None => Some(None),
+        Some(value) => value.trim().parse::<u32>().ok().map(Some),
+    }
+}
+
+fn opt_flag(get: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<Option<bool>> {
+    match get(key).as_deref().map(str::trim) {
+        None => Some(None),
+        Some("1") => Some(Some(true)),
+        Some("0") => Some(Some(false)),
+        Some(_) => None,
+    }
+}
+
+impl AttrSpec for FenceSpec {
+    const KEYS: &'static [&'static str] = &[
+        "fence-style",
+        "fence-points",
+        "fence-closed",
+        "fence-kind",
+        "fence-height",
+        "fence-rails",
+        "fence-boards",
+        "fence-board-length",
+        "fence-spacing",
+        "fence-material",
+        "fence-seed",
+        "fence-collider",
+        "fence-follow",
+        "fence-open",
+    ];
+
+    fn from_attrs(get: &dyn Fn(&str) -> Option<String>) -> Option<Self> {
+        Some(Self {
+            style: get("fence-style"),
+            // Sem linha não há cerca: os `fence-*` ficam no `WorldNode`.
+            points: get("fence-points")?,
+            closed: opt_flag(get, "fence-closed")?,
+            kind: get("fence-kind"),
+            height: opt_num(get, "fence-height")?,
+            rails: opt_uint(get, "fence-rails")?,
+            boards: opt_uint(get, "fence-boards")?,
+            board_length: match get("fence-board-length") {
+                None => None,
+                Some(value) => {
+                    let [min, max] = floats::<2>(&value)?;
+                    Some(Vec2::new(min, max))
+                }
+            },
+            spacing: opt_num(get, "fence-spacing")?,
+            material: get("fence-material"),
+            seed: opt_uint(get, "fence-seed")?,
+            collider: get("fence-collider"),
+            follow: get("fence-follow"),
+            open: opt_num(get, "fence-open")?,
+        })
+    }
+
+    fn to_attrs(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        for (key, value) in [
+            ("fence-style", &self.style),
+            ("fence-kind", &self.kind),
+            ("fence-material", &self.material),
+            ("fence-collider", &self.collider),
+            ("fence-follow", &self.follow),
+        ] {
+            if let Some(value) = value {
+                out.push((key, value.clone()));
+            }
+        }
+        out.push(("fence-points", self.points.clone()));
+        if let Some(closed) = self.closed {
+            out.push(("fence-closed", if closed { "1" } else { "0" }.to_string()));
+        }
+        for (key, value) in [
+            ("fence-height", self.height),
+            ("fence-spacing", self.spacing),
+            ("fence-open", self.open),
+        ] {
+            if let Some(value) = value {
+                out.push((key, num(value)));
+            }
+        }
+        for (key, value) in [
+            ("fence-rails", self.rails),
+            ("fence-boards", self.boards),
+            ("fence-seed", self.seed),
+        ] {
+            if let Some(value) = value {
+                out.push((key, value.to_string()));
+            }
+        }
+        if let Some(length) = self.board_length {
+            out.push(("fence-board-length", vec2_attr(length)));
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +570,53 @@ mod tests {
         assert_eq!(keys.len(), 6);
         assert_eq!(spec.polygon.as_deref(), Some("[-56,56;56,56;4040,4040;-4040,4040]"));
         assert_eq!(written(&spec), input);
+    }
+
+    #[test]
+    fn cerca_vao_e_volta() {
+        // A ordem canónica do `to_attrs` não é a do documento; o `lift`
+        // compara os pares ordenados, por isso a volta é exata na mesma.
+        let input = attrs(&[
+            ("name", "cerca-oeste"),
+            ("fence-points", "-24.6 0 0; 5.9 0 0"),
+            ("fence-style", "pasture_rail"),
+            ("fence-height", "1.2"),
+            ("fence-boards", "9"),
+            ("fence-board-length", "0.9 1.1"),
+            ("fence-closed", "1"),
+            ("fence-seed", "7"),
+            ("fence-open", "95"),
+        ]);
+        let (spec, keys) = lift::<FenceSpec>(&input).unwrap();
+        assert_eq!(keys.len(), 8, "o `name` não é da cerca");
+        assert_eq!(spec.style.as_deref(), Some("pasture_rail"));
+        assert_eq!(spec.height, Some(1.2));
+        assert_eq!(spec.boards, Some(9));
+        assert_eq!(spec.board_length, Some(Vec2::new(0.9, 1.1)));
+        assert_eq!(spec.closed, Some(true));
+        assert_eq!(spec.seed, Some(7));
+        assert_eq!(spec.open, Some(95.0));
+        assert_eq!(spec.rails, None);
+        let back = written(&spec);
+        for (key, value) in &input[1..] {
+            assert!(back.contains(&(key.to_string(), value.to_string())), "falta {key}");
+        }
+        assert_eq!(back.len(), 8);
+    }
+
+    #[test]
+    fn cerca_parcial_so_com_a_linha() {
+        let (spec, keys) = lift::<FenceSpec>(&attrs(&[("fence-points", "0 0 3 0")])).unwrap();
+        assert_eq!(keys, ["fence-points"]);
+        assert_eq!(spec.style, None);
+        assert_eq!(written(&spec), attrs(&[("fence-points", "0 0 3 0")]));
+    }
+
+    #[test]
+    fn cerca_sem_linha_nao_levanta() {
+        // Um `fence-*` órfão fica no `WorldNode`: não há cerca sem linha.
+        assert!(lift::<FenceSpec>(&attrs(&[("fence-style", "wattle")])).is_none());
+        // Um valor que o tipo não sabe escrever igual também não levanta.
+        assert!(lift::<FenceSpec>(&attrs(&[("fence-points", "0 0"), ("fence-closed", "true")])).is_none());
     }
 }

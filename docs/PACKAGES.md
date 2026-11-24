@@ -33,6 +33,7 @@ como app/fachada transitória até o Vael deixar de o usar.
 | `bevy_ext_terrain` | contrato de cena do voxel: `VoxelTerrain`/features, adapter `.ahgt` | `bevy_voxel_terrain` |
 | `bevy_ext_save` | `SaveGame`, slots, paths, IO atómico e migração legacy | `bevy_ext_world` |
 | `bevy_ext_grass` | relva GPU sobre `bevy_grass`: contrato `GrassTerrain`/`GrassFieldLayout`, bake de máscaras, `GrassSettingsSpec`/`GrassStyleSpec`, trampling avian3d | bevy, `bevy_grass`, `avian3d` |
+| `bevy_ext_fence` | cercas procedurais a partir de uma linha autorada (`FenceSpec`): `layout` puro e determinístico, `mesh` em facetas planas, um material por conjunto de texturas do pool, `FencePlugin` com corpo fixo e colisor de caixa por vão (feature `physics`) | bevy, `bevy_ext_scene`, `bevy_ext_gltf`, `avian3d` (opt) |
 | `bevy_ext_bridge_protocol` | Métodos `vael-tools/*`, cliente BRP HTTP std-only e descoberta de sessões (`engine.json`) | serde, base64, dirs |
 | `bevy_ext_bridge_runtime` | Plugin in-game que publica `vael-tools/*` (frames/hitches/memory/tree/logs/input/step) no `bevy_remote` | bevy (`bevy_remote`), protocol |
 

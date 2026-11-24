@@ -1039,6 +1039,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ext_fence"
+version = "0.1.0"
+dependencies = [
+ "avian3d",
+ "bevy",
+ "bevy_ext_gltf",
+ "bevy_ext_scene",
+]
+
+[[package]]
 name = "bevy_ext_flora"
 version = "0.1.0"
 dependencies = [

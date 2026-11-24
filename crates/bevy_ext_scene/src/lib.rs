@@ -23,7 +23,7 @@ pub use nodes::{
     ScriptRef, SpawnExclusionSpec,
 };
 pub use world_nodes::{
-    AudioMixerSpec, BiomeRegionSpec, CameraSpec, InteriorSceneSpec, MusicLayerSpec,
+    AudioMixerSpec, BiomeRegionSpec, CameraSpec, FenceSpec, InteriorSceneSpec, MusicLayerSpec,
 };
 
 /// Conversão sem perdas entre um componente e atributos do DSL.
@@ -550,6 +550,7 @@ pub struct NodeSpecs {
     pub mixer: Option<AudioMixerSpec>,
     pub music_layer: Option<MusicLayerSpec>,
     pub biome: Option<BiomeRegionSpec>,
+    pub fence: Option<FenceSpec>,
 }
 
 impl NodeSpecs {
@@ -570,11 +571,12 @@ impl NodeSpecs {
             && self.mixer.is_none()
             && self.music_layer.is_none()
             && self.biome.is_none()
+            && self.fence.is_none()
     }
 }
 
 /// Caminhos de tipo dos componentes deste crate (para o loader e o editor).
-pub const TYPE_PATHS: [&str; 16] = [
+pub const TYPE_PATHS: [&str; 17] = [
     "bevy_ext_scene::ColliderSpec",
     "bevy_ext_scene::BodySpec",
     "bevy_ext_scene::Destructible",
@@ -591,6 +593,7 @@ pub const TYPE_PATHS: [&str; 16] = [
     "bevy_ext_scene::AudioMixerSpec",
     "bevy_ext_scene::MusicLayerSpec",
     "bevy_ext_scene::BiomeRegionSpec",
+    "bevy_ext_scene::FenceSpec",
 ];
 
 /// Regista os tipos para reflexão (jogo, loader e editor).
@@ -625,12 +628,14 @@ pub fn register_types(registry: &mut bevy::reflect::TypeRegistry) {
     registry.register::<AudioMixerSpec>();
     registry.register::<MusicLayerSpec>();
     registry.register::<BiomeRegionSpec>();
+    registry.register::<FenceSpec>();
     registry.register::<Option<ParticleEmitter>>();
     registry.register::<Vec<AuthoredProp>>();
     registry.register::<Option<u32>>();
     registry.register::<Option<bool>>();
     registry.register::<Option<f32>>();
     registry.register::<Option<String>>();
+    registry.register::<Option<Vec2>>();
 }
 
 #[cfg(test)]
