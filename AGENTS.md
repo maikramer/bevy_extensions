@@ -31,6 +31,17 @@ não Unity/three.js.
   (`BodyBalance`, `StaggerFall`, `HitReaction`, `ArmsWindmill`, `CatchFall`,
   `BodyWrithe`, `Relax`) com FSM `Animated→Active→Falling→Down→GettingUp`/`Dead`.
   Estado e lições em `crates/bevy_ext_puppet/README.md`; ainda não ligado ao Vael.
+- **`crates/bevy_ext_fence`** — cercas procedurais a partir de uma linha
+  autorada (`bevy_ext_scene::FenceSpec`, 2026-11-23): o `layout` é puro e
+  determinístico (linha → postes → peças, RNG semeado pela chave da cerca), o
+  `mesh` é em facetas planas com UV em metros e desgaste em cor de vértice, o
+  `material` lê um conjunto de texturas do pool pelo `orm` do glTF, e o
+  `FencePlugin` nasce em `Added<FenceSpec>`/refaz em `Changed` (corpo fixo
+  `RigidBody::Static` com colisor Avian por vão, feature `physics`; a forma
+  sozinha respondia aos raios mas deixava o herói passar). O chão vem do host pelo trait
+  `FenceGround`; as predefinições (`FenceStyle`) e `FenceSettings` são
+  componentes `Reflect` de `world/settings/fences.bsn`. O mesmo crate corre na
+  extensão `extensions/bevy_ext_fence_jackdaw` (preview no editor).
 
 ## Mundos estáticos + edição por agentes (2026-10-13) — LER PRIMEIRO
 

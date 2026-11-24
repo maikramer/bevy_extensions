@@ -1,0 +1,29 @@
+[package]
+name = "bevy_ext_fence_jackdaw"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Jackdaw editor extension for bevy_ext_fence: viewport preview of the authored fences, inspector category and a Cercas panel"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/maikramer/bevy_extensions"
+authors = ["Maikeu Locatelli"]
+publish = false
+
+# Extensão oficial do Jackdaw: projeto standalone; `jd build` gera o shim em
+# `.jackdaw/` e compila contra o SDK do editor.
+[workspace]
+
+[package.metadata.jackdaw]
+label = "Cercas (bevy_ext_fence)"
+
+[dependencies]
+# `jd` redireciona estes para o dylib partilhado do SDK do editor.
+bevy = "0.20"
+jackdaw_extension = "0.20"
+jackdaw_api = "0.20"
+
+# O mesmo crate do jogo: o preview e o jogo não podem discordar do aspecto.
+# Sem `avian` no editor — o preview só desenha.
+bevy_ext_fence = { path = "../../crates/bevy_ext_fence", default-features = false }
+# As texturas do pool são KTX2 com mipmaps: o mesmo carregador do jogo.
+bevy_ext_gltf = { path = "../../crates/bevy_ext_gltf", default-features = false, features = ["textures"] }

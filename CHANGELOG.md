@@ -2,6 +2,29 @@
 
 ## Não publicado
 
+- `bevy_ext_fence` (new crate) + `bevy_ext_scene::FenceSpec`: a fence is an
+  authored line — an `<Entity>` with `fence-points`/`fence-style` and optional
+  overrides (`fence-*`, including `fence-open` for the leaf of a gate) — and
+  the geometry is generated from rules: posts, rails, boards of random
+  length, pickets, palisade, wattle, lattice, crossbuck, rope, gate. `layout`
+  is pure and deterministic (splitmix64 seeded by the fence key); `mesh` is
+  flat-shaded with metre UVs and vertex-colour weathering; one
+  `StandardMaterial` per texture set reads the glTF ORM map (R occlusion, G
+  roughness, B metallic at zero — Bevy 0.20's `metallic_roughness_texture`
+  reads blue, so a grey roughness map in that slot would make the wood
+  metallic); `FencePlugin` has an optional `physics` feature (one thin box per
+  span, on a `RigidBody::Static`; a bare `Collider` was hit by rays but the
+  hero walked through it — found in the live QA). `FenceStyle`/`FenceSettings`
+  are Reflect components, authored in `world/settings/fences.bsn`. The loader
+  lifts `fence-*` by key on any tag; `TYPE_PATHS` grows to 17. 41 tests +
+  doctest. Found in the live QA and fixed: `fence-rails` above the preset's
+  heights now distributes the rails evenly (it used to cap at the preset's
+  count), and the gate angle is per instance.
+- `extensions/bevy_ext_fence_jackdaw` (new): viewport preview built with the
+  same crate (the shared types are read by reflection), a "Cercas" inspector
+  category, a line gizmo and one `bevy_ext_fence.new.<style>` operator per
+  preset. Builds, installs and loads (`jackdaw check-extensions`); the
+  viewport preview has not been seen in an editor window yet.
 - `bevy_ext_world::bsn::authors_tags` + the start-scene shader config: the
   menu start parsed the whole main scene (1.4-1.6 s of prefab resolution) only
   to read `<Sky>`/`<DayCycle>`/`<Water>`/`<Layer>` for the WGSL consts, and

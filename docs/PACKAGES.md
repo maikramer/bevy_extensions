@@ -131,6 +131,7 @@ O Vael deixou de usar o editor próprio (`vael-editor`) como fluxo. A autoria
 |---|---|---|
 | `crates/bevy_ext_terrain` | Componentes runtime-safe `VoxelTerrain`/`VoxelCave`/`VoxelArch`/`VoxelBridge`, leitor `.ahgt` e `build_voxel_field` | 0.1.0, 4 testes |
 | `extensions/bevy_voxel_terrain_jackdaw` | Extensão oficial: painel `Vael: Voxel Terrain`, operadores `vael.voxel.*`/`vael.preview.*`, preview progressivo do mundo (heightfield + paint, caixas, modelos reais e um mesh único para os distantes) | 0.1.12, `.jdext` instalado e carregado |
+| `extensions/bevy_ext_fence_jackdaw` | Extensão genérica do `bevy_ext_fence`: preview das cercas no viewport com o mesmo crate do jogo, painel **Cercas**, categoria no inspector, gizmo da linha; operadores `bevy_ext_fence.new.<estilo>` | 0.1.1, `.jdext` instalado e carrega (`jackdaw check-extensions`); o preview em janela ainda não foi visto |
 
 Ciclo: `jd build` → `jd extension pack` → `jd extension install
 <bundle>.jdext --trust-publisher` → reiniciar o editor (extensões com
